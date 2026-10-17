@@ -34,7 +34,8 @@ use crate::render::{back_shown, clear, fill, shown_part};
 use crate::state::AppState;
 use crate::ui::callback::Callback;
 use crate::ui::dialog;
-use crate::ui::text::duration_text;
+use crate::ui::text::{duration_text, group_digits};
+use crate::ui::tile::{Tile, set_tile};
 use crate::ui::toast::{info_toast, log_failure, show_error, show_toast_from, undo_toast};
 use crate::ui::undo::{self, UndoFailure};
 use crate::ui::{init_once, nav};
@@ -69,21 +70,37 @@ mod imp {
         #[template_child]
         pub card_menu_button: TemplateChild<gtk::MenuButton>,
         #[template_child]
-        pub stack: TemplateChild<gtk::Stack>,
+        pub stack: TemplateChild<adw::ViewStack>,
         #[template_child]
         pub card_area: TemplateChild<gtk::Box>,
         #[template_child]
         pub front_box: TemplateChild<gtk::Box>,
         #[template_child]
-        pub back_separator: TemplateChild<gtk::Separator>,
+        pub back_part: TemplateChild<gtk::Box>,
         #[template_child]
         pub back_box: TemplateChild<gtk::Box>,
         #[template_child]
         pub cut_note: TemplateChild<gtk::Label>,
         #[template_child]
-        pub buttons: TemplateChild<gtk::Stack>,
+        pub bottom_bar: TemplateChild<adw::Clamp>,
+        #[template_child]
+        pub buttons: TemplateChild<adw::ViewStack>,
         #[template_child]
         pub summary_page: TemplateChild<adw::StatusPage>,
+        #[template_child]
+        pub summary_figures: TemplateChild<gtk::Box>,
+        #[template_child]
+        pub cards_value: TemplateChild<gtk::Label>,
+        #[template_child]
+        pub cards_caption: TemplateChild<gtk::Label>,
+        #[template_child]
+        pub passed_value: TemplateChild<gtk::Label>,
+        #[template_child]
+        pub passed_caption: TemplateChild<gtk::Label>,
+        #[template_child]
+        pub time_value: TemplateChild<gtk::Label>,
+        #[template_child]
+        pub time_caption: TemplateChild<gtk::Label>,
         #[template_child]
         pub done_button: TemplateChild<gtk::Button>,
         pub state: OnceCell<AppState>,
@@ -111,6 +128,8 @@ mod imp {
         pub asking: Cell<bool>,
         /// Told about every save made from this page's editor.
         pub on_saved: OnceCell<Callback<OnSaved>>,
+        /// Fades the back in at the reveal (`super::reveal_step`).
+        pub reveal_animation: OnceCell<adw::TimedAnimation>,
     }
 
     #[glib::object_subclass]
@@ -148,6 +167,7 @@ mod imp {
             self.parent_constructed();
             let page = self.obj();
             page.setup_keys();
+            page.setup_reveal_animation();
             // A grab before the push does nothing, and the navigation view
             // then focuses the first widget: the Back button, which would
             // take Space and Enter. So park the focus once on screen.
@@ -450,10 +470,13 @@ impl ReviewPage {
             break (id, card);
         };
         imp.revealed.set(false);
+        // A reveal still fading in ends now, out of sight.
+        if let Some(animation) = imp.reveal_animation.get() {
+            animation.skip();
+        }
         self.show_front(&card.front_md);
         clear(&imp.back_box);
-        imp.back_box.set_visible(false);
-        imp.back_separator.set_visible(false);
+        imp.back_part.set_visible(false);
         imp.card_area
             .reset_property(gtk::AccessibleProperty::Description);
         self.keep_back(&card.back_md);
@@ -465,6 +488,41 @@ impl ReviewPage {
         self.set_controls(Controls::Reveal);
         imp.stack.set_visible_child_name("card");
         imp.card_area.grab_focus();
+    }
+
+    /// Makes the animation that brings the answer in: a short fade with a
+    /// small slide up ([`reveal_step`]). libadwaita skips it to its end when
+    /// animations are off (the system's reduced-motion setting turns off
+    /// `gtk-enable-animations`) or the widget is not mapped (`AdwAnimation`
+    /// docs), so the back is then at once fully shown.
+    fn setup_reveal_animation(&self) {
+        let imp = self.imp();
+        let back = imp.back_part.downgrade();
+        let target = adw::CallbackAnimationTarget::new(move |progress| {
+            if let Some(back) = back.upgrade() {
+                let (opacity, margin) = reveal_step(progress);
+                back.set_opacity(opacity);
+                back.set_margin_top(margin);
+            }
+        });
+        // On the card area, which is mapped whenever a card is on screen
+        // (the back itself is mapped only once it is made visible).
+        let animation = adw::TimedAnimation::new(&*imp.card_area, 0.0, 1.0, REVEAL_MS, target);
+        animation.set_easing(adw::Easing::EaseOutCubic);
+        init_once(&imp.reveal_animation, animation);
+    }
+
+    /// Fades the back in, from its first step: `play` restarts the
+    /// animation, but the first frame is drawn before its first tick, so
+    /// the back starts out hidden here.
+    fn animate_reveal(&self) {
+        let imp = self.imp();
+        let (opacity, margin) = reveal_step(0.0);
+        imp.back_part.set_opacity(opacity);
+        imp.back_part.set_margin_top(margin);
+        if let Some(animation) = imp.reveal_animation.get() {
+            animation.play();
+        }
     }
 
     fn skip_in_session(&self, id: &str) {
@@ -480,7 +538,10 @@ impl ReviewPage {
         }
         imp.revealed_at.set(Some(Instant::now()));
         let back = imp.back.take();
-        self.show_back(&back);
+        // Only the reveal animates; a redraw after an edit does not.
+        if self.show_back(&back) {
+            self.animate_reveal();
+        }
         self.set_controls(Controls::Grade);
         imp.card_area.grab_focus();
     }
@@ -522,8 +583,8 @@ impl ReviewPage {
     }
 
     /// Shows `back` under the front, or nothing when it is empty: then
-    /// only the grade buttons appear.
-    fn show_back(&self, back: &Document) {
+    /// only the grade buttons appear. Says whether it is shown.
+    fn show_back(&self, back: &Document) -> bool {
         let imp = self.imp();
         let shown = back_shown(back);
         if shown {
@@ -541,9 +602,9 @@ impl ReviewPage {
             // lines) is not on screen, so the note is not about it.
             imp.back_cut.set(false);
         }
-        imp.back_separator.set_visible(shown);
-        imp.back_box.set_visible(shown);
+        imp.back_part.set_visible(shown);
         self.update_cut_note();
+        shown
     }
 
     /// Opens the card editor on the card on screen.
@@ -760,16 +821,16 @@ impl ReviewPage {
         self.keep_back(back_md);
         if imp.revealed.get() {
             let back = imp.back.take();
-            self.show_back(&back);
+            let _shown = self.show_back(&back);
         }
     }
 
     /// Shows `controls` in the bottom bar and enables only their actions.
     fn set_controls(&self, controls: Controls) {
         let (name, reveal, grade) = match controls {
-            Controls::Reveal => ("reveal", true, false),
-            Controls::Grade => ("grade", false, true),
-            Controls::Hidden => ("none", false, false),
+            Controls::Reveal => (Some("reveal"), true, false),
+            Controls::Grade => (Some("grade"), false, true),
+            Controls::Hidden => (None, false, false),
         };
         // Hidden with the summary, where there is no card to edit.
         let editable = !matches!(controls, Controls::Hidden);
@@ -779,7 +840,12 @@ impl ReviewPage {
         self.action_set_enabled("review.delete", editable);
         self.imp().edit_button.set_visible(editable);
         self.imp().card_menu_button.set_visible(editable);
-        self.imp().buttons.set_visible_child_name(name);
+        // The summary has its own button; the bar goes, and the summary
+        // gets its room.
+        self.imp().bottom_bar.set_visible(name.is_some());
+        if let Some(name) = name {
+            self.imp().buttons.set_visible_child_name(name);
+        }
         self.action_set_enabled("review.reveal", reveal);
         self.action_set_enabled("review.fail", grade);
         self.action_set_enabled("review.pass", grade);
@@ -887,9 +953,16 @@ impl ReviewPage {
             .as_ref()
             .map(Session::summary)
             .unwrap_or_default();
-        // Our own text, but the property is markup.
-        imp.summary_page
-            .set_description(Some(&glib::markup_escape_text(&summary_text(&summary))));
+        if let Some([cards, passed, time]) = summary_tiles(&summary) {
+            set_tile(&imp.cards_value, &imp.cards_caption, &cards);
+            set_tile(&imp.passed_value, &imp.passed_caption, &passed);
+            set_tile(&imp.time_value, &imp.time_caption, &time);
+            imp.summary_figures.set_visible(true);
+            imp.summary_page.set_description(None);
+        } else {
+            imp.summary_figures.set_visible(false);
+            imp.summary_page.set_description(Some(NOTHING_REVIEWED));
+        }
         imp.window_title.set_subtitle("");
         self.set_controls(Controls::Hidden);
         imp.stack.set_visible_child_name("summary");
@@ -927,24 +1000,59 @@ fn with_cut_note(text: String, cut: bool) -> String {
 /// `review_page.blp`.
 const CUT_NOTE: &str = "This card is long: only its start is shown. Edit it to see all of it.";
 
-/// The subtitle while studying: "12 left". It counts the card on screen
-/// and step cards that will come back, so it can go up after a Fail.
+/// The subtitle while studying: "12 left", "1,234 left". It counts the
+/// card on screen and step cards that will come back, so it can go up
+/// after a Fail.
 fn left_text(left: usize) -> String {
-    format!("{left} left")
+    format!("{} left", group_digits(left))
 }
 
-/// The summary: "12 cards · 83% passed · 4 min 10 s".
-fn summary_text(summary: &Summary) -> String {
-    let cards = match summary.cards {
-        1 => "1 card".to_owned(),
-        n => format!("{n} cards"),
+/// How long the answer takes to come in, in milliseconds: short enough
+/// never to hold anyone up.
+const REVEAL_MS: u32 = 180;
+
+/// How far below its place the answer starts, in pixels.
+const REVEAL_SLIDE: f64 = 12.0;
+
+/// The back's opacity and top margin at `progress` (0 to 1, clamped) of the
+/// reveal: from hidden and [`REVEAL_SLIDE`] lower to fully shown in place.
+fn reveal_step(progress: f64) -> (f64, i32) {
+    let progress = if progress.is_nan() {
+        1.0
+    } else {
+        progress.clamp(0.0, 1.0)
     };
-    let mut parts = vec![cards];
-    if let Some(percent) = summary.pass_percent() {
-        parts.push(format!("{percent}% passed"));
-    }
-    parts.push(duration_text(summary.time));
-    parts.join(" · ")
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "a value between 0 and REVEAL_SLIDE, rounded"
+    )]
+    let margin = (REVEAL_SLIDE * (1.0 - progress)).round() as i32;
+    (progress, margin)
+}
+
+/// The summary page's text when no card was answered (all of them were
+/// suspended or deleted during the session).
+const NOTHING_REVIEWED: &str = "No cards were reviewed";
+
+/// The summary's three tiles: cards reviewed, pass rate and time, or
+/// `None` when no card was answered.
+fn summary_tiles(summary: &Summary) -> Option<[Tile; 3]> {
+    let percent = summary.pass_percent().filter(|_| summary.cards > 0)?;
+    let cards_caption = if summary.cards == 1 {
+        "Card reviewed"
+    } else {
+        "Cards reviewed"
+    };
+    let tile = |value: String, caption: &str| Tile {
+        accessible: format!("{caption}: {value}"),
+        value,
+        caption: caption.to_owned(),
+    };
+    Some([
+        tile(group_digits(summary.cards), cards_caption),
+        tile(format!("{percent}%"), "Pass rate"),
+        tile(duration_text(summary.time), "Time"),
+    ])
 }
 
 #[cfg(test)]
@@ -1388,23 +1496,178 @@ mod tests {
     }
 
     #[test]
-    fn summary_lists_cards_rate_and_time() {
+    fn the_summary_shows_cards_rate_and_time() {
         let summary = Summary {
-            cards: 12,
+            cards: 1_234,
             answers: 18,
             passes: 15,
             time: Duration::from_secs(250),
         };
-        assert_eq!(summary_text(&summary), "12 cards · 83% passed · 4 min 10 s");
+        let values = |tiles: [Tile; 3]| tiles.map(|t| (t.value, t.caption, t.accessible));
+        assert_eq!(
+            values(summary_tiles(&summary).unwrap()),
+            [
+                (
+                    "1,234".to_owned(),
+                    "Cards reviewed".to_owned(),
+                    "Cards reviewed: 1,234".to_owned()
+                ),
+                (
+                    "83%".to_owned(),
+                    "Pass rate".to_owned(),
+                    "Pass rate: 83%".to_owned()
+                ),
+                (
+                    "4 min 10 s".to_owned(),
+                    "Time".to_owned(),
+                    "Time: 4 min 10 s".to_owned()
+                ),
+            ]
+        );
         let one = Summary {
             cards: 1,
             answers: 1,
             passes: 0,
             time: Duration::from_secs(3),
         };
-        assert_eq!(summary_text(&one), "1 card · 0% passed · 3 s");
-        assert_eq!(summary_text(&Summary::default()), "0 cards · 0 s");
+        let [cards, passed, time] = summary_tiles(&one).unwrap();
+        assert_eq!(
+            (cards.value.as_str(), cards.caption.as_str()),
+            ("1", "Card reviewed")
+        );
+        assert_eq!(passed.value, "0%");
+        assert_eq!(time.value, "3 s");
+        // Every card suspended or deleted: nothing to sum up.
+        assert_eq!(summary_tiles(&Summary::default()), None);
+    }
+
+    #[test]
+    fn the_subtitle_counts_what_is_left_with_grouped_digits() {
+        assert_eq!(left_text(0), "0 left");
         assert_eq!(left_text(3), "3 left");
+        assert_eq!(left_text(1_234), "1,234 left");
+    }
+
+    #[test]
+    fn the_answer_fades_in_and_slides_up_into_place() {
+        assert_eq!(reveal_step(0.0), (0.0, 12));
+        assert_eq!(reveal_step(0.5), (0.5, 6));
+        assert_eq!(reveal_step(1.0), (1.0, 0));
+        // Out of range (or not a number) ends shown, in place.
+        assert_eq!(reveal_step(-1.0), (0.0, 12));
+        assert_eq!(reveal_step(2.0), (1.0, 0));
+        assert_eq!(reveal_step(f64::NAN), (1.0, 0));
+        // It only ever comes closer to its place.
+        let steps: Vec<_> = (0..=100)
+            .map(|i| reveal_step(f64::from(i) / 100.0))
+            .collect();
+        assert!(
+            steps
+                .windows(2)
+                .all(|w| w[0].0 <= w[1].0 && w[0].1 >= w[1].1)
+        );
+    }
+
+    /// The hints under the buttons name keys the page binds to the same act,
+    /// and their buttons' descriptions say the same for screen readers.
+    #[test]
+    fn the_key_hints_match_the_keys() {
+        let blueprint = include_str!("../../data/review_page.blp");
+        for (hint, description, trigger, act) in [
+            ("Space", "Press Space", "space", Act::Reveal),
+            ("1", "Press 1", "1", Act::Grade(Grade::Fail)),
+            ("2", "Press 2 or Space", "2", Act::Grade(Grade::Pass)),
+        ] {
+            assert!(
+                blueprint.contains(&format!("label: _(\"{hint}\");")),
+                "{hint}"
+            );
+            assert!(
+                blueprint.contains(&format!("description: _(\"{description}\");")),
+                "{description}"
+            );
+            let (_, key) = KEYS.iter().find(|(t, _)| *t == trigger).unwrap();
+            let revealed = act != Act::Reveal;
+            assert_eq!(key_action(*key, revealed, true), Some(act), "{trigger}");
+        }
+        // Space also passes, as the Pass button's description says.
+        assert_eq!(
+            key_action(Key::Space, true, true),
+            Some(Act::Grade(Grade::Pass))
+        );
+        // The hints are hidden from screen readers, so nothing is read twice.
+        assert_eq!(
+            blueprint.matches("accessible-role: presentation;").count(),
+            3
+        );
+    }
+
+    #[test]
+    fn the_back_is_shown_whole_at_the_reveal_and_hidden_for_the_next_card() {
+        crate::testing::with_gtk(|| {
+            let (_tmp, _state, page, _) = page_of(2);
+            let imp = page.imp();
+            assert!(!imp.back_part.is_visible());
+            assert_eq!(imp.buttons.visible_child_name().as_deref(), Some("reveal"));
+            page.reveal();
+            // Not on screen, so libadwaita skips the animation to its end.
+            assert!(imp.back_part.is_visible());
+            assert!((imp.back_part.opacity() - 1.0).abs() < f64::EPSILON);
+            assert_eq!(imp.back_part.margin_top(), 0);
+            assert_eq!(imp.buttons.visible_child_name().as_deref(), Some("grade"));
+            assert_eq!(
+                first_label(imp.back_box.upcast_ref()).as_deref(),
+                Some("back")
+            );
+            page.grade(Grade::Pass);
+            assert!(!imp.back_part.is_visible());
+            assert_eq!(imp.buttons.visible_child_name().as_deref(), Some("reveal"));
+            assert_eq!(imp.window_title.subtitle(), "1 left");
+        });
+    }
+
+    #[test]
+    fn the_summary_replaces_the_bar_and_shows_the_figures() {
+        crate::testing::with_gtk(|| {
+            let (_tmp, _state, page, _) = page_of(2);
+            let imp = page.imp();
+            assert!(imp.bottom_bar.is_visible());
+            pass(&page);
+            pass(&page);
+            assert_eq!(imp.stack.visible_child_name().as_deref(), Some("summary"));
+            assert!(!imp.bottom_bar.is_visible());
+            assert!(imp.summary_figures.is_visible());
+            assert_eq!(imp.cards_value.label(), "2");
+            assert_eq!(imp.cards_caption.label(), "Cards reviewed");
+            assert_eq!(imp.passed_value.label(), "100%");
+            assert!(
+                imp.summary_page
+                    .description()
+                    .unwrap_or_default()
+                    .is_empty()
+            );
+            assert_eq!(imp.window_title.subtitle(), "");
+            // Undo brings the card and the bar back.
+            page.undo();
+            assert!(imp.bottom_bar.is_visible());
+            assert_eq!(imp.buttons.visible_child_name().as_deref(), Some("reveal"));
+        });
+    }
+
+    #[test]
+    fn a_session_with_nothing_answered_says_so() {
+        crate::testing::with_gtk(|| {
+            let (_tmp, _state, page, ids) = page_of(1);
+            let _window = in_window(&page);
+            page.remove(&ids[0], Removal::Suspend);
+            let imp = page.imp();
+            assert_eq!(imp.stack.visible_child_name().as_deref(), Some("summary"));
+            assert!(!imp.summary_figures.is_visible());
+            assert_eq!(
+                imp.summary_page.description().as_deref(),
+                Some(NOTHING_REVIEWED)
+            );
+        });
     }
 
     /// The action each key's menu item runs, for the hints' test.

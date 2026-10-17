@@ -1,0 +1,32 @@
+# 45. Review page: card text size, answer buttons, reveal and summary
+
+- Status: Accepted
+- Date: 2026-10-17
+- Amends: ADR 0014 (the review page's bottom bar and summary), ADR 0019 (the review page's card text is larger than body text)
+- Refers to: ADR 0021, 0023, 0024 (math), ADR 0040 (the page's stacks were left for this slice), `docs/briefs/phase-1-finish.md` ("Review", "Design rules")
+
+## Context
+
+The phase 1 brief asks for larger card text on the review page, the front slightly larger than the back; large, easy-to-tap Show Answer and Fail / Pass buttons at the bottom with subtle key hints (Space, 1, 2) under them; "N left" in the subtitle; a short, tasteful reveal transition, with animations only through libadwaita; and the review column at about 700 px. ADR 0040 left the page's `GtkStack` crossfades to this slice.
+
+## Decision
+
+**Card text.** The front box has the class `card-front` (`font-size: 125%`) and the back box `card-back` (`112%`), in `data/style.css`. Both were judged on screenshots at 1000 and 360 px: 125 / 112 reads clearly larger than the header and the buttons, and the step between the sides is visible without the back looking small. Everything `render/` draws inherits the size: paragraphs, list markers, quotes and table cells directly, headings because libadwaita's `title-*` classes are percentages, inline code because Pango's `<tt>` only changes the family, and formulas because `MathView` draws at the widget's own font size (`math_view::em_px`), so inline formulas grow with their line and still sit on its baseline (`MathParagraph`'s `AttrShape` boxes are made from the same size). The one exception is libadwaita's `.monospace`, which sets the absolute `--monospace-font-size`: code blocks and formula sources are scaled by the same factor with `calc(var(--monospace-font-size) * 1.25)` (and `* 1.12` on the back). The cut note stays a caption at body size: it is the app speaking, not card text. The column is 700 px (`AdwClamp`), up from 600, so a line still holds about as many words as before.
+
+**The editor's preview stays at body size.** It sits beside, or switches with, the Markdown source in a dialog, where the source is body-sized monospace; a larger preview would take room the editor needs, and its purpose is to check the structure, not the exact study size.
+
+**Bottom bar.** Show Answer, then Fail and Pass, are pills at least 48 px tall (`button.review-button { min-height: 28px }` plus libadwaita's 10 px pill padding) in an `AdwClamp` of 420 px, so Show Answer is as wide as Fail and Pass together and the two phases fill the same place (an `AdwViewStack`, homogeneous, so the bar's height does not change and the thumb does not move). Show Answer and Pass are `suggested-action`; Fail stays a plain pill, since failing a card is not destructive (ADR 0014). On the summary the bar is hidden, so the summary gets the room.
+
+**Key hints.** Under each button a dimmed caption names its key: "Space", "1", "2". They are always shown: GTK cannot tell reliably that no keyboard is attached, and the hints are small. The hint labels have the accessible role Presentation, so screen readers do not read them; each button's accessible description says the key instead ("Press Space", "Press 1", "Press 2 or Space"). The buttons' tooltips, which said the same, are gone: the key is on screen. On a short window (`max-height: 400sp`, a phone held sideways, or 360 × 294) an `AdwBreakpoint` hides the hints and narrows the bar's margins to 6 px, so the card keeps its room.
+
+**Reveal.** The separator and the back are one box, `back_part`. At the reveal it fades in while sliding up 12 px into place, in 180 ms with ease-out cubic: an `AdwTimedAnimation` on the card area (mapped whenever a card is on screen) with a callback target that sets the box's opacity and top margin (`reveal_step`, pure and tested). libadwaita skips an animation to its end when `gtk-enable-animations` is off, which the system's reduced-motion setting turns off, and when the widget is not mapped (AdwAnimation docs), so the back is then shown at once. The accessible description is set at the reveal as before, so a screen reader can read the answer at once. A redraw after an edit does not animate; the next card skips a running animation first. The page's other changes (front to front, card to summary) have no animation: its stacks are `AdwViewStack`s, which have none by default.
+
+**Summary.** An `AdwStatusPage` "Session Complete" with a check mark (`object-select-symbolic`; the old `emblem-ok-symbolic` is not in the Adwaita icon theme), three tiles like Statistics' (Cards reviewed, Pass rate, Time; `title-2` and `numeric`, in a 480 px clamp, stacked under 450 sp) and Back to Deck. The tiles are filled by `ui::tile::set_tile`, moved from the statistics page so both share it (the screen reader reads each tile once, "Pass rate: 83%"). When no card was answered (every card suspended or deleted during the session) it says "No cards were reviewed" instead. Ctrl+Z works there as before.
+
+**Subtitle.** "N left" groups digits ("1,234 left", `ui::text::group_digits`) and is set after every answer, undo, suspend, delete and put-back, as before.
+
+## Consequences
+
+- The keys, the header, the timers and the session logic are unchanged.
+- Card text that was 600 px wide is now up to 700 px; very long cards still scroll, and wide tables and formulas still scroll sideways at 360 px.
+- The summary no longer shows its one line "12 cards · 83% passed · 4 min 10 s"; the same figures are in the tiles.

@@ -1,7 +1,8 @@
 /* The app's only stylesheet, loaded by AdwApplication from `style.css` in
  * the resource base path (AdwApplication docs, "Stylesheet"). It styles the
  * grid of a Markdown table and the sideways-scroll hint of wide formulas (render/),
- * the focus ring of a chart, the deck and card rows and the tag pills.
+ * the focus ring of a chart, the deck and card rows, the tag pills, and the
+ * review page's card text size and answer buttons.
  * No literal colours: lines and shading are the text colour at a low
  * opacity, so they follow light, dark and high-contrast themes. */
 
@@ -112,4 +113,33 @@ row > box.header.card-row label.subtitle {
 
 .tag-entry text > placeholder {
   opacity: var(--dim-opacity);
+}
+
+/* The card on the review page (data/review_page.blp): its text is larger
+ * than body text, the front a little more than the back, so the question
+ * stands out. Everything render/ draws is sized from the inherited font:
+ * headings are a percentage of it (libadwaita's `title-*`), formulas are
+ * drawn at the widget's font size (render/math_view.rs). Only `monospace`
+ * sets an absolute size (the system's monospace font), so code is scaled
+ * here by the same factor. The editor's preview stays at body size. */
+.card-front {
+  font-size: 125%;
+}
+
+.card-back {
+  font-size: 112%;
+}
+
+.card-front .monospace {
+  font-size: calc(var(--monospace-font-size) * 1.25);
+}
+
+.card-back .monospace {
+  font-size: calc(var(--monospace-font-size) * 1.12);
+}
+
+/* The review page's answer buttons: easy to hit, at least 48 px tall
+ * (the content box plus libadwaita's 10 px pill padding). */
+button.review-button {
+  min-height: 28px;
 }
