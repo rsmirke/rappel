@@ -1221,3 +1221,77 @@ mod limits {
         assert_eq!(counts(T0 + STEP_MS + 1), (3, 1));
     }
 }
+
+/// One write of `today_counts_follow_the_counted_reviews`: a review, a
+/// reset, or an undo of the card's latest surviving entry, `delta` after
+/// the last one (often 0 or backwards, so entries share their time).
+#[derive(Debug, Clone)]
+enum Write {
+    Review(usize, i64),
+    Reset(usize, i64),
+    Undo(usize, i64),
+}
+
+fn write() -> impl Strategy<Value = Write> {
+    let delta = prop_oneof![5 => Just(0i64), 1 => -STEP_MS..0, 3 => 0..=2 * DAY_MS];
+    prop_oneof![
+        6 => (0usize..2, delta.clone()).prop_map(|(c, d)| Write::Review(c, d)),
+        3 => (0usize..2, delta.clone()).prop_map(|(c, d)| Write::Reset(c, d)),
+        3 => (0usize..2, delta).prop_map(|(c, d)| Write::Undo(c, d)),
+    ]
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(128))]
+
+    /// The daily counts in SQL equal the rule they implement, applied to
+    /// each card's log in Rust (`counted_reviews`: not undone, after the
+    /// last surviving reset), for any mix of reviews, resets and undos,
+    /// several resets and undone resets included, at every day start
+    /// (ADR 0028, ADR 0050).
+    #[test]
+    fn today_counts_follow_the_counted_reviews(
+        writes in prop::collection::vec(write(), 0..60),
+        starts in prop::collection::vec(0..=60 * DAY_MS, 1..6),
+    ) {
+        let (mut store, deck, cards) = store_with_cards(2);
+        let mut clock = T0;
+        for w in writes {
+            let (Write::Review(c, d) | Write::Reset(c, d) | Write::Undo(c, d)) = w;
+            clock += d;
+            let card = &cards[c];
+            match w {
+                Write::Review(..) => {
+                    store.record_review(card, Grade::Pass, Duration::ZERO, clock).unwrap();
+                }
+                Write::Reset(..) => {
+                    store.reset_card(card, clock).unwrap();
+                }
+                Write::Undo(..) => {
+                    let log = store.review_events(card).unwrap();
+                    if let Some(latest) = crate::scheduling::surviving(&log).unwrap().last() {
+                        store.undo(card, &latest.id, clock).unwrap();
+                    }
+                }
+            }
+        }
+        for offset in starts {
+            let day_start = T0 + offset;
+            let (mut reviews_today, mut new_today) = (0, 0);
+            for card in &cards {
+                let log = store.review_events(card).unwrap();
+                let counted = crate::stats::counted_reviews(&log).unwrap();
+                let times = counted.iter().map(|e| e.reviewed_at);
+                if let (Some(first), Some(last)) = (times.clone().min(), times.max()) {
+                    reviews_today += u32::from(first < day_start && last >= day_start);
+                    new_today += u32::from(first >= day_start);
+                }
+            }
+            prop_assert_eq!(
+                today_counts_in(&store.conn, &deck, day_start).unwrap(),
+                (reviews_today, new_today),
+                "day start {}", day_start
+            );
+        }
+    }
+}

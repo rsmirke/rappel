@@ -2,7 +2,7 @@
 
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::cards::{CARD_COLUMNS, card_from_row, live_card};
 use super::decks::ensure_live_deck;
@@ -182,29 +182,29 @@ pub(super) fn set_card_tags_in(
         .iter()
         .map(|name| check_tag_name(name))
         .collect::<Result<Vec<_>>>()?;
-    let mut wanted = Vec::with_capacity(names.len());
+    // Sets, so a card with thousands of tags costs no more than linear
+    // time (5,000 names took 0.6 s with lists; ADR 0050). `wanted` keeps
+    // the order typed, so the inserts are the same on every run.
+    let mut wanted: Vec<String> = Vec::with_capacity(names.len());
+    let mut wanted_set: HashSet<String> = HashSet::with_capacity(names.len());
     for name in names {
         let id = find_or_create_tag(conn, ids, name, now)?.id;
         // The same tag named twice ("x", "X") is one link.
-        if !wanted.contains(&id) {
+        if wanted_set.insert(id.clone()) {
             wanted.push(id);
         }
     }
     let mut stmt = conn.prepare("SELECT tag_id FROM card_tags WHERE card_id = ?1")?;
     let linked = stmt
         .query_map([card_id], |r| r.get::<_, String>(0))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    for tag_id in linked.iter().filter(|id| !wanted.contains(id)) {
-        conn.execute(
-            "DELETE FROM card_tags WHERE card_id = ?1 AND tag_id = ?2",
-            params![card_id, tag_id],
-        )?;
+        .collect::<rusqlite::Result<HashSet<_>>>()?;
+    let mut unlink = conn.prepare("DELETE FROM card_tags WHERE card_id = ?1 AND tag_id = ?2")?;
+    for tag_id in linked.iter().filter(|id| !wanted_set.contains(*id)) {
+        unlink.execute(params![card_id, tag_id])?;
     }
-    for tag_id in wanted.iter().filter(|id| !linked.contains(id)) {
-        conn.execute(
-            "INSERT INTO card_tags (card_id, tag_id) VALUES (?1, ?2)",
-            params![card_id, tag_id],
-        )?;
+    let mut link = conn.prepare("INSERT INTO card_tags (card_id, tag_id) VALUES (?1, ?2)")?;
+    for tag_id in wanted.iter().filter(|id| !linked.contains(*id)) {
+        link.execute(params![card_id, tag_id])?;
     }
     card_tags_in(conn, card_id)
 }

@@ -98,6 +98,15 @@ fn broken_tags_and_card_tags_are_refused() {
             |d| d["tags"][1]["name"] = json!("ALGEBRA"),
             field("tags", 1, "name", FieldProblem::DuplicateTagName),
         ),
+        // One name in two Unicode forms (composed and decomposed) is one
+        // tag, as in the database (`name_key`, NFC).
+        (
+            |d| {
+                d["tags"][0]["name"] = json!("\u{c9}conomie");
+                d["tags"][1]["name"] = json!("E\u{301}conomie");
+            },
+            field("tags", 1, "name", FieldProblem::DuplicateTagName),
+        ),
         (
             |d| d["card_tags"][0]["card_id"] = json!(LAST_ID),
             field("card_tags", 0, "card_id", FieldProblem::UnknownReference),
@@ -193,6 +202,38 @@ fn an_undo_must_cancel_one_earlier_review_or_reset_of_its_card() {
         plan_doc(&doc),
         field("review_events", 8, "undoes", FieldProblem::AlreadyUndone)
     );
+    // An undo of an undo, an undo of a later entry, and two undos that
+    // name each other (a cycle): each is refused, so a log's undos never
+    // chain and replaying one never recurses (ADR 0050).
+    let later = |doc: &mut Value, kind: &str| {
+        let mut entry = doc["review_events"][7].clone();
+        entry["id"] = json!(LAST_ID);
+        entry["kind"] = json!(kind);
+        entry["reviewed_at"] = json!(entry["reviewed_at"].as_i64().unwrap() + 1);
+        if kind == "review" {
+            entry["grade"] = json!("pass");
+            entry["undoes"] = Value::Null;
+            entry["duration_ms"] = json!(1000);
+        }
+        doc["review_events"].as_array_mut().unwrap().push(entry);
+    };
+    let mut doc = sample_doc();
+    later(&mut doc, "undo");
+    doc["review_events"][8]["undoes"] = doc["review_events"][7]["id"].clone();
+    assert_eq!(
+        plan_doc(&doc),
+        field("review_events", 8, "undoes", FieldProblem::InvalidUndo)
+    );
+    let mut doc = sample_doc();
+    later(&mut doc, "review");
+    doc["review_events"][7]["undoes"] = json!(LAST_ID);
+    assert_eq!(plan_doc(&doc), invalid);
+    let mut doc = sample_doc();
+    later(&mut doc, "undo");
+    doc["review_events"][8]["undoes"] = doc["review_events"][7]["id"].clone();
+    doc["review_events"][7]["undoes"] = json!(LAST_ID);
+    assert_eq!(plan_doc(&doc), invalid);
+
     // An undo whose id sorts before its target's.
     let mut doc = sample_doc();
     let target = doc["review_events"][6].clone();

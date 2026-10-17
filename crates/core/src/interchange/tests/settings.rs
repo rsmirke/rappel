@@ -192,6 +192,28 @@ fn settings_out_of_range_or_unknown_are_refused() {
             json!({"day_start_hour": 24}),
             top("settings.day_start_hour"),
         ),
+        // Hostile values (ADR 0050): too large for an f32 (infinity once
+        // read), too small (zero), and the limits' edges.
+        (
+            json!({"desired_retention": 1e39}),
+            top("settings.desired_retention"),
+        ),
+        (
+            json!({"desired_retention": -1e39}),
+            top("settings.desired_retention"),
+        ),
+        (
+            json!({"desired_retention": 1e-50}),
+            top("settings.desired_retention"),
+        ),
+        (
+            json!({"max_new_per_day": u32::MAX}),
+            top("settings.max_new_per_day"),
+        ),
+        (
+            json!({"day_start_hour": 255}),
+            top("settings.day_start_hour"),
+        ),
     ] {
         let mut doc = base.clone();
         doc["settings"] = settings.clone();
@@ -206,6 +228,15 @@ fn settings_out_of_range_or_unknown_are_refused() {
         json!({"desired_retention": "0.9"}),
         json!({"day_start_hour": -1}),
         json!({"max_new_per_day": 1.5}),
+        // Wrong types and sizes: never a setting, always a JSON error.
+        json!({"max_new_per_day": u64::MAX}),
+        json!({"max_reviews_per_day": -1}),
+        json!({"day_start_hour": 256}),
+        json!({"day_start_hour": "4"}),
+        json!({"desired_retention": [0.9]}),
+        json!({"desired_retention": {"value": 0.9}}),
+        json!({"desired_retention": true}),
+        json!("settings"),
     ] {
         let mut doc = base.clone();
         doc["settings"] = settings.clone();

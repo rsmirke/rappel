@@ -64,23 +64,86 @@ pub(crate) fn rebuild_search_index(conn: &Connection) -> Result<()> {
 /// like the index, as a quoted prefix (`"word"*`), all of them required.
 /// Quotes are doubled, so nothing typed is ever FTS5 syntax. `None` if
 /// no word has a letter or digit to search for.
+///
+/// A word that is the start of another word of the query (`ca` next to
+/// `card`, or `card` twice) is left out: every card the longer one finds,
+/// the shorter finds too, so the result is the same. FTS5 reads each word's
+/// matches separately, so 5,000 copies of `a` took 10 s of CPU on 5,000
+/// cards in a debug build; once left out, the words that remain can never
+/// share a token, so their matches add up to at most the whole index
+/// (ADR 0050).
+///
+/// Only the first [`MAX_QUERY_BYTES`] of `text` are searched.
 #[must_use]
 pub(crate) fn fts_query(text: &str) -> Option<String> {
+    let text = query_start(text);
     // NUL cannot be quoted in an FTS5 string; it separates words here.
-    let words: Vec<String> = text
+    let mut words: Vec<String> = text
         .split(|c: char| c.is_whitespace() || c == '\0')
         .map(search_key)
         // A word without a letter or digit (`**`, `-`) has no token to match.
         // FTS5 may read a lone symbol Rust calls alphanumeric (ⓐ) as no
         // token at all and ignore that word; harmless.
         .filter(|w| w.chars().any(char::is_alphanumeric))
-        .map(|w| format!("\"{}\"*", w.replace('"', "\"\"")))
         .collect();
+    let words = without_implied(&mut words);
     if words.is_empty() {
         None
     } else {
-        Some(words.join(" "))
+        Some(
+            words
+                .iter()
+                .map(|w| format!("\"{}\"*", w.replace('"', "\"\"")))
+                .collect::<Vec<_>>()
+                .join(" "),
+        )
     }
+}
+
+/// How much of what was typed is searched, in UTF-8 bytes: far more than
+/// any search needs (about 150 words). FTS5 reads the matches of every
+/// token of a phrase, so its work grows with the number of tokens in the
+/// query times the cards that have them: one pasted word of 20,000 tokens
+/// joined by hyphens (`card-card-…`) took 10 s of CPU on 5,000 cards in a
+/// debug build (ADR 0050).
+pub const MAX_QUERY_BYTES: usize = 1024;
+
+/// The start of `text` that is searched: at most [`MAX_QUERY_BYTES`], cut
+/// between two characters. A word cut in two is searched as the start of a
+/// word, so a cut query finds at least what the whole one would.
+fn query_start(text: &str) -> &str {
+    if text.len() <= MAX_QUERY_BYTES {
+        return text;
+    }
+    let mut end = MAX_QUERY_BYTES;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
+/// `words` without each word that starts another one (or equals it), in
+/// sorted order. Sorted, every word that starts with `w` comes right after
+/// `w`, so comparing each word with the next one is enough.
+///
+/// Leaving such a word out never changes what is found. FTS5's tokenizer
+/// reads a quoted string one character at a time, so the tokens of a
+/// string's start are the string's own tokens, except that the last one
+/// may be cut short: the phrase of a longer word holds the shorter one's
+/// tokens in order, its last one at least as long, and a prefix query of
+/// the shorter phrase matches wherever the longer one does.
+fn without_implied(words: &mut [String]) -> Vec<&String> {
+    words.sort_unstable();
+    let mut kept = Vec::with_capacity(words.len());
+    for (i, w) in words.iter().enumerate() {
+        if words
+            .get(i + 1)
+            .is_none_or(|next| !next.starts_with(w.as_str()))
+        {
+            kept.push(w);
+        }
+    }
+    kept
 }
 
 /// Which cards of the All Cards page to keep (SPEC §4.6).

@@ -246,15 +246,28 @@ fn next_entry_time(tx: &Connection, ids: &mut IdGen, card_id: &str, now: i64) ->
 /// are the reviews no undo cancels, made after the card's last reset that
 /// no undo cancels (ADR 0028): an undone review gives its place in today's
 /// budget back, and a reset card is new again, as its rebuilt state is.
-const COUNTED_REVIEWS: &str = "counted(card_id, reviewed_at) AS (
+///
+/// Each card's last surviving reset is found once (`last_reset`, a window
+/// over the deck's resets), and every review is compared with it. Asking
+/// "is there a later surviving reset?" for each review instead scanned
+/// every later entry of the card when there was none: quadratic in the
+/// length of a card's log, 7 s of CPU for one card of 8,000 reviews in a
+/// debug build (ADR 0050).
+const COUNTED_REVIEWS: &str = "last_reset(card_id, reviewed_at, id) AS (
+    SELECT card_id, reviewed_at, id FROM (
+        SELECT r.card_id, r.reviewed_at, r.id,
+               row_number() OVER (PARTITION BY r.card_id
+                                  ORDER BY r.reviewed_at DESC, r.id DESC) AS latest
+        FROM review_events r JOIN cards c ON c.id = r.card_id
+        WHERE c.deck_id = ?1 AND r.kind = 'reset'
+          AND NOT EXISTS (SELECT 1 FROM review_events u WHERE u.undoes = r.id))
+    WHERE latest = 1),
+counted(card_id, reviewed_at) AS (
     SELECT e.card_id, e.reviewed_at FROM review_events e JOIN cards c ON c.id = e.card_id
+    LEFT JOIN last_reset l ON l.card_id = e.card_id
     WHERE c.deck_id = ?1 AND e.kind = 'review'
       AND NOT EXISTS (SELECT 1 FROM review_events u WHERE u.undoes = e.id)
-      AND NOT EXISTS (
-          SELECT 1 FROM review_events r
-          WHERE r.card_id = e.card_id AND r.kind = 'reset'
-            AND (r.reviewed_at, r.id) > (e.reviewed_at, e.id)
-            AND NOT EXISTS (SELECT 1 FROM review_events u WHERE u.undoes = r.id)))";
+      AND (l.card_id IS NULL OR (e.reviewed_at, e.id) > (l.reviewed_at, l.id)))";
 
 /// [`Store::study_input`] on `conn`, for callers that already hold a read
 /// transaction. [`Store::list_decks`] counts with it too, so the deck list

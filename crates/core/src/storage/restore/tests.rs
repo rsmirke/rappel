@@ -542,11 +542,15 @@ fn failed_install_keeps_the_copy_and_never_starts_an_empty_database() {
     );
     assert!(partial.exists(), "the validated copy is kept");
     assert!(!e.db().exists());
-    assert!(matches!(e.open(), Err(Error::OrphanedSidecar(_))));
-    // With only the copy left (no stray -wal), open still refuses.
-    fs::remove_file(&intruder).unwrap();
+    // The waiting copy is what open reports, even with the stray -wal next
+    // to it, so the user is offered Finish Restore, not Start Fresh (#50).
     assert!(matches!(e.open(), Err(Error::InterruptedRestore(_))));
-    fs::write(&intruder, b"intruder").unwrap();
+    // Without the copy, the stray -wal alone is refused.
+    let aside = with_suffix(&partial, ".aside");
+    fs::rename(&partial, &aside).unwrap();
+    assert!(matches!(e.open(), Err(Error::OrphanedSidecar(_))));
+    fs::rename(&aside, &partial).unwrap();
+    assert!(!e.db().exists(), "open created nothing");
 
     // A new restore moves the stray file aside and finishes.
     let restored = e.restore(&backup).unwrap();
@@ -575,8 +579,10 @@ fn finishing_installs_exactly_the_waiting_copy() {
     let e = Env::new();
     let partial = interrupted_without_its_backup(&e);
     assert!(matches!(e.open(), Err(Error::InterruptedRestore(_))));
-    // Something strayed into the place meanwhile.
+    // Something strayed into the place meanwhile. The waiting copy is still
+    // what open reports, so the user is offered Finish Restore (#50).
     fs::write(with_suffix(&e.db(), "-wal"), b"intruder").unwrap();
+    assert!(matches!(e.open(), Err(Error::InterruptedRestore(_))));
 
     let finished = finish_restore_with(&e.data, DAY0 + DAY_MS, MIGRATIONS).unwrap();
 
@@ -596,6 +602,41 @@ fn finishing_installs_exactly_the_waiting_copy() {
     let installed = Connection::open(e.db()).unwrap();
     assert_eq!(deck_names(&installed), ["Maths"]);
     no_partial_left(&e);
+}
+
+/// #50: the backup an interrupted restore came from may still be there and
+/// be the oldest one. Finishing does not know which one it was, so it
+/// prunes nothing; the next open prunes as usual.
+#[test]
+fn finishing_keeps_every_backup_the_copy_may_have_come_from() {
+    let e = Env::new();
+    let (store, _) = e.diverged();
+    // One backup a day for 20 days ending on DAY0: six of them are outside
+    // the 14 days of the finish on the next day.
+    let mut oldest = PathBuf::new();
+    for k in 0..20 {
+        oldest = create_backup(&store.conn, &e.backups(), DAY0 - k * DAY_MS).unwrap();
+    }
+    drop(store);
+    copy_validate_and_move_aside(&e, &oldest);
+    let before: Vec<PathBuf> = list_backups(&e.data)
+        .unwrap()
+        .into_iter()
+        .map(|b| b.path().to_path_buf())
+        .collect();
+
+    let finished = finish_restore_with(&e.data, DAY0 + DAY_MS, MIGRATIONS).unwrap();
+
+    assert!(oldest.exists(), "the backup the copy came from is kept");
+    for path in &before {
+        assert!(path.exists(), "{} was pruned", path.display());
+    }
+    // The day's backup was made too.
+    assert_eq!(list_backups(&e.data).unwrap().len(), before.len() + 1);
+    drop(finished);
+    // The next open prunes as usual.
+    Store::open_with(&e.db(), &e.backups(), DAY0 + 2 * DAY_MS, MIGRATIONS).unwrap();
+    assert!(!oldest.exists());
 }
 
 #[test]
@@ -653,7 +694,8 @@ fn finishing_refuses_a_damaged_copy_and_keeps_it() {
 
     assert!(matches!(err, Error::RestoreRefused { .. }), "{err:?}");
     assert_eq!(snapshot(&e.data), before, "nothing changed, copy kept");
-    assert!(matches!(e.open(), Err(Error::OrphanedSidecar(_))));
+    // The copy still waits, and is reported before the stray -wal (#50).
+    assert!(matches!(e.open(), Err(Error::InterruptedRestore(_))));
 }
 
 #[test]

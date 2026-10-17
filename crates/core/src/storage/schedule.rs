@@ -283,11 +283,21 @@ pub(crate) fn insert_event(conn: &Connection, event: &ReviewEvent) -> Result<()>
     Ok(())
 }
 
+/// How much of a bad value [`invalid`] keeps, in characters. A settings
+/// value is free text in the database, which a damaged or hand-edited file
+/// may make as large as SQLite allows; the error is logged and may be
+/// shown, so it keeps only the start (ADR 0050).
+const SHOWN_VALUE_CHARS: usize = 64;
+
+/// [`Error::InvalidColumn`] for `value` read from `column`, its text cut to
+/// [`SHOWN_VALUE_CHARS`] characters, with "…" where it was cut.
 pub(super) fn invalid(column: &'static str, value: &dyn std::fmt::Display) -> Error {
-    Error::InvalidColumn {
-        column,
-        value: value.to_string(),
+    let mut value = value.to_string();
+    if let Some((cut, _)) = value.char_indices().nth(SHOWN_VALUE_CHARS) {
+        value.truncate(cut);
+        value.push('…');
     }
+    Error::InvalidColumn { column, value }
 }
 
 /// A `REAL` written from an `f32` back to `f32`.

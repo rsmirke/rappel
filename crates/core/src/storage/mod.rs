@@ -33,7 +33,7 @@ use migrations::{MIGRATIONS, Migration, latest, migrate};
 pub use restore::{Restored, finish_restore, restore_backup, start_fresh};
 pub(crate) use schedule::rebuild_cards;
 pub(crate) use search::index_card_in;
-pub use search::{BrowseQuery, BrowseRow, CardStatus, StateFilter};
+pub use search::{BrowseQuery, BrowseRow, CardStatus, MAX_QUERY_BYTES, StateFilter};
 pub(crate) use settings::{StoredSettings, replace_settings, scheduler_in, stored_settings};
 pub use stats::Scope;
 
@@ -93,8 +93,7 @@ impl Store {
     ///    made first; if it fails, nothing is migrated. Otherwise one is
     ///    made if none exists for today (UTC); that one failing only logs a
     ///    warning. Old backups are pruned by the rule in ADR 0026, never
-    ///    deleting the one just made (or `protect`, the backup a restore
-    ///    just installed).
+    ///    deleting the one just made.
     /// 5. Pending migrations run, one transaction each.
     ///
     /// # Errors
@@ -118,17 +117,18 @@ impl Store {
         now_ms: i64,
         migrations: &[Migration],
     ) -> Result<Self> {
-        Self::open_protecting(db_path, backup_dir, now_ms, migrations, None)
+        Self::open_protecting(db_path, backup_dir, now_ms, migrations, Protect::Nothing)
     }
 
-    /// [`Store::open_with`] that also keeps the backup `protect` from being
-    /// pruned: a restore passes the backup it installed (#8).
+    /// [`Store::open_with`] that also keeps backups from being pruned: a
+    /// restore passes the backup it installed (#8), finishing an
+    /// interrupted restore keeps them all (#50).
     fn open_protecting(
         db_path: &Path,
         backup_dir: &Path,
         now_ms: i64,
         migrations: &[Migration],
-        protect: Option<&Path>,
+        protect: Protect<'_>,
     ) -> Result<Self> {
         refuse_orphaned_sidecars(db_path)?;
         if let Some(parent) = db_path.parent() {
@@ -281,6 +281,20 @@ fn apply_write_settings(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Which backups an open keeps beyond the rule of ADR 0026.
+#[derive(Debug, Clone, Copy)]
+enum Protect<'a> {
+    /// Only the backup the open makes.
+    Nothing,
+    /// Also this one: the backup a restore just installed (#8).
+    Backup(&'a Path),
+    /// Every backup: nothing is pruned. Finishing an interrupted restore
+    /// does not know which backup its copy came from, and that backup may
+    /// be the oldest (#50). The next open prunes as usual; by then the day's
+    /// backup holds the restored data.
+    Everything,
+}
+
 /// Backs up an existing database at open and prunes old backups. Before a
 /// migration (`migrating`) a failed backup is an error; otherwise the
 /// daily backup and the prune only produce warnings.
@@ -289,7 +303,7 @@ fn back_up(
     backup_dir: &Path,
     now_ms: i64,
     migrating: bool,
-    protect: Option<&Path>,
+    protect: Protect<'_>,
 ) -> Result<Vec<OpenWarning>> {
     let mut warnings = Vec::new();
     let fresh_backup = if migrating {
@@ -306,7 +320,16 @@ fn back_up(
             None
         })
     };
-    let protected: Vec<&Path> = fresh_backup.as_deref().into_iter().chain(protect).collect();
+    let restored = match protect {
+        Protect::Nothing => None,
+        Protect::Backup(path) => Some(path),
+        Protect::Everything => return Ok(warnings),
+    };
+    let protected: Vec<&Path> = fresh_backup
+        .as_deref()
+        .into_iter()
+        .chain(restored)
+        .collect();
     if let Err(err) = prune_backups(backup_dir, now_ms, &protected) {
         tracing::warn!("pruning old backups failed: {err}");
         // A failed backup and a failed prune almost always share one
@@ -393,20 +416,18 @@ fn exists(path: &Path) -> Result<bool> {
     }
 }
 
-/// Refuses a missing database whose `-wal` or `-journal` is still there, or
-/// whose restore was interrupted.
+/// Refuses a missing database whose restore was interrupted, or whose
+/// `-wal` or `-journal` is still there.
 /// SQLite would create a new, empty database and replay the stale file into
 /// it. A leftover `-shm` is harmless: it is only an index and is rebuilt.
+///
+/// A waiting restore copy is reported first, even next to a stray `-wal`:
+/// finishing the restore moves that file aside with the rest, while the
+/// missing-file page would offer Start Fresh, which the waiting copy
+/// refuses anyway (#50).
 fn refuse_orphaned_sidecars(db_path: &Path) -> Result<()> {
     if exists(db_path)? {
         return Ok(());
-    }
-    let [wal, _shm, journal] = sidecar_paths(db_path);
-    for p in [wal, journal] {
-        if exists(&p)? {
-            tracing::error!(path = %p.display(), "database file missing but its journal is present");
-            return Err(Error::OrphanedSidecar(p));
-        }
     }
     // A restore that moved the old database aside and was then interrupted:
     // an empty database here would hide the user's data, and its daily
@@ -416,6 +437,13 @@ fn refuse_orphaned_sidecars(db_path: &Path) -> Result<()> {
         if exists(&partial)? {
             tracing::error!(path = %partial.display(), "database file missing during a restore");
             return Err(Error::InterruptedRestore(partial));
+        }
+    }
+    let [wal, _shm, journal] = sidecar_paths(db_path);
+    for p in [wal, journal] {
+        if exists(&p)? {
+            tracing::error!(path = %p.display(), "database file missing but its journal is present");
+            return Err(Error::OrphanedSidecar(p));
         }
     }
     Ok(())

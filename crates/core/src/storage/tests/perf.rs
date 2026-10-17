@@ -228,6 +228,75 @@ fn browsing_five_thousand_cards_is_fast() {
     }
 }
 
+/// Hostile text in the search entry (ADR 0050): thousands of words, FTS5
+/// syntax repeated, a huge word, only quotes. Each search answers, finds
+/// what its words find, and stays within a bound. Only the first
+/// `MAX_QUERY_BYTES` are searched; before that cut, 20,000 hyphens took
+/// 10 s of CPU and 5,000 distinct phrases 0.53 s.
+#[test]
+fn hostile_searches_at_five_thousand_cards_are_fast() {
+    use crate::storage::BrowseQuery;
+
+    let (store, _, _) = tagged_scratch_store();
+    let words =
+        |n: usize, f: &dyn Fn(usize) -> String| -> String { (0..n).map(|i| f(i) + " ").collect() };
+    let cases: Vec<(&str, String, usize)> = vec![
+        // Every card has "card": the same word 5,000 times (10 s of CPU
+        // before the cut and before repeated words were left out).
+        (
+            "one word 5,000 times",
+            words(5_000, &|_| "card".into()),
+            CARDS,
+        ),
+        (
+            "prefixes of one word",
+            words(5_000, &|i| "card"[..=(i % 4)].into()),
+            CARDS,
+        ),
+        // Distinct words that never start one another and each start a token.
+        (
+            "5,000 distinct numbers",
+            words(5_000, &|i| i.to_string()),
+            0,
+        ),
+        // A phrase per word, all sharing the token every card has.
+        (
+            "5,000 distinct phrases",
+            words(5_000, &|i| format!("card-{i}")),
+            0,
+        ),
+        (
+            "5,000 phrases on the back",
+            words(5_000, &|i| format!("back-{i}")),
+            0,
+        ),
+        (
+            "FTS5 syntax 2,000 times",
+            words(2_000, &|_| {
+                "NEAR(card back) OR \"card\"* ^card front:card ( ) AND NOT".into()
+            }),
+            0,
+        ),
+        ("a 1 MiB word", "c".repeat(1 << 20), 0),
+        ("100,000 quotes", "\"".repeat(100_000), 0),
+        ("20,000 hyphens", "card-".repeat(20_000), 0),
+        (
+            "NUL and odd Unicode",
+            "card\0\u{301}\u{200b}\u{202e}\u{fffd}\u{10ffff}".repeat(1_000),
+            0,
+        ),
+    ];
+    for (what, text, expected) in cases {
+        let q = BrowseQuery {
+            text,
+            ..BrowseQuery::default()
+        };
+        let (t, rows) = fastest(what, 1, || store.browse(&q, NOW).unwrap());
+        assert_eq!(rows.len(), expected, "{what}");
+        assert_cpu_within(t, ms(HOSTILE_SEARCH_MS), what);
+    }
+}
+
 #[test]
 fn browsing_twenty_thousand_cards_is_fast() {
     use crate::storage::BrowseQuery;
@@ -275,9 +344,21 @@ fn bulk_writes_on_five_thousand_cards_are_fast() {
         store.unmove_cards(&m).unwrap()
     });
     assert_eq!(back, CARDS);
-    let (tagged, _) = fastest("add_tag_to_cards (5,000)", 1, || {
+    let (tagged, (bulk, _)) = fastest("add_tag_to_cards (5,000)", 1, || {
         store.add_tag_to_cards_at(&ids, "bulk", T0).unwrap()
     });
+    let (untagged, had) = fastest("remove_tag_from_cards (5,000)", 1, || {
+        store.remove_tag_from_cards(&ids, &bulk.id).unwrap()
+    });
+    assert_eq!(had.len(), CARDS);
+    let (retagged, n) = fastest("restore_tag_on_cards (5,000)", 1, || {
+        store.restore_tag_on_cards(&had, &bulk.id).unwrap()
+    });
+    assert_eq!(n, CARDS);
+    let (released, n) = fastest("release_tag_from_cards (5,000)", 1, || {
+        store.release_tag_from_cards(&had, &bulk.id).unwrap()
+    });
+    assert_eq!(n, CARDS);
     let (reset, events) = fastest("reset_cards (5,000)", 1, || {
         store.reset_cards(&ids, NOW).unwrap()
     });
@@ -294,10 +375,203 @@ fn bulk_writes_on_five_thousand_cards_are_fast() {
     assert_eq!(back, CARDS);
     assert_eq!(store.list_cards(&deck).unwrap().len(), CARDS);
     for t in [
-        suspend, moved, unmove, tagged, reset, undo, deleted, undeleted,
+        suspend, moved, unmove, tagged, untagged, retagged, released, reset, undo, deleted,
+        undeleted,
     ] {
         assert_cpu_within(t, ms(BULK_MS), "a bulk write");
     }
+}
+
+/// Entries in the log of `a_card_with_a_long_log_is_fast`'s card.
+const LONG_LOG: usize = 20_000;
+
+/// The store of `a_card_with_a_long_log_is_fast`: its deck, its one
+/// card, how many entries the log has, and the time of the last one.
+fn long_log_store() -> (Store, String, String, usize, i64) {
+    use crate::domain::{EventKind, ReviewEvent};
+    use crate::scheduling::Scheduler;
+
+    let mut store = Store::in_memory();
+    let deck = store.create_deck_at("Long", T0).unwrap().id;
+    let card = store.add_card_at(&deck, "front", "back", T0).unwrap().id;
+    let start = NOW - 30 * DAY_MS;
+    let mut ids = store.ids.clone();
+    let mut events = Vec::new();
+    let mut push = |at: i64, kind: EventKind| {
+        let id = ids.next(at).unwrap();
+        let duration_ms = if matches!(kind, EventKind::Review(_)) {
+            4_000
+        } else {
+            0
+        };
+        events.push(ReviewEvent {
+            id: id.clone(),
+            card_id: card.clone(),
+            reviewed_at: at,
+            kind,
+            duration_ms,
+        });
+        id
+    };
+    let mut at = start;
+    for k in 0..LONG_LOG {
+        at = start + i64::try_from(k).unwrap() * 60_000;
+        let grade = if k % 7 == 0 { Grade::Fail } else { Grade::Pass };
+        let id = push(at, EventKind::Review(grade));
+        if k % 10 == 9 {
+            push(at + 1, EventKind::Undo { undoes: id });
+        }
+    }
+    let reset = push(at + 2, EventKind::Reset);
+    push(at + 3, EventKind::Undo { undoes: reset });
+    store.ids = ids;
+    let tx = store.conn.transaction().unwrap();
+    for e in &events {
+        crate::storage::schedule::insert_event(&tx, e).unwrap();
+    }
+    tx.commit().unwrap();
+    store.rebuild_schedule_cache(&Scheduler::default()).unwrap();
+    (store, deck, card, events.len(), at + 3)
+}
+
+/// One card's log as an import may bring it (ADR 0050): 20,000 reviews a
+/// minute apart, every tenth undone, then a reset that is undone too, so
+/// no surviving reset ends the reviews the daily limits count. Before
+/// `COUNTED_REVIEWS` found each card's last reset once, deciding that took
+/// time quadratic in the log: 7 s of CPU for 8,000 reviews.
+#[test]
+fn a_card_with_a_long_log_is_fast() {
+    use crate::stats::DayGrid;
+    use crate::storage::{BrowseQuery, Scope};
+
+    let (mut store, deck, card, entries, at) = long_log_store();
+    let now = at + DAY_MS;
+    let day_start = now - DAY_MS / 2;
+    let (list, decks) = fastest("list_decks (long log)", 3, || {
+        store.list_decks(now, day_start).unwrap()
+    });
+    assert_eq!(decks[0].card_count, 1);
+    let (study, _) = fastest("study_input (long log)", 3, || {
+        store.study_input(&deck, now, day_start).unwrap()
+    });
+    let (info, card_info) = fastest("card_info (long log)", 3, || {
+        store.card_info(&card, now).unwrap()
+    });
+    assert_eq!(
+        card_info.reviews,
+        u32::try_from(LONG_LOG - LONG_LOG / 10).unwrap()
+    );
+    let past = DayGrid::new((0..=40).map(|d| now - (40 - d) * DAY_MS).collect()).unwrap();
+    let ahead = DayGrid::new((0..=14).map(|d| now + d * DAY_MS).collect()).unwrap();
+    let (stats, _) = fastest("stats (long log)", 3, || {
+        store.stats(Scope::All, now, &past, &ahead).unwrap()
+    });
+    let (browse, _) = fastest("browse (long log)", 3, || {
+        store.browse(&BrowseQuery::default(), now).unwrap()
+    });
+    let latest = crate::scheduling::surviving(&store.review_events(&card).unwrap())
+        .unwrap()
+        .last()
+        .map(|e| e.id.clone())
+        .unwrap();
+    let (undo, _) = fastest("undo (long log)", 1, || {
+        store.undo(&card, &latest, now).unwrap()
+    });
+    let (reset, _) = fastest("reset_card (long log)", 1, || {
+        store.reset_card(&card, now).unwrap()
+    });
+    let bytes = store.export_bytes_at(now).unwrap().0;
+    // An import backs the database up first, so it needs a data directory.
+    let tmp = tempfile::tempdir().unwrap();
+    let mut target = Store::open(tmp.path()).unwrap();
+    let (import, ()) = fastest("plan and apply the import (long log)", 1, || {
+        let plan = target
+            .plan_import_bytes(&bytes, &crate::interchange::Limits::DEFAULT)
+            .unwrap();
+        target.apply_import_at(&plan, now).unwrap();
+    });
+    assert_eq!(target.review_events(&card).unwrap().len(), entries + 2);
+    let (target_list, _) = fastest("list_decks after the import (long log)", 3, || {
+        target.list_decks(now, day_start).unwrap()
+    });
+
+    for (t, what) in [
+        (list, "list_decks"),
+        (study, "study_input"),
+        (target_list, "list_decks after the import"),
+    ] {
+        assert_cpu_within(t, ms(STUDY_MS), what);
+    }
+    for (t, what) in [
+        (info, "card_info"),
+        (stats, "stats"),
+        (browse, "browse"),
+        (undo, "undo"),
+        (reset, "reset_card"),
+    ] {
+        assert_cpu_within(t, ms(LONG_LOG_MS), what);
+    }
+    assert_cpu_within(import, ms(LONG_LOG_IMPORT_MS), "import");
+}
+
+/// Tags on one card, as many as a pasted list or an import can bring
+/// (ADR 0050): 5,000 names typed in the tags field, then 5,000 others in
+/// their place, so the database holds 10,000 tags. Linking them was
+/// quadratic in the card's tags (0.6 s for 5,000, lists instead of sets).
+#[test]
+fn a_card_with_thousands_of_tags_is_fast() {
+    use crate::domain::parse_tag_field;
+    use crate::storage::BrowseQuery;
+
+    const TAGS: usize = 5_000;
+    let (mut store, deck, ids) = tagged_scratch_store();
+    let card = ids[0].clone();
+    let field = |prefix: &str| -> String {
+        (0..TAGS)
+            .map(|i| prefix.to_owned() + " " + &i.to_string() + ", ")
+            .collect()
+    };
+    let (parse, names) = fastest("parse_tag_field (5,000 names)", 3, || {
+        parse_tag_field(&field("name")).unwrap()
+    });
+    assert_eq!(names.len(), TAGS);
+    let (set, tags) = fastest("set 5,000 tags", 1, || {
+        store
+            .edit_card_with_tags_at(&card, "front", "back", Some(&names), T0 + 1)
+            .unwrap()
+            .tags
+    });
+    assert_eq!(tags.len(), TAGS);
+    let others = parse_tag_field(&field("other")).unwrap();
+    let (replace, tags) = fastest("replace 5,000 tags", 1, || {
+        store
+            .edit_card_with_tags_at(&card, "front", "back", Some(&others), T0 + 2)
+            .unwrap()
+            .tags
+    });
+    assert_eq!(tags.len(), TAGS);
+    assert_eq!(store.tags().unwrap().len(), 40 + 2 * TAGS);
+    let (list, listed) = fastest("list_tagged_cards (a card with 5,000 tags)", 3, || {
+        store.list_tagged_cards(&deck).unwrap()
+    });
+    assert_eq!(listed[0].tags.len(), TAGS);
+    let filter = BrowseQuery {
+        tag_id: Some(tags[TAGS - 1].id.clone()),
+        ..BrowseQuery::default()
+    };
+    let (browse, rows) = fastest("browse by one of 10,000 tags", 3, || {
+        store.browse(&filter, NOW).unwrap()
+    });
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].tags.len(), TAGS);
+    let (all_tags, _) = fastest("tags (10,040)", 3, || store.tags().unwrap());
+
+    assert_cpu_within(parse, ms(TAGS_MS), "parse_tag_field");
+    assert_cpu_within(set, ms(TAGS_MS), "setting 5,000 tags");
+    assert_cpu_within(replace, ms(TAGS_MS), "replacing 5,000 tags");
+    assert_cpu_within(list, ms(LIST_TAGGED_MS), "list_tagged_cards");
+    assert_cpu_within(browse, ms(BROWSE_MS), "browse by tag");
+    assert_cpu_within(all_tags, ms(BROWSE_MS), "tags");
 }
 
 #[test]
@@ -328,8 +602,20 @@ const PLAN_IMPORT_MS: u64 = 1_000;
 /// `browse` of 5,000 cards with tags, each query (measured 13 to 28 ms; 20,000
 /// cards: 48 ms, with a bound four times as long).
 const BROWSE_MS: u64 = 500;
+/// Each hostile search of `hostile_searches_at_five_thousand_cards_are_fast`
+/// (measured 63 ms at most, for 20,000 hyphens cut to 1 KiB).
+const HOSTILE_SEARCH_MS: u64 = 1_000;
 /// Each bulk write on 5,000 cards. The slowest is `undo_entries` (measured
 /// 0.9 s: it replays every card's log); the others take 25 to 420 ms.
 const BULK_MS: u64 = 9_000;
+/// Each read or write of the card with a 20,000-entry log other than the
+/// deck reads, which keep `STUDY_MS` (measured 36 ms; the others at most
+/// 153 ms, for an undo, which replays the log).
+const LONG_LOG_MS: u64 = 1_500;
+/// Planning and applying the import of that card (measured 0.6 s).
+const LONG_LOG_IMPORT_MS: u64 = 6_000;
+/// Parsing, setting or replacing 5,000 tags on one card (measured 15 ms,
+/// 185 ms and 209 ms).
+const TAGS_MS: u64 = 2_000;
 /// The migration's index backfill of 5,000 cards (measured 87 ms).
 const REBUILD_INDEX_MS: u64 = 1_000;

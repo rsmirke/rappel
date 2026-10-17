@@ -90,3 +90,28 @@ fn imported_cards_are_searchable() {
         .unwrap();
     assert_eq!(found.len(), 1);
 }
+
+/// A flag that is not `true` or `false` is a JSON error, never read as a
+/// suspension (ADR 0050).
+#[test]
+fn a_flag_of_another_type_is_refused() {
+    let (source, _) = env_with_cards();
+    let base = json_of(&source.export());
+    for flag in [
+        json!(1),
+        json!(0),
+        json!("true"),
+        json!(null),
+        json!([true]),
+    ] {
+        let mut value = base.clone();
+        value["cards"][0]["suspended"] = flag.clone();
+        assert!(
+            matches!(
+                refused(Env::new().plan(&archive_of(&value))),
+                ImportProblem::Json(_)
+            ),
+            "{flag}"
+        );
+    }
+}

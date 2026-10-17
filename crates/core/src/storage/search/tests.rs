@@ -402,3 +402,166 @@ proptest! {
         assert_index_is_a_rebuild(&mut store);
     }
 }
+
+/// The tokens of folded text as FTS5's `unicode61` reads ASCII: runs of
+/// letters and digits. The generated text below only folds to ASCII.
+fn ascii_tokens(folded: &str) -> Vec<&str> {
+    folded
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .collect()
+}
+
+/// Whether `word` (one word of a query) is found in `side`, by text alone:
+/// its tokens appear in a row in the side's search text, the last one as
+/// the start of a token.
+fn word_in_side(word: &[&str], side: &[&str]) -> bool {
+    let Some((last, exact)) = word.split_last() else {
+        return true;
+    };
+    side.windows(word.len())
+        .any(|w| w[..exact.len()] == *exact && w[exact.len()].starts_with(last))
+}
+
+/// What a search for `text` should find among `cards` (front, back), by
+/// text alone: every word of the query in the front or the back.
+fn found_by_text(text: &str, cards: &[(String, String)]) -> Vec<usize> {
+    if text.trim().is_empty() {
+        return (0..cards.len()).collect();
+    }
+    let folded: Vec<String> = text
+        .split(|c: char| c.is_whitespace() || c == '\0')
+        .map(search_key)
+        .collect();
+    let words: Vec<Vec<&str>> = folded
+        .iter()
+        .map(|w| ascii_tokens(w))
+        .filter(|t| !t.is_empty())
+        .collect();
+    if words.is_empty() {
+        return Vec::new();
+    }
+    cards
+        .iter()
+        .enumerate()
+        .filter(|(_, (front, back))| {
+            let (front, back) = (search_text(front), search_text(back));
+            let (front, back) = (ascii_tokens(&front), ascii_tokens(&back));
+            words
+                .iter()
+                .all(|w| word_in_side(w, &front) || word_in_side(w, &back))
+        })
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// Pieces of FTS5 syntax and of words, for hostile queries.
+fn query_text() -> impl Strategy<Value = String> {
+    let piece = prop::sample::select(vec![
+        "a",
+        "b",
+        "ab",
+        "ba",
+        "abc",
+        "A",
+        "É",
+        "é",
+        "e",
+        "1",
+        "10",
+        "\"",
+        "\"\"",
+        "*",
+        "^",
+        "(",
+        ")",
+        ":",
+        "-",
+        "+",
+        ".",
+        ",",
+        "OR",
+        "AND",
+        "NOT",
+        "NEAR",
+        "NEAR(",
+        "front:",
+        "back:",
+        "{front back}:",
+        "\0",
+        " ",
+        " ",
+        " ",
+        "\t",
+    ]);
+    prop::collection::vec(piece, 0..12).prop_map(|p| p.concat())
+}
+
+/// A side made of words that the queries above can find, with separators
+/// that are no Markdown syntax at the start of a line.
+fn side_text() -> impl Strategy<Value = String> {
+    let word = prop::sample::select(vec![
+        "a", "b", "ab", "abc", "bca", "e", "é", "É", "1", "10", "or", "and", "not", "near",
+        "front", "back",
+    ]);
+    let sep = prop::sample::select(vec![" ", " ", "-", "\n", ", "]);
+    prop::collection::vec((word, sep), 1..8)
+        .prop_map(|ws| ws.into_iter().map(|(w, s)| w.to_owned() + s).collect())
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(128))]
+
+    /// Whatever the query holds (FTS5 operators, quotes, column filters,
+    /// stars, carets, NUL, repeated words), a search finds exactly the
+    /// cards whose text has every word, never more or fewer because of
+    /// its syntax (ADR 0050).
+    #[test]
+    fn a_search_finds_by_text_never_by_syntax(
+        cards in prop::collection::vec((side_text(), side_text()), 1..8),
+        text in query_text(),
+    ) {
+        let (mut store, deck) = store_with_deck();
+        let mut ids = Vec::new();
+        for (front, back) in &cards {
+            // Distinct fronts are not needed: rows are matched by id.
+            ids.push(store.add_card_at(&deck, front, back, T0).unwrap().id);
+        }
+        let mut found: Vec<usize> = store
+            .browse(&query(&text), NOW)
+            .unwrap()
+            .into_iter()
+            .map(|r| ids.iter().position(|id| *id == r.card.id).unwrap())
+            .collect();
+        found.sort_unstable();
+        prop_assert_eq!(found, found_by_text(&text, &cards), "query {:?}", text);
+    }
+}
+
+#[test]
+fn a_word_that_starts_another_is_left_out() {
+    assert_eq!(fts_query("card ca card"), Some("\"card\"*".to_owned()));
+    // Not the start of the other: both stay, in sorted order.
+    assert_eq!(fts_query("rd card"), Some("\"card\"* \"rd\"*".to_owned()));
+    // The start of a phrase's first token, or of the phrase itself.
+    assert_eq!(fts_query("card-1 card"), Some("\"card-1\"*".to_owned()));
+    assert_eq!(fts_query("CARD Card card"), Some("\"card\"*".to_owned()));
+    // A quote is doubled after the comparison.
+    assert_eq!(fts_query("a\" a\"b"), Some("\"a\"\"b\"*".to_owned()));
+}
+
+#[test]
+fn only_the_start_of_a_long_query_is_searched() {
+    let (mut store, deck) = store_with_deck();
+    store.add_card_at(&deck, "alpha beta", "gamma", T0).unwrap();
+    // The words after the limit are not searched: "zzz" would find nothing.
+    let long = format!("{}alpha zzz", " ".repeat(MAX_QUERY_BYTES - 6));
+    assert_eq!(fronts(&store, &query(&long)), ["alpha beta"]);
+    // A word cut by the limit is searched as its start.
+    let cut = format!("{}gammazzz", " ".repeat(MAX_QUERY_BYTES - 5));
+    assert_eq!(fronts(&store, &query(&cut)), ["alpha beta"]);
+    // The cut falls between two characters: é is two bytes.
+    let accents = format!("{}éé", " ".repeat(MAX_QUERY_BYTES - 3));
+    assert_eq!(query_start(&accents).len(), MAX_QUERY_BYTES - 1);
+    assert_eq!(fts_query(&accents), Some("\"e\"*".to_owned()));
+}
