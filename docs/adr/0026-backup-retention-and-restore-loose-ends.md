@@ -4,6 +4,7 @@
 - Date: 2026-10-16
 - Amends: ADR 0005 (which backups are kept), ADR 0007 (the restored backup, the moved-aside set), ADR 0016 (the follow-up it names), ADR 0017 (which backups an import can push out), ADR 0018 (backups made by imports no longer push out daily ones)
 - Closes: #8, #9, #22, #27
+- Amended by: ADR 0050 (rule 4 keeps the newest backup of each of the 14 latest future days; finishing an interrupted restore prunes nothing; #50)
 
 ## Context
 
