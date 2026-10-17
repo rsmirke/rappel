@@ -1,31 +1,44 @@
 //! Tests of the Keyboard Shortcuts dialog (`data/shortcuts-dialog.blp`).
 //! It has no code: `AdwApplication` loads it and sets up `app.shortcuts`
 //! and Ctrl+? itself. These tests keep it honest: every accelerator in it
-//! parses, and every key the code binds is listed.
+//! parses, and every key the code binds is listed: the application's
+//! accelerators, the review page's keys, the card editor's save and format
+//! keys, the tag entry's and the tag pills' keys, the All Cards list's keys
+//! and the charts' keys, each from its named table.
 
 use adw::prelude::*;
 use gtk::gio;
 
 use crate::dialogs::card_editor::{FORMAT_KEYS, SAVE_KEYS};
+use crate::pages::browser_text;
 use crate::ui::dialog;
+use crate::widgets::{bar_chart, tag_entry, tag_pills};
 
 const FILE: &str = "shortcuts-dialog.ui";
 
 /// A key and its modifiers, the way GTK compares accelerators.
 type Accel = (gtk::gdk::Key, gtk::gdk::ModifierType);
 
+/// The main-keyboard key a keypad key stands for (`KP_1` is `1`,
+/// `KP_Left` is `Left`), and `ISO_Enter` for Return; other keys as they are.
+fn main_key(key: gtk::gdk::Key) -> gtk::gdk::Key {
+    use gtk::gdk::Key;
+    match key {
+        Key::KP_Enter | Key::ISO_Enter => Key::Return,
+        Key::KP_Space => Key::space,
+        other => other
+            .name()
+            .and_then(|name| name.strip_prefix("KP_").and_then(Key::from_name))
+            .unwrap_or(other),
+    }
+}
+
 /// `trigger` as an accelerator, ignoring Shift on a letter (the review
 /// page binds `e` and `<Shift>e` alike) and the keypad (`KP_1` is `1`).
 fn normalised(trigger: &str) -> Accel {
     let (key, mods) = gtk::accelerator_parse(trigger)
         .unwrap_or_else(|| panic!("{trigger:?} is not an accelerator"));
-    let key = match key {
-        gtk::gdk::Key::KP_Enter => gtk::gdk::Key::Return,
-        gtk::gdk::Key::KP_Delete => gtk::gdk::Key::Delete,
-        gtk::gdk::Key::KP_1 => gtk::gdk::Key::_1,
-        gtk::gdk::Key::KP_2 => gtk::gdk::Key::_2,
-        other => other.to_lower(),
-    };
+    let key = main_key(key).to_lower();
     let mods = if key.to_unicode().is_some_and(char::is_alphabetic)
         && !mods.contains(gtk::gdk::ModifierType::CONTROL_MASK)
     {
@@ -34,6 +47,13 @@ fn normalised(trigger: &str) -> Accel {
         mods
     };
     (key, mods)
+}
+
+/// `key` without modifiers, as a trigger string.
+fn plain(key: gtk::gdk::Key) -> String {
+    key.name()
+        .unwrap_or_else(|| panic!("{key:?} has no name"))
+        .to_string()
 }
 
 /// Every item of the dialog as (title, accelerators).
@@ -72,12 +92,24 @@ fn every_accelerator_parses_and_every_bound_key_is_listed() {
         }
         let bound = crate::ACCELS
             .iter()
-            .map(|(_, accel)| *accel)
-            .chain(["F10", "<Control>question"])
-            .chain(crate::pages::review_key_triggers())
-            .chain(SAVE_KEYS.iter().map(|(trigger, _)| *trigger))
-            .chain(FORMAT_KEYS.iter().map(|(trigger, _)| *trigger));
+            .map(|(_, accel)| (*accel).to_owned())
+            .chain(["F10", "<Control>question"].map(str::to_owned))
+            .chain(crate::pages::review_key_triggers().map(str::to_owned))
+            .chain(SAVE_KEYS.iter().map(|(trigger, _)| (*trigger).to_owned()))
+            .chain(FORMAT_KEYS.iter().map(|(trigger, _)| (*trigger).to_owned()))
+            .chain(tag_entry::KEYS.iter().map(|(key, _)| plain(*key)))
+            .chain(tag_pills::REMOVE_KEYS.iter().map(|(key, _)| plain(*key)))
+            .chain(bar_chart::KEYS.iter().map(|(key, _)| plain(*key)))
+            .chain(browser_text::LIST_KEYS.iter().map(|&(key, ctrl, _)| {
+                if ctrl {
+                    format!("<Control>{}", plain(key))
+                } else {
+                    plain(key)
+                }
+            }))
+            .chain([browser_text::TO_LIST_KEY, browser_text::ESCAPE_KEY].map(plain));
         for trigger in bound {
+            let trigger = trigger.as_str();
             assert!(
                 listed.contains(&normalised(trigger)),
                 "{trigger} is bound but not in the Keyboard Shortcuts dialog"

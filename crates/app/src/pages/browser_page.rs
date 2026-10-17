@@ -28,7 +28,7 @@ use crate::window::RappelWindow;
 pub mod selection;
 pub mod text;
 
-use text::{Empty, EscapeAction, SpaceAction, SuspendChoice};
+use text::{Empty, EscapeAction, ListKey, SpaceAction, SuspendChoice};
 
 mod imp {
     use std::cell::{Cell, OnceCell, RefCell};
@@ -349,7 +349,7 @@ impl BrowserPage {
             #[upgrade_or]
             glib::Propagation::Proceed,
             move |_, key, _, _| {
-                if key == gtk::gdk::Key::Down {
+                if key == text::TO_LIST_KEY {
                     page.imp().card_list.grab_focus();
                     glib::Propagation::Stop
                 } else {
@@ -453,12 +453,12 @@ impl BrowserPage {
             self,
             #[upgrade_or]
             glib::Propagation::Proceed,
-            move |_, key, _, modifiers| {
-                let ctrl = modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK);
-                if ctrl && matches!(key, gtk::gdk::Key::a | gtk::gdk::Key::A) {
+            move |_, key, _, modifiers| match text::list_key(key, modifiers) {
+                Some(ListKey::SelectAll) => {
                     page.select_all();
                     glib::Propagation::Stop
-                } else if key == gtk::gdk::Key::space && !ctrl {
+                }
+                Some(ListKey::Space) => {
                     let selecting = page.imp().selection.borrow().active();
                     match text::space_action(selecting, page.row_has_focus()) {
                         SpaceAction::Toggle => {
@@ -469,9 +469,8 @@ impl BrowserPage {
                         }
                         SpaceAction::Pass => glib::Propagation::Proceed,
                     }
-                } else {
-                    glib::Propagation::Proceed
                 }
+                None => glib::Propagation::Proceed,
             }
         ));
         self.imp().card_list.add_controller(keys);
@@ -487,7 +486,7 @@ impl BrowserPage {
             #[upgrade_or]
             glib::Propagation::Proceed,
             move |_, key, _, _| {
-                if key == gtk::gdk::Key::Escape {
+                if key == text::ESCAPE_KEY {
                     page.escape()
                 } else {
                     glib::Propagation::Proceed

@@ -165,6 +165,40 @@ pub fn filters_shown(empty: Empty) -> bool {
     empty != Empty::NoCards
 }
 
+/// A key of the card list's own (besides Escape, [`ESCAPE_KEY`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListKey {
+    /// Ctrl+A: choose every card shown.
+    SelectAll,
+    /// Space, as [`space_action`] decides.
+    Space,
+}
+
+/// The card list's keys: a key, whether it is taken only with Ctrl (`true`)
+/// or only without it (`false`), and what it is. Other modifiers do not
+/// matter. The Keyboard Shortcuts dialog lists them (a test checks it).
+pub const LIST_KEYS: [(gtk::gdk::Key, bool, ListKey); 3] = [
+    (gtk::gdk::Key::a, true, ListKey::SelectAll),
+    (gtk::gdk::Key::A, true, ListKey::SelectAll),
+    (gtk::gdk::Key::space, false, ListKey::Space),
+];
+
+/// The key that moves from the search field to the list, whatever the
+/// modifiers.
+pub const TO_LIST_KEY: gtk::gdk::Key = gtk::gdk::Key::Down;
+
+/// The key [`escape_action`] is about, whatever the modifiers.
+pub const ESCAPE_KEY: gtk::gdk::Key = gtk::gdk::Key::Escape;
+
+/// Which of [`LIST_KEYS`] `key` with `modifiers` is, if any.
+pub fn list_key(key: gtk::gdk::Key, modifiers: gtk::gdk::ModifierType) -> Option<ListKey> {
+    let ctrl = modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK);
+    LIST_KEYS
+        .iter()
+        .find(|&&(bound, needs_ctrl, _)| bound == key && needs_ctrl == ctrl)
+        .map(|&(_, _, which)| which)
+}
+
 /// What Space does on the card list (capture phase, before the list's own
 /// keys).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -372,6 +406,30 @@ mod tests {
 
     const NOW: i64 = 1_000_000_000_000;
     const DAY: i64 = 86_400_000;
+
+    #[test]
+    fn the_list_keys() {
+        use gtk::gdk::{Key, ModifierType};
+        let ctrl = ModifierType::CONTROL_MASK;
+        let none = ModifierType::empty();
+        assert_eq!(list_key(Key::a, ctrl), Some(ListKey::SelectAll));
+        assert_eq!(
+            list_key(Key::A, ctrl | ModifierType::SHIFT_MASK),
+            Some(ListKey::SelectAll)
+        );
+        assert_eq!(
+            list_key(Key::a, none),
+            None,
+            "a plain a types into the search"
+        );
+        assert_eq!(list_key(Key::space, none), Some(ListKey::Space));
+        assert_eq!(
+            list_key(Key::space, ModifierType::SHIFT_MASK),
+            Some(ListKey::Space)
+        );
+        assert_eq!(list_key(Key::space, ctrl), None);
+        assert_eq!(list_key(Key::Return, none), None);
+    }
 
     #[test]
     fn a_status_reads_as_a_phrase() {

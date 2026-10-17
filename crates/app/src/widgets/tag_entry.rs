@@ -45,6 +45,22 @@ use crate::ui::callback::Callback;
 /// Called when the tags or the typed text change.
 type OnChanged = dyn Fn();
 
+/// The keys the text of a tag entry looks at, without Ctrl, Alt or Shift;
+/// `keys::key_action` decides what each does. The Keyboard Shortcuts
+/// dialog lists them (a test checks it).
+pub(crate) const KEYS: [(gdk::Key, EntryKey); 10] = [
+    (gdk::Key::Down, EntryKey::Down),
+    (gdk::Key::KP_Down, EntryKey::Down),
+    (gdk::Key::Up, EntryKey::Up),
+    (gdk::Key::KP_Up, EntryKey::Up),
+    (gdk::Key::Return, EntryKey::Enter),
+    (gdk::Key::KP_Enter, EntryKey::Enter),
+    (gdk::Key::ISO_Enter, EntryKey::Enter),
+    (gdk::Key::Tab, EntryKey::Tab),
+    (gdk::Key::Escape, EntryKey::Escape),
+    (gdk::Key::BackSpace, EntryKey::Backspace),
+];
+
 mod imp {
     use std::cell::{Cell, OnceCell, RefCell};
 
@@ -656,14 +672,8 @@ impl TagEntry {
         if !plain {
             return glib::Propagation::Proceed;
         }
-        let key = match key {
-            gdk::Key::Down | gdk::Key::KP_Down => EntryKey::Down,
-            gdk::Key::Up | gdk::Key::KP_Up => EntryKey::Up,
-            gdk::Key::Return | gdk::Key::KP_Enter | gdk::Key::ISO_Enter => EntryKey::Enter,
-            gdk::Key::Tab => EntryKey::Tab,
-            gdk::Key::Escape => EntryKey::Escape,
-            gdk::Key::BackSpace => EntryKey::Backspace,
-            _ => return glib::Propagation::Proceed,
+        let Some(&(_, key)) = KEYS.iter().find(|(bound, _)| *bound == key) else {
+            return glib::Propagation::Proceed;
         };
         let text = self.text();
         let typed = text.text();
