@@ -1236,7 +1236,14 @@ mod tests {
             let (_tmp, state, page, ids) = page_of(3);
             let _window = in_window(&page);
             let first = current(&page).unwrap();
-            // Just shown: the key does nothing.
+            assert!(
+                page.imp().shown_at.get().is_some(),
+                "showing a card starts the settle time"
+            );
+            // Just shown: the key does nothing. Set again here, not only
+            // when the window was made, so a slow machine cannot let 300 ms
+            // pass in between (ADR 0049).
+            page.imp().shown_at.set(Some(Instant::now()));
             page.key(Key::Suspend);
             assert_eq!(current(&page).as_deref(), Some(first.as_str()));
             assert!(!state.card(&first).unwrap().suspended);
@@ -1826,23 +1833,21 @@ mod tests {
                     finished,
                     Duration::from_secs(20)
                 ));
-                let cpu = crate::testing::thread_cpu_time();
-                page.animate_reveal();
-                assert!(crate::testing::settle_until(
-                    finished,
-                    Duration::from_secs(20)
-                ));
-                let used = cpu
-                    .zip(crate::testing::thread_cpu_time())
-                    .map(|(a, b)| b.saturating_sub(a));
+                let (used, settled) = crate::testing::cpu_time_of(|| {
+                    page.animate_reveal();
+                    crate::testing::settle_until(finished, Duration::from_secs(20))
+                });
+                assert!(settled);
                 window.destroy();
-                (what, used)
+                // Checked on this thread, which did the work (ADR 0049).
+                let verdict = crate::testing::cpu_within(used, Duration::from_secs(2));
+                (what, used, verdict)
             })
         });
-        for (what, used) in times {
-            if let Some(used) = used {
-                crate::testing::print_timing(&format!("reveal animation, {what}"), used);
-                assert!(used < Duration::from_secs(2), "{what}: {used:?}");
+        for (what, used, verdict) in times {
+            crate::testing::print_timing(&format!("reveal animation, {what}"), used);
+            if let Err(message) = verdict {
+                panic!("reveal animation, {what}: {message}");
             }
         }
     }

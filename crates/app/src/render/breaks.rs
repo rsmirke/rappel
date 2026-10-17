@@ -251,24 +251,31 @@ mod tests {
 
     #[test]
     fn a_cluster_built_from_many_pieces_costs_little() {
-        let (out, took) = crate::testing::within(
+        // About 75 ms of CPU time in a debug build; 3 s before `last` was
+        // capped.
+        let bound = std::time::Duration::from_millis(500);
+        let (out, took, verdict) = crate::testing::within(
             std::time::Duration::from_secs(5),
             "a cluster of 8,000 pieces",
-            || {
-                let start = std::time::Instant::now();
-                let mut out = String::new();
-                let mut runs = Runs::default();
-                runs.push(&mut out, "e");
-                for _ in 0..8_000 {
-                    runs.push(&mut out, "\u{301}");
-                }
-                (out, start.elapsed())
+            move || {
+                let (took, out) = crate::testing::cpu_time_of(|| {
+                    let mut out = String::new();
+                    let mut runs = Runs::default();
+                    runs.push(&mut out, "e");
+                    for _ in 0..8_000 {
+                        runs.push(&mut out, "\u{301}");
+                    }
+                    out
+                });
+                // Checked on this thread, which did the work (ADR 0049).
+                (out, took, crate::testing::cpu_within(took, bound))
             },
         );
         crate::testing::print_timing("a cluster of 8,000 pieces", took);
         assert_eq!(out.chars().count(), 8_001);
-        // About 75 ms in a debug build; 3 s before `last` was capped.
-        assert!(took < std::time::Duration::from_millis(500), "{took:?}");
+        if let Err(message) = verdict {
+            panic!("a cluster of 8,000 pieces: {message}");
+        }
     }
 
     proptest! {

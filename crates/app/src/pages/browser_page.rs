@@ -1249,7 +1249,7 @@ fn name_by_own_label(button: &gtk::Button) {
 
 #[cfg(test)]
 mod tests {
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     use rappel_core::domain::Grade;
     use rappel_core::storage::{CardStatus, StateFilter};
@@ -1721,23 +1721,22 @@ mod tests {
                     )
                     .unwrap();
             }
-            let started = Instant::now();
-            let page = BrowserPage::new(state.clone(), None).unwrap();
-            let load = started.elapsed();
+            // CPU time on this thread, so a loaded machine does not fail
+            // the bounds (ADR 0049); the row count below is the work.
+            let (load, page) =
+                crate::testing::cpu_time_of(|| BrowserPage::new(state.clone(), None).unwrap());
             let imp = page.imp();
             assert_eq!(page.ids().len(), 5_000);
 
-            let started = Instant::now();
-            imp.search_entry.set_text("card 49");
-            page.search();
-            let search = started.elapsed();
+            let (search, ()) = crate::testing::cpu_time_of(|| {
+                imp.search_entry.set_text("card 49");
+                page.search();
+            });
             assert_eq!(page.ids().len(), 111, "Card 49, 490-499, 4900-4999");
             imp.search_entry.set_text("");
             page.search();
 
-            let started = Instant::now();
-            page.select_all();
-            let choose = started.elapsed();
+            let (choose, ()) = crate::testing::cpu_time_of(|| page.select_all());
             assert_eq!(page.chosen_ids().len(), 5_000);
             page.choose_mode(false);
 
@@ -1763,9 +1762,9 @@ mod tests {
             if std::env::var_os("RAPPEL_TIMINGS").is_some() {
                 eprintln!("browser page: rows built: {rows}");
             }
-            assert!(load < Duration::from_secs(5), "{load:?}");
-            assert!(search < Duration::from_secs(2), "{search:?}");
-            assert!(choose < Duration::from_secs(2), "{choose:?}");
+            crate::testing::assert_cpu_within(load, Duration::from_secs(5), "load");
+            crate::testing::assert_cpu_within(search, Duration::from_secs(2), "search");
+            crate::testing::assert_cpu_within(choose, Duration::from_secs(2), "choose all");
             // The list view builds the rows in view and a few more to size itself
             // (about 200 here), never one per card.
             assert!(rows > 0 && rows < 500, "{rows} rows are built");

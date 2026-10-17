@@ -1109,8 +1109,10 @@ mod tests {
     }
 
     /// The longest time the main loop is blocked in one step over the next
-    /// `settle`, which is what a person feels as a frozen window. Stops
-    /// after 200 ms with nothing to do.
+    /// `settle`, which is what a person feels as a frozen window, as CPU
+    /// time of this thread, so a loaded machine does not lengthen it (ADR
+    /// 0049). Stops after 200 ms with nothing to do; `settle` only stops a
+    /// test that would never settle.
     fn longest_stall(settle: std::time::Duration) -> std::time::Duration {
         use std::time::{Duration, Instant};
         let context = glib::MainContext::default();
@@ -1118,9 +1120,9 @@ mod tests {
         let mut idle_since = None;
         let mut longest = Duration::ZERO;
         while Instant::now() < end {
-            let start = Instant::now();
-            if context.iteration(false) {
-                longest = longest.max(start.elapsed());
+            let (step, worked) = crate::testing::cpu_time_of(|| context.iteration(false));
+            if worked {
+                longest = longest.max(step);
                 idle_since = None;
             } else {
                 let since = *idle_since.get_or_insert_with(Instant::now);
@@ -1144,7 +1146,8 @@ mod tests {
     /// the middle.
     #[test]
     fn a_huge_one_paragraph_side_is_usable_in_the_text_field() {
-        use std::time::{Duration, Instant};
+        use crate::testing::{cpu_time_of, cpu_within};
+        use std::time::Duration;
         let sides = [
             ("words", "word ".repeat(MAX_CARD_SIDE_BYTES / 5)),
             ("no spaces", "x".repeat(MAX_CARD_SIDE_BYTES)),
@@ -1162,26 +1165,34 @@ mod tests {
                 view.set_monospace(true);
                 view.set_wrap_mode(gtk::WrapMode::WordChar);
 
-                let start = Instant::now();
-                buffer.set_text(&side);
-                let load = start.elapsed();
-                let start = Instant::now();
-                let _ = view.measure(gtk::Orientation::Horizontal, -1);
-                let _ = view.measure(gtk::Orientation::Vertical, 600);
-                let first = start.elapsed();
+                // CPU time of this thread, where GTK does the work, so a
+                // loaded machine does not fail the bounds (ADR 0049).
+                let (load, ()) = cpu_time_of(|| buffer.set_text(&side));
+                let (first, ()) = cpu_time_of(|| {
+                    let _ = view.measure(gtk::Orientation::Horizontal, -1);
+                    let _ = view.measure(gtk::Orientation::Vertical, 600);
+                });
                 let stall = longest_stall(Duration::from_secs(20));
 
                 let middle = buffer.iter_at_offset(buffer.char_count() / 2);
                 buffer.place_cursor(&middle);
-                let start = Instant::now();
-                buffer.insert_at_cursor("y");
-                let _ = view.measure(gtk::Orientation::Vertical, 600);
-                let typed = start.elapsed();
+                let (typed, ()) = cpu_time_of(|| {
+                    buffer.insert_at_cursor("y");
+                    let _ = view.measure(gtk::Orientation::Vertical, 600);
+                });
                 let stall_after = longest_stall(Duration::from_secs(20));
-                (what, load, first, stall, typed, stall_after)
+                // About 0.16 s and 3 ms here (release and debug alike: the
+                // time is in GTK); the bounds leave ten times that for slow
+                // machines. Checked on this thread, which did the work.
+                let verdict = cpu_within(load, Duration::from_secs(1))
+                    .and(cpu_within(first, Duration::from_secs(2)))
+                    .and(cpu_within(stall, Duration::from_secs(2)))
+                    .and(cpu_within(typed, Duration::from_secs(1)))
+                    .and(cpu_within(stall_after, Duration::from_secs(2)));
+                (what, load, first, stall, typed, stall_after, verdict)
             })
         });
-        for (what, load, first, stall, typed, stall_after) in results {
+        for (what, load, first, stall, typed, stall_after, verdict) in results {
             let print =
                 |step: &str, t| crate::testing::print_timing(&format!("1 MiB {what}: {step}"), t);
             print("load", load);
@@ -1189,16 +1200,12 @@ mod tests {
             print("longest main-loop step while highlighting", stall);
             print("type one character and lay out", typed);
             print("longest main-loop step after typing", stall_after);
-            // About 0.16 s and 3 ms here (release and debug alike: the time is
-            // in GTK); the bounds leave ten times that for slow machines.
-            assert!(load < Duration::from_secs(1), "{what}: load {load:?}");
-            assert!(first < Duration::from_secs(2), "{what}: layout {first:?}");
-            assert!(stall < Duration::from_secs(2), "{what}: stall {stall:?}");
-            assert!(typed < Duration::from_secs(1), "{what}: typing {typed:?}");
-            assert!(
-                stall_after < Duration::from_secs(2),
-                "{what}: stall after typing {stall_after:?}"
-            );
+            if let Err(message) = verdict {
+                panic!(
+                    "{what}: load {load:?}, layout {first:?}, stall {stall:?}, \
+                     typing {typed:?}, stall after typing {stall_after:?}: {message}"
+                );
+            }
         }
     }
 }

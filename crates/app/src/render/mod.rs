@@ -413,7 +413,7 @@ pub fn shown_part(md: &str) -> (&str, bool) {
 
 #[cfg(test)]
 mod tests {
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     use super::*;
 
@@ -489,25 +489,30 @@ mod tests {
             sides.map(|(what, side)| {
                 assert!(side.len() <= MAX_SHOWN_BYTES);
                 let shown = render(&rappel_core::content::parse(&side));
-                let start = Instant::now();
-                // GTK asks for the natural width (no width limit) and then
-                // the height at the width it gives.
-                let _ = shown.measure(gtk::Orientation::Horizontal, -1);
-                let _ = shown.measure(gtk::Orientation::Vertical, 600);
-                let first = start.elapsed();
-                let start = Instant::now();
-                let _ = shown.measure(gtk::Orientation::Vertical, 300);
-                (what, first, start.elapsed())
+                // CPU time: Pango lays out on this thread, and a loaded
+                // machine must not fail the bound (ADR 0049).
+                let (first, ()) = crate::testing::cpu_time_of(|| {
+                    // GTK asks for the natural width (no width limit) and
+                    // then the height at the width it gives.
+                    let _ = shown.measure(gtk::Orientation::Horizontal, -1);
+                    let _ = shown.measure(gtk::Orientation::Vertical, 600);
+                });
+                let (relayout, ()) = crate::testing::cpu_time_of(|| {
+                    let _ = shown.measure(gtk::Orientation::Vertical, 300);
+                });
+                // Checked on this thread, which did the work.
+                let verdict = crate::testing::cpu_within(first, Duration::from_secs(3)).and(
+                    crate::testing::cpu_within(relayout, Duration::from_millis(200)),
+                );
+                (what, first, relayout, verdict)
             })
         });
-        for (what, first, relayout) in times {
+        for (what, first, relayout, verdict) in times {
             crate::testing::print_timing(&format!("first layout, 32 KiB, {what}"), first);
             crate::testing::print_timing(&format!("relayout, 32 KiB, {what}"), relayout);
-            assert!(first < Duration::from_secs(3), "{what}: {first:?}");
-            assert!(
-                relayout < Duration::from_millis(200),
-                "{what}: {relayout:?}"
-            );
+            if let Err(message) = verdict {
+                panic!("{what}: first layout {first:?}, relayout {relayout:?}: {message}");
+            }
         }
     }
 }

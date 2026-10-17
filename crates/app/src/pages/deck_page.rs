@@ -841,10 +841,13 @@ mod tests {
 
     #[test]
     fn finding_the_last_of_5000_cards_is_fast() {
-        let (found, scans) = crate::testing::within(
+        // About 2 ms of CPU time in a debug build; the bound leaves 10 times
+        // that, and more than the CPU clock's precision (one tick).
+        let bound = Duration::from_millis(20);
+        let (found, scans, verdict) = crate::testing::within(
             Duration::from_secs(5),
             "5,000 cards made and scanned",
-            || {
+            move || {
                 let store = gio::ListStore::new::<CardObject>();
                 let items: Vec<CardObject> = (0..5_000)
                     .map(|i| {
@@ -863,18 +866,21 @@ mod tests {
                     })
                     .collect();
                 store.extend_from_slice(&items);
-                let start = std::time::Instant::now();
-                let found = (
-                    position_in(&store, "card-04999"),
-                    position_in(&store, "missing"),
-                );
-                (found, start.elapsed())
+                let (scans, found) = crate::testing::cpu_time_of(|| {
+                    (
+                        position_in(&store, "card-04999"),
+                        position_in(&store, "missing"),
+                    )
+                });
+                // Checked on this thread, which did the work (ADR 0049).
+                (found, scans, crate::testing::cpu_within(scans, bound))
             },
         );
         crate::testing::print_timing("position_in, two scans of 5,000 cards", scans);
         assert_eq!(found, (Some(4_999), None));
-        // About 2 ms in a debug build; the bound leaves 10 times that.
-        assert!(scans < Duration::from_millis(20), "{scans:?}");
+        if let Err(message) = verdict {
+            panic!("position_in, two scans of 5,000 cards: {message}");
+        }
     }
 
     #[test]
