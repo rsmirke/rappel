@@ -84,6 +84,12 @@ mod imp {
         #[template_child]
         pub bottom_bar: TemplateChild<adw::Clamp>,
         #[template_child]
+        pub reveal_hint: TemplateChild<gtk::Label>,
+        #[template_child]
+        pub fail_hint: TemplateChild<gtk::Label>,
+        #[template_child]
+        pub pass_hint: TemplateChild<gtk::Label>,
+        #[template_child]
         pub buttons: TemplateChild<adw::ViewStack>,
         #[template_child]
         pub short_breakpoint: TemplateChild<adw::Breakpoint>,
@@ -847,6 +853,8 @@ impl ReviewPage {
         self.keep_back(back_md);
         if imp.revealed.get() {
             let back = imp.back.take();
+            // A redraw never animates: the answer was already on screen,
+            // so it changes in place (only `reveal` plays the animation).
             let _shown = self.show_back(&back);
         }
     }
@@ -1090,6 +1098,7 @@ mod tests {
     use rappel_core::domain::EventKind;
 
     use super::*;
+    use crate::render::MAX_SHOWN_BYTES;
 
     #[test]
     fn the_cut_note_follows_the_sides_on_screen() {
@@ -1112,8 +1121,10 @@ mod tests {
 
     #[test]
     fn the_cut_note_matches_the_blueprint() {
-        let blueprint = include_str!("../../data/review_page.blp");
-        assert!(blueprint.contains(&format!("_(\"{CUT_NOTE}\")")));
+        crate::testing::with_widgets(|| {
+            let page: ReviewPage = glib::Object::new();
+            assert_eq!(page.imp().cut_note.label(), CUT_NOTE);
+        });
     }
 
     #[test]
@@ -1573,8 +1584,13 @@ mod tests {
 
     #[test]
     fn the_summary_icon_matches_the_blueprint() {
-        let blueprint = include_str!("../../data/review_page.blp");
-        assert!(blueprint.contains(&format!("icon-name: \"{SUMMARY_ICON}\";")));
+        crate::testing::with_widgets(|| {
+            let page: ReviewPage = glib::Object::new();
+            assert_eq!(
+                page.imp().summary_page.icon_name().as_deref(),
+                Some(SUMMARY_ICON)
+            );
+        });
     }
 
     #[test]
@@ -1605,37 +1621,211 @@ mod tests {
     }
 
     /// The hints under the buttons name keys the page binds to the same act,
-    /// and their buttons' descriptions say the same for screen readers.
+    /// and screen readers skip them.
     #[test]
     fn the_key_hints_match_the_keys() {
-        let blueprint = include_str!("../../data/review_page.blp");
-        for (hint, description, trigger, act) in [
-            ("Space", "Press Space", "space", Act::Reveal),
-            ("1", "Press 1", "1", Act::Grade(Grade::Fail)),
-            ("2", "Press 2 or Space", "2", Act::Grade(Grade::Pass)),
-        ] {
-            assert!(
-                blueprint.contains(&format!("label: _(\"{hint}\");")),
-                "{hint}"
-            );
-            assert!(
-                blueprint.contains(&format!("description: _(\"{description}\");")),
-                "{description}"
-            );
-            let (_, key) = KEYS.iter().find(|(t, _)| *t == trigger).unwrap();
-            let revealed = act != Act::Reveal;
-            assert_eq!(key_action(*key, revealed, true), Some(act), "{trigger}");
-        }
+        crate::testing::with_widgets(|| {
+            let page: ReviewPage = glib::Object::new();
+            let imp = page.imp();
+            for (hint, trigger, act) in [
+                (&*imp.reveal_hint, "space", Act::Reveal),
+                (&*imp.fail_hint, "1", Act::Grade(Grade::Fail)),
+                (&*imp.pass_hint, "2", Act::Grade(Grade::Pass)),
+            ] {
+                assert_eq!(hint.accessible_role(), gtk::AccessibleRole::Presentation);
+                // The hint shows the key as GTK names it ("space" → "Space").
+                let (key, mods) = gtk::accelerator_parse(trigger).unwrap();
+                assert_eq!(
+                    hint.label(),
+                    gtk::accelerator_get_label(key, mods),
+                    "{trigger}"
+                );
+                let (_, bound) = KEYS.iter().find(|(t, _)| *t == trigger).unwrap();
+                let revealed = act != Act::Reveal;
+                assert_eq!(key_action(*bound, revealed, true), Some(act), "{trigger}");
+            }
+        });
         // Space also passes, as the Pass button's description says.
         assert_eq!(
             key_action(Key::Space, true, true),
             Some(Act::Grade(Grade::Pass))
         );
-        // The hints are hidden from screen readers, so nothing is read twice.
-        assert_eq!(
-            blueprint.matches("accessible-role: presentation;").count(),
-            3
+    }
+
+    /// GTK has no public getter for an accessible description, so the
+    /// buttons' descriptions are checked in the template's source.
+    #[test]
+    fn the_buttons_describe_their_keys() {
+        let blueprint = include_str!("../../data/review_page.blp");
+        for description in ["Press Space", "Press 1", "Press 2 or Space"] {
+            assert!(
+                blueprint.contains(&format!("description: _(\"{description}\");")),
+                "{description}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_short_window_makes_the_summary_compact_without_its_icon() {
+        crate::testing::with_widgets(|| {
+            let page: ReviewPage = glib::Object::new();
+            let imp = page.imp();
+            assert!(!imp.summary_page.has_css_class("compact"));
+            imp.short_breakpoint.emit_by_name::<()>("apply", &[]);
+            assert!(imp.summary_page.has_css_class("compact"));
+            assert_eq!(imp.summary_page.icon_name(), None);
+            imp.short_breakpoint.emit_by_name::<()>("unapply", &[]);
+            assert!(!imp.summary_page.has_css_class("compact"));
+            assert_eq!(imp.summary_page.icon_name().as_deref(), Some(SUMMARY_ICON));
+        });
+    }
+
+    /// `page` in a presented window, with animations on, once its card is
+    /// mapped (an animation on an unmapped widget is skipped).
+    fn on_screen(page: &ReviewPage) -> adw::Window {
+        gtk::Settings::default()
+            .expect("GTK is started")
+            .set_gtk_enable_animations(true);
+        let window = adw::Window::builder()
+            .default_width(1000)
+            .default_height(720)
+            .content(page)
+            .build();
+        window.present();
+        assert!(
+            crate::testing::settle_until(
+                || page.imp().card_area.is_mapped(),
+                Duration::from_secs(5)
+            ),
+            "the page did not show"
         );
+        window
+    }
+
+    fn animation(page: &ReviewPage) -> adw::AnimationState {
+        page.imp()
+            .reveal_animation
+            .get()
+            .expect("made in constructed")
+            .state()
+    }
+
+    /// The reveal really plays on screen, and the next card, or an undo,
+    /// ends it with the back hidden. No main-loop iteration runs between
+    /// the calls and the checks, so the state cannot move on by itself.
+    #[test]
+    fn the_reveal_plays_on_screen_and_the_next_card_or_an_undo_ends_it() {
+        crate::testing::with_widgets(|| {
+            let (_tmp, _state, page, _) = page_of(3);
+            let window = on_screen(&page);
+            let imp = page.imp();
+
+            page.reveal();
+            assert_eq!(animation(&page), adw::AnimationState::Playing);
+            assert!(imp.back_part.is_visible());
+            assert!(imp.back_part.opacity() < 1.0);
+            page.grade(Grade::Pass);
+            assert_eq!(animation(&page), adw::AnimationState::Finished);
+            assert!(!imp.back_part.is_visible());
+
+            page.reveal();
+            assert_eq!(animation(&page), adw::AnimationState::Playing);
+            page.undo();
+            assert_eq!(animation(&page), adw::AnimationState::Finished);
+            assert!(!imp.back_part.is_visible());
+            assert!(!imp.revealed.get());
+
+            // Left alone, it finishes with the back fully shown in place.
+            page.reveal();
+            assert!(crate::testing::settle_until(
+                || animation(&page) == adw::AnimationState::Finished,
+                Duration::from_secs(5)
+            ));
+            assert!((imp.back_part.opacity() - 1.0).abs() < f64::EPSILON);
+            assert_eq!(imp.back_part.margin_top(), 0);
+            window.destroy();
+        });
+    }
+
+    /// A card whose back is `back`, due now, on a page.
+    fn page_with_back(back: &str) -> (tempfile::TempDir, ReviewPage) {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = AppState::open(tmp.path().join("data")).unwrap();
+        let deck = state.create_deck("Deck").unwrap();
+        let now = rappel_core::time::now_ms();
+        let day = 24 * 60 * 60 * 1000;
+        let id = state
+            .add_card_with_tags(&deck.id, "front", back, &[])
+            .unwrap()
+            .card
+            .id;
+        for at in [now - 60 * day, now - 60 * day + 11 * 60 * 1000] {
+            state
+                .record_review(&id, Grade::Pass, Duration::ZERO, at)
+                .unwrap();
+        }
+        let page = ReviewPage::new(state, deck, |_| {}).unwrap();
+        (tmp, page)
+    }
+
+    /// The reveal animation on the largest backs the page lays out: a 32 KiB
+    /// paragraph, 200 inline formulas, a list of 2,000 items. Its frames
+    /// change the back's opacity and top margin; the margin re-measures only
+    /// the back's box and its ancestors (GTK keeps the labels' and formulas'
+    /// measures), so the frames cost what drawing costs (ADR 0045). Timed
+    /// in CPU time once the back's first layout is done; about 0 ms, 180 ms
+    /// and 10 ms here (debug build, Xvfb), the same as an animation of the
+    /// opacity alone. The bound leaves room for slow machines.
+    #[test]
+    fn a_reveal_of_the_largest_backs_stays_cheap() {
+        use std::fmt::Write as _;
+        let sides = [
+            ("32 KiB paragraph", "word ".repeat(MAX_SHOWN_BYTES / 5)),
+            (
+                "200 formulas",
+                (0..200).fold(String::new(), |mut side, i| {
+                    let _ = write!(side, "$x_{{{i}}}^2$ and ");
+                    side
+                }),
+            ),
+            (
+                "2,000 items",
+                (0..2_000).fold(String::new(), |mut side, i| {
+                    let _ = writeln!(side, "- item {i}");
+                    side
+                }),
+            ),
+        ];
+        let times = crate::testing::with_widgets(move || {
+            sides.map(|(what, back)| {
+                assert!(back.len() <= MAX_SHOWN_BYTES, "{what}");
+                let (_tmp, page) = page_with_back(&back);
+                let window = on_screen(&page);
+                let finished = || animation(&page) == adw::AnimationState::Finished;
+                page.reveal();
+                assert!(crate::testing::settle_until(
+                    finished,
+                    Duration::from_secs(20)
+                ));
+                let cpu = crate::testing::thread_cpu_time();
+                page.animate_reveal();
+                assert!(crate::testing::settle_until(
+                    finished,
+                    Duration::from_secs(20)
+                ));
+                let used = cpu
+                    .zip(crate::testing::thread_cpu_time())
+                    .map(|(a, b)| b.saturating_sub(a));
+                window.destroy();
+                (what, used)
+            })
+        });
+        for (what, used) in times {
+            if let Some(used) = used {
+                crate::testing::print_timing(&format!("reveal animation, {what}"), used);
+                assert!(used < Duration::from_secs(2), "{what}: {used:?}");
+            }
+        }
     }
 
     #[test]

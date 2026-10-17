@@ -25,11 +25,11 @@ template $RappelReviewPage: Adw.NavigationPage {
     // A short window (a phone held sideways) keeps the room for the card:
     // the key hints go and the bar's margins shrink. The summary is then
     // `compact` (less spacing) without its icon, so its figures and Back to
-    // Deck fit at 360 × 294; a setter can neither add a style class nor
+    // Deck fit at 360 × 294. A setter can neither add a style class nor
     // unset the icon, so the page does both on `apply` and undoes them on
-    // `unapply`. When
-    // both breakpoints match, AdwBreakpointBin applies only the last one
-    // (AdwBreakpointBin docs), so the figures stay side by side here.
+    // `unapply`. When both breakpoints match, AdwBreakpointBin applies only
+    // the last one (AdwBreakpointBin docs), so the figures stay side by
+    // side here.
     Adw.Breakpoint short_breakpoint {
       condition ("max-height: 400sp")
 

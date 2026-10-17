@@ -84,3 +84,27 @@ fn main() -> glib::ExitCode {
     tracing::debug!("starting {}", rappel_core::APP_NAME);
     app.run()
 }
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    /// The stylesheet parses without an error: GTK drops a rule it cannot
+    /// parse and only warns, so a typo would silently lose a style.
+    #[test]
+    fn the_stylesheet_parses() {
+        let errors = crate::testing::with_gtk(|| {
+            let provider = gtk::CssProvider::new();
+            let errors = Rc::new(RefCell::new(Vec::new()));
+            let seen = Rc::clone(&errors);
+            provider.connect_parsing_error(move |_, section, error| {
+                seen.borrow_mut()
+                    .push(format!("{}: {error}", section.to_str()));
+            });
+            provider.load_from_string(include_str!("../data/style.css"));
+            errors.take()
+        });
+        assert!(errors.is_empty(), "{errors:#?}");
+    }
+}
