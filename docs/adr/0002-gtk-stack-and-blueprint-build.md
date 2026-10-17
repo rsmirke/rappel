@@ -1,6 +1,6 @@
 # 2. GTK stack versions and Blueprint build pipeline
 
-- Status: Accepted; the libadwaita floor is raised to 1.8 (GTK 4.20) by ADR 0039
+- Status: Accepted; the libadwaita floor is raised to 1.8 (GTK 4.20) by ADR 0039; `build.rs` runs `glib-compile-resources` itself, without `glib-build-tools`, since ADR 0047
 - Date: 2026-10-15
 
 ## Context
