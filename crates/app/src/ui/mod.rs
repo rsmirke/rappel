@@ -1,6 +1,6 @@
 //! Small helpers shared by the pages, dialogs and rows: toasts, alert
 //! dialogs, drop-downs, navigation, row menus, focus, one-time cells, texts,
-//! dates, debouncing, worker threads and what an undo that failed means. No layouts.
+//! dates, headline tiles, debouncing, worker threads and what an undo that failed means. No layouts.
 //! Use these instead of writing a local copy.
 
 pub mod callback;
@@ -11,6 +11,7 @@ pub mod focus;
 pub mod nav;
 pub mod rows;
 pub mod text;
+pub mod tile;
 pub mod time;
 pub mod toast;
 pub mod undo;

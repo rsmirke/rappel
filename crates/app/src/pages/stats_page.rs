@@ -13,8 +13,9 @@ use adw::subclass::prelude::*;
 use gtk::glib;
 use rappel_core::domain::Deck;
 
-use self::text::{DayNames, FORECAST_TITLE, REVIEWS_TITLE, TIME_TITLE, Tile};
+use self::text::{DayNames, FORECAST_TITLE, REVIEWS_TITLE, TIME_TITLE};
 use crate::state::{AppState, StatsData};
+use crate::ui::tile::set_tile;
 use crate::ui::time;
 use crate::widgets::chart_card::{ChartCard, ChartModel};
 
@@ -157,16 +158,6 @@ impl StatsPage {
             card.chart().grab_focus();
         }
     }
-}
-
-/// One headline tile: the big text, its caption, and the screen reader's
-/// reading of both in the value label (the caption is hidden from it, so
-/// the tile is read once, and "—" is read as "no reviews").
-fn set_tile(value: &gtk::Label, caption: &gtk::Label, tile: &Tile) {
-    value.set_label(&tile.value);
-    caption.set_label(&tile.caption);
-    value.update_property(&[gtk::accessible::Property::Label(&tile.accessible)]);
-    caption.update_state(&[gtk::accessible::State::Hidden(true)]);
 }
 
 #[cfg(test)]

@@ -4,6 +4,7 @@
 
 use crate::state::StatsData;
 use crate::ui::text::{count, group_digits, percent, studied_text};
+use crate::ui::tile::Tile;
 use crate::widgets::bar_chart::ChartBar;
 use crate::widgets::bar_chart::layout::{Bar, nice_ceiling};
 use crate::widgets::chart_card::ChartModel;
@@ -16,16 +17,6 @@ pub struct DayNames<'a> {
     pub with_weekday: &'a dyn Fn(i64) -> String,
     /// "17 September", in a summary.
     pub long: &'a dyn Fn(i64) -> String,
-}
-
-/// One headline number.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Tile {
-    /// The big text, "91%" or "—" without data.
-    pub value: String,
-    pub caption: String,
-    /// What a screen reader says for the whole tile.
-    pub accessible: String,
 }
 
 pub const REVIEWS_TITLE: &str = "Reviews per Day";
