@@ -81,25 +81,48 @@ pub(crate) struct Layout {
 }
 
 impl Layout {
-    /// Loads the layout; `None` after logging which object is missing.
-    pub(crate) fn load() -> Option<Self> {
+    /// Loads the layout; `Err` with the first missing object's id, after
+    /// logging every missing one.
+    pub(crate) fn load() -> Result<Self, &'static str> {
         let builder = dialog::builder(FILE);
-        let row = |id: &str| dialog::object::<adw::ActionRow>(&builder, FILE, id);
-        Some(Self {
-            dialog: dialog::object(&builder, FILE, "card_info_dialog")?,
-            created: row("created_row")?,
-            edited: row("edited_row")?,
-            status: row("status_row")?,
-            reviews: row("reviews_row")?,
-            pass_rate: row("pass_rate_row")?,
-            lapses: row("lapses_row")?,
-            stability: row("stability_row")?,
-            difficulty: row("difficulty_row")?,
-            recall: row("recall_row")?,
-            next_due: row("next_due_row")?,
-            front: dialog::object(&builder, FILE, "front_label")?,
-            history: dialog::object(&builder, FILE, "history_list")?,
-            note: dialog::object(&builder, FILE, "history_note")?,
+        let row = |id| dialog::object::<adw::ActionRow>(&builder, FILE, id);
+        // Every object is looked up before the first `?`, so each missing
+        // one is logged.
+        let (dialog, front, history, note) = (
+            dialog::object(&builder, FILE, "card_info_dialog"),
+            dialog::object(&builder, FILE, "front_label"),
+            dialog::object(&builder, FILE, "history_list"),
+            dialog::object(&builder, FILE, "history_note"),
+        );
+        let (created, edited, status, reviews, pass_rate, lapses) = (
+            row("created_row"),
+            row("edited_row"),
+            row("status_row"),
+            row("reviews_row"),
+            row("pass_rate_row"),
+            row("lapses_row"),
+        );
+        let (stability, difficulty, recall, next_due) = (
+            row("stability_row"),
+            row("difficulty_row"),
+            row("recall_row"),
+            row("next_due_row"),
+        );
+        Ok(Self {
+            dialog: dialog?,
+            created: created?,
+            edited: edited?,
+            status: status?,
+            reviews: reviews?,
+            pass_rate: pass_rate?,
+            lapses: lapses?,
+            stability: stability?,
+            difficulty: difficulty?,
+            recall: recall?,
+            next_due: next_due?,
+            front: front?,
+            history: history?,
+            note: note?,
         })
     }
 }
@@ -123,7 +146,7 @@ fn build(state: &AppState, card_id: &str, now: i64) -> Result<Built, Failure> {
         front,
         history: list,
         note,
-    } = Layout::load().ok_or(Failure::Layout)?;
+    } = Layout::load().map_err(|_| Failure::Layout)?;
 
     // Card text is untrusted: plain text in labels with markup off.
     front.set_label(&plain_summary(&card.front_md));

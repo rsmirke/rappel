@@ -119,24 +119,39 @@ pub(crate) struct Rows {
 }
 
 impl Rows {
-    /// Loads the layout; `None` after logging which object is missing.
-    pub(crate) fn load() -> Option<Self> {
+    /// Loads the layout; `Err` with the first missing object's id, after
+    /// logging every missing one.
+    pub(crate) fn load() -> Result<Self, &'static str> {
         let b = dialog::builder(PREFERENCES_FILE);
+        // Every object is looked up before the first `?`, so each missing
+        // one is logged.
+        let (dialog, page, new_per_day, reviews_per_day) = (
+            object(&b, "preferences_dialog"),
+            object(&b, "settings_page"),
+            object(&b, "new_per_day"),
+            object(&b, "reviews_per_day"),
+        );
+        let (day_start, retention_row, retention_value, open_backups) = (
+            object(&b, "day_start"),
+            object(&b, "retention_row"),
+            object(&b, "retention_value"),
+            object(&b, "open_backups"),
+        );
         let rows = Self {
-            dialog: object(&b, "preferences_dialog")?,
-            page: object(&b, "settings_page")?,
-            new_per_day: object(&b, "new_per_day")?,
-            reviews_per_day: object(&b, "reviews_per_day")?,
-            day_start: object(&b, "day_start")?,
-            retention_row: object(&b, "retention_row")?,
-            retention_value: object(&b, "retention_value")?,
-            open_backups: object(&b, "open_backups")?,
+            dialog: dialog?,
+            page: page?,
+            new_per_day: new_per_day?,
+            reviews_per_day: reviews_per_day?,
+            day_start: day_start?,
+            retention_row: retention_row?,
+            retention_value: retention_value?,
+            open_backups: open_backups?,
         };
         let hours: Vec<String> = (0..=MAX_DAY_START_HOUR).map(hour_label).collect();
         let hours: Vec<&str> = hours.iter().map(String::as_str).collect();
         rows.day_start
             .set_model(Some(&gtk::StringList::new(&hours)));
-        Some(rows)
+        Ok(rows)
     }
 
     /// Shows `settings` in the rows without saving them again.
@@ -154,18 +169,23 @@ impl Rows {
     }
 }
 
-fn object<T: IsA<glib::Object>>(builder: &gtk::Builder, id: &str) -> Option<T> {
+fn object<T: IsA<glib::Object>>(
+    builder: &gtk::Builder,
+    id: &'static str,
+) -> Result<T, &'static str> {
     dialog::object(builder, PREFERENCES_FILE, id)
 }
 
 /// The retention question and its spin row, from
-/// `data/retention_dialog.blp`; `None` after logging which is missing.
-pub(crate) fn retention_layout() -> Option<(adw::AlertDialog, adw::SpinRow)> {
+/// `data/retention_dialog.blp`; `Err` with the first missing object's id,
+/// after logging every missing one.
+pub(crate) fn retention_layout() -> Result<(adw::AlertDialog, adw::SpinRow), &'static str> {
     let builder = dialog::builder(RETENTION_FILE);
-    Some((
-        dialog::object(&builder, RETENTION_FILE, "retention_dialog")?,
-        dialog::object(&builder, RETENTION_FILE, "retention_spin")?,
-    ))
+    let (alert, spin) = (
+        dialog::object(&builder, RETENTION_FILE, "retention_dialog"),
+        dialog::object(&builder, RETENTION_FILE, "retention_spin"),
+    );
+    Ok((alert?, spin?))
 }
 
 /// Shows the preferences over `window`, unless they are already open.
@@ -188,7 +208,7 @@ pub fn show(window: &RappelWindow, state: &AppState) {
             return;
         }
     };
-    let Some(rows) = Rows::load() else {
+    let Ok(rows) = Rows::load() else {
         return;
     };
 
@@ -400,7 +420,7 @@ async fn change_retention(
             return;
         }
     };
-    let Some((alert, spin)) = retention_layout() else {
+    let Ok((alert, spin)) = retention_layout() else {
         return;
     };
     spin.set_value(f64::from(current));

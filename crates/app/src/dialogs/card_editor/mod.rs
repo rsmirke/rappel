@@ -733,8 +733,8 @@ impl CardEditor {
             return false;
         }
         let discard = match dialog::DISCARD_CHANGES.load() {
-            Some(dialog) => dialog.choose_future(Some(self)).await == "discard",
-            None => false,
+            Ok(dialog) => dialog.choose_future(Some(self)).await == "discard",
+            Err(_) => false,
         };
         asking.set(false);
         discard

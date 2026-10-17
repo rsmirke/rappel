@@ -65,15 +65,17 @@ pub fn name_error(check: &NameCheck) -> Option<String> {
 }
 
 /// The dialog, its name entry and its error label, from
-/// `data/deck_name_dialog.blp`; `None` after logging which is missing.
-pub(crate) fn layout() -> Option<(adw::AlertDialog, adw::EntryRow, gtk::Label)> {
+/// `data/deck_name_dialog.blp`; `Err` with the first missing object's id,
+/// after logging every missing one.
+pub(crate) fn layout() -> Result<(adw::AlertDialog, adw::EntryRow, gtk::Label), &'static str> {
     const FILE: &str = "deck_name_dialog.ui";
     let builder = dialog::builder(FILE);
-    Some((
-        dialog::object(&builder, FILE, "deck_name_dialog")?,
-        dialog::object(&builder, FILE, "name_entry")?,
-        dialog::object(&builder, FILE, "error_label")?,
-    ))
+    let (dialog, entry, error_label) = (
+        dialog::object(&builder, FILE, "deck_name_dialog"),
+        dialog::object(&builder, FILE, "name_entry"),
+        dialog::object(&builder, FILE, "error_label"),
+    );
+    Ok((dialog?, entry?, error_label?))
 }
 
 /// Shows the dialog over `parent` and returns the name typed, or `None`
@@ -83,7 +85,7 @@ pub async fn ask(
     purpose: Purpose,
     decks: Vec<Deck>,
 ) -> Option<String> {
-    let (dialog, entry, error_label) = layout()?;
+    let (dialog, entry, error_label) = layout().ok()?;
 
     let exclude = match &purpose {
         Purpose::Create => {

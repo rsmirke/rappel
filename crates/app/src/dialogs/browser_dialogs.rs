@@ -43,25 +43,28 @@ pub fn check_tag_input(input: &str) -> TagNameCheck {
     }
 }
 
-/// The choice dialog and its dropdown; `None` after logging which is
-/// missing.
-pub(crate) fn choose_layout() -> Option<(adw::AlertDialog, gtk::DropDown)> {
+/// The choice dialog and its dropdown; `Err` with the first missing
+/// object's id, after logging every missing one.
+pub(crate) fn choose_layout() -> Result<(adw::AlertDialog, gtk::DropDown), &'static str> {
     let builder = dialog::builder(FILE);
-    Some((
-        dialog::object(&builder, FILE, "choose_dialog")?,
-        dialog::object(&builder, FILE, "choice_dropdown")?,
-    ))
+    let (dialog, dropdown) = (
+        dialog::object(&builder, FILE, "choose_dialog"),
+        dialog::object(&builder, FILE, "choice_dropdown"),
+    );
+    Ok((dialog?, dropdown?))
 }
 
-/// The Add Tag dialog, its entry and its error label; `None` after logging
-/// which is missing.
-pub(crate) fn tag_name_layout() -> Option<(adw::AlertDialog, adw::EntryRow, gtk::Label)> {
+/// The Add Tag dialog, its entry and its error label; `Err` with the first
+/// missing object's id, after logging every missing one.
+pub(crate) fn tag_name_layout()
+-> Result<(adw::AlertDialog, adw::EntryRow, gtk::Label), &'static str> {
     let builder = dialog::builder(FILE);
-    Some((
-        dialog::object(&builder, FILE, "tag_name_dialog")?,
-        dialog::object(&builder, FILE, "tag_entry")?,
-        dialog::object(&builder, FILE, "error_label")?,
-    ))
+    let (dialog, entry, error_label) = (
+        dialog::object(&builder, FILE, "tag_name_dialog"),
+        dialog::object(&builder, FILE, "tag_entry"),
+        dialog::object(&builder, FILE, "error_label"),
+    );
+    Ok((dialog?, entry?, error_label?))
 }
 
 /// Shows a list of `labels` over `parent` and returns the index chosen, or
@@ -74,7 +77,7 @@ pub async fn choose(
     confirm_label: &str,
     labels: &[String],
 ) -> Option<usize> {
-    let (dialog, dropdown) = choose_layout()?;
+    let (dialog, dropdown) = choose_layout().ok()?;
     dialog.set_heading(Some(heading));
     dialog.set_body(body);
     dialog.set_response_label("confirm", confirm_label);
@@ -91,7 +94,7 @@ pub async fn choose(
 /// Shows the Add Tag dialog over `parent` and returns the name typed
 /// (trimmed), or `None` if cancelled.
 pub async fn ask_tag_name(parent: &impl IsA<gtk::Widget>) -> Option<String> {
-    let (dialog, entry, error_label) = tag_name_layout()?;
+    let (dialog, entry, error_label) = tag_name_layout().ok()?;
     // Screen readers read the error with the entry (see deck_name_dialog).
     entry
         .upcast_ref::<gtk::Widget>()

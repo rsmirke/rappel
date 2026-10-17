@@ -9,8 +9,8 @@
 //! initialisation, a C callback the panic cannot unwind through, so it
 //! aborts the test binary with the panic's message rather than failing
 //! this one test. A file loaded with `ui::dialog::builder` is checked by
-//! loading it through the code's own loader, which returns `None` when an
-//! object it looks up is missing or of another type.
+//! loading it through the code's own loader, which returns `Err` with the
+//! id of an object it looks up that is missing or of another type.
 //!
 //! [`CHECKS`] must list every `data/*.blp` file: a test fails when one is
 //! added without a check.
@@ -33,57 +33,48 @@ use crate::window::RappelWindow;
 const CHECKS: &[(&str, fn())] = &[
     ("backup_row.blp", template::<BackupRow>),
     ("browser_dialogs.blp", || {
-        loads("choose_dialog", browser_dialogs::choose_layout().is_some());
-        loads(
-            "tag_name_dialog",
-            browser_dialogs::tag_name_layout().is_some(),
-        );
+        loads("choose_dialog", browser_dialogs::choose_layout().err());
+        loads("tag_name_dialog", browser_dialogs::tag_name_layout().err());
     }),
     ("browser_page.blp", template::<BrowserPage>),
     ("card_editor.blp", template::<card_editor::CardEditor>),
     ("card_info_dialog.blp", || {
-        loads("card_info_dialog", card_info::Layout::load().is_some());
+        loads("card_info_dialog", card_info::Layout::load().err());
     }),
     ("card_row.blp", template::<CardRow>),
     ("chart_card.blp", template::<ChartCard>),
     ("deck_name_dialog.blp", || {
-        loads("deck_name_dialog", deck_name_dialog::layout().is_some());
+        loads("deck_name_dialog", deck_name_dialog::layout().err());
     }),
     ("deck_page.blp", template::<DeckPage>),
     ("deck_row.blp", template::<DeckRow>),
     ("decks_page.blp", template::<DecksPage>),
     ("delete_card_dialog.blp", || {
-        loads("delete_card_dialog", dialog::DELETE_CARD.load().is_some());
+        loads("delete_card_dialog", dialog::DELETE_CARD.load().err());
     }),
     ("discard_dialog.blp", || {
-        loads("discard_dialog", dialog::DISCARD_CHANGES.load().is_some());
+        loads("discard_dialog", dialog::DISCARD_CHANGES.load().err());
     }),
     ("history_row.blp", template::<HistoryRow>),
     ("import_dialog.blp", || {
-        loads("import_dialog", crate::transfer::confirm_layout().is_some());
+        loads("import_dialog", crate::transfer::confirm_layout().err());
     }),
     ("preferences_dialog.blp", || {
-        loads("preferences_dialog", preferences::Rows::load().is_some());
+        loads("preferences_dialog", preferences::Rows::load().err());
     }),
     ("recovery_page.blp", template::<RecoveryPage>),
     ("restore_dialog.blp", || {
-        loads("restore_dialog", dialog::RESTORE_BACKUP.load().is_some());
+        loads("restore_dialog", dialog::RESTORE_BACKUP.load().err());
     }),
     ("retention_dialog.blp", || {
-        loads(
-            "retention_dialog",
-            preferences::retention_layout().is_some(),
-        );
+        loads("retention_dialog", preferences::retention_layout().err());
     }),
     ("review_page.blp", template::<ReviewPage>),
     ("shortcuts-dialog.blp", || {
-        loads(
-            "shortcuts_dialog",
-            crate::dialogs::shortcuts::load().is_some(),
-        );
+        loads("shortcuts_dialog", crate::dialogs::shortcuts::load().err());
     }),
     ("start_fresh_dialog.blp", || {
-        loads("start_fresh_dialog", dialog::START_FRESH.load().is_some());
+        loads("start_fresh_dialog", dialog::START_FRESH.load().err());
     }),
     ("stats_page.blp", template::<StatsPage>),
     ("tag_entry.blp", template::<TagEntry>),
@@ -101,13 +92,12 @@ fn template<T: IsA<glib::Object> + IsA<gtk::Widget> + glib::object::IsClass>() {
     }
 }
 
-/// Fails unless the loader of `what` found every object it looks up.
-fn loads(what: &str, found: bool) {
-    assert!(
-        found,
-        "{what}: an object its loader looks up with `ui::dialog::object` is missing from \
-         the .blp file or of another type"
-    );
+/// Fails if the loader of `what` missed an object: `missing` is the id of
+/// the first one it could not find with the type the code expects.
+fn loads(what: &str, missing: Option<&'static str>) {
+    if let Some(id) = missing {
+        panic!("{what}: the .blp file has no object `{id}` of the type the code expects");
+    }
 }
 
 /// The `.blp` files in `data/`, sorted.
@@ -138,7 +128,7 @@ fn every_blueprint_file_is_bundled() {
     crate::testing::with_widgets(|| {
         for (file, _) in CHECKS {
             let ui = file.replace(".blp", ".ui");
-            let path = format!("/io/github/rsmirke/Rappel/{ui}");
+            let path = dialog::resource_path(&ui);
             assert!(
                 gio::resources_lookup_data(&path, gio::ResourceLookupFlags::NONE).is_ok(),
                 "{ui} is not in data/resources.gresource.xml"

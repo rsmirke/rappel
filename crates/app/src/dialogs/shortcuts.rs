@@ -59,12 +59,12 @@ fn plain(key: gtk::gdk::Key) -> String {
 /// The dialog, under the id `AdwApplication` looks for ("a resource
 /// located at `shortcuts-dialog.ui` which defines an `AdwShortcutsDialog`
 /// with the ID `shortcuts_dialog`", libadwaita docs, `AdwApplication`),
-/// with the builder that holds the rest of the file; `None` after logging
-/// that the id is missing.
-pub(crate) fn load() -> Option<(gtk::Builder, adw::ShortcutsDialog)> {
+/// with the builder that holds the rest of the file; `Err` with the id
+/// after logging that it is missing.
+pub(crate) fn load() -> Result<(gtk::Builder, adw::ShortcutsDialog), &'static str> {
     let builder = dialog::builder(FILE);
     let dialog = dialog::object(&builder, FILE, "shortcuts_dialog")?;
-    Some((builder, dialog))
+    Ok((builder, dialog))
 }
 
 /// The items of one section of the dialog, as (title, accelerators).

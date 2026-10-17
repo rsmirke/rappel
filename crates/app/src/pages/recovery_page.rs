@@ -190,7 +190,7 @@ impl RecoveryPage {
     }
 
     fn confirm_restore(&self, button: &gtk::Button, backup: BackupInfo, when: &str) {
-        let Some(dialog) = dialog::RESTORE_BACKUP.load() else {
+        let Ok(dialog) = dialog::RESTORE_BACKUP.load() else {
             return;
         };
         let (heading, body) = restore_question(when);
@@ -310,7 +310,7 @@ impl RecoveryPage {
     }
 
     fn confirm_start_fresh(&self) {
-        let Some(dialog) = dialog::START_FRESH.load() else {
+        let Ok(dialog) = dialog::START_FRESH.load() else {
             return;
         };
         glib::spawn_future_local(glib::clone!(

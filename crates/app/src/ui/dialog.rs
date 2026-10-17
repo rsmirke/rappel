@@ -7,19 +7,28 @@ use gtk::prelude::*;
 /// The gresource prefix of every `.ui` file (`data/resources.gresource.xml`).
 const RESOURCE_PREFIX: &str = "/io/github/rsmirke/Rappel/";
 
-/// A builder over the bundled `file`, e.g. `"restore_dialog.ui"`.
-pub fn builder(file: &str) -> gtk::Builder {
-    gtk::Builder::from_resource(&format!("{RESOURCE_PREFIX}{file}"))
+/// The resource path of the bundled `file`, e.g. `"restore_dialog.ui"`.
+pub fn resource_path(file: &str) -> String {
+    format!("{RESOURCE_PREFIX}{file}")
 }
 
-/// Object `id` of `builder` (loaded from `file`), or `None` after logging
-/// that it is missing: a bug in the Blueprint file.
-pub fn object<T: IsA<glib::Object>>(builder: &gtk::Builder, file: &str, id: &str) -> Option<T> {
-    let object = builder.object::<T>(id);
-    if object.is_none() {
-        tracing::error!("{file} has no {id} object");
-    }
-    object
+/// A builder over the bundled `file`, e.g. `"restore_dialog.ui"`.
+pub fn builder(file: &str) -> gtk::Builder {
+    gtk::Builder::from_resource(&resource_path(file))
+}
+
+/// Object `id` of `builder` (loaded from `file`), or `Err(id)` after
+/// logging that it is missing or of another type: a bug in the Blueprint
+/// file. The id lets a test say which object it was (tests have no log).
+pub fn object<T: IsA<glib::Object>>(
+    builder: &gtk::Builder,
+    file: &str,
+    id: &'static str,
+) -> Result<T, &'static str> {
+    builder.object::<T>(id).ok_or_else(|| {
+        tracing::error!("{file} has no {id} object of the type the code expects");
+        id
+    })
 }
 
 /// An `AdwAlertDialog` that is the only object the code needs from its
@@ -31,8 +40,9 @@ pub struct Alert {
 }
 
 impl Alert {
-    /// A new copy of the dialog, or `None` after logging that it is missing.
-    pub fn load(&self) -> Option<adw::AlertDialog> {
+    /// A new copy of the dialog, or `Err(id)` after logging that it is
+    /// missing.
+    pub fn load(&self) -> Result<adw::AlertDialog, &'static str> {
         object(&builder(self.file), self.file, self.id)
     }
 }

@@ -788,7 +788,7 @@ impl ReviewPage {
         let Some(id) = imp.current.borrow().clone() else {
             return;
         };
-        let Some(question) = dialog::DELETE_CARD.load() else {
+        let Ok(question) = dialog::DELETE_CARD.load() else {
             return;
         };
         imp.asking.set(true);
@@ -1512,11 +1512,14 @@ mod tests {
     fn undo_from_the_summary_brings_the_last_card_back() {
         crate::testing::with_widgets(|| {
             let (_tmp, state, page, ids) = page_of(2);
+            let _window = in_window(&page);
             pass(&page);
             pass(&page);
             let imp = page.imp();
             assert_eq!(imp.stack.visible_child_name().as_deref(), Some("summary"));
             assert!(current(&page).is_none());
+            // The header's Undo button stays usable on the summary.
+            assert!(can_undo(&page));
             page.undo();
             assert_eq!(imp.stack.visible_child_name().as_deref(), Some("card"));
             assert_eq!(current(&page).as_deref(), Some(ids[1].as_str()));
@@ -1530,10 +1533,12 @@ mod tests {
     fn undo_shows_the_card_as_edited_meanwhile() {
         crate::testing::with_widgets(|| {
             let (_tmp, state, page, ids) = page_of(2);
+            let _window = in_window(&page);
             pass(&page);
             state
                 .edit_card_with_tags(&ids[0], "edited front", "back", None)
                 .unwrap();
+            assert!(can_undo(&page));
             page.undo();
             let front = first_label(page.imp().front_box.upcast_ref());
             assert_eq!(front.as_deref(), Some("edited front"));
