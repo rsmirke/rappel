@@ -311,3 +311,31 @@ pub(super) fn to_f32(v: f64) -> f32 {
     let v = v as f32;
     v
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn shown(value: &str) -> String {
+        match invalid("settings.value", &value) {
+            Error::InvalidColumn { value, .. } => value,
+            other => panic!("{other}"),
+        }
+    }
+
+    #[test]
+    fn a_bad_value_is_quoted_only_in_part() {
+        // Up to 64 characters: whole.
+        assert_eq!(shown(""), "");
+        let limit = "x".repeat(SHOWN_VALUE_CHARS);
+        assert_eq!(shown(&limit), limit);
+        // Longer: the first 64 and "…".
+        assert_eq!(shown(&format!("{limit}y")), format!("{limit}…"));
+        assert_eq!(shown(&"9".repeat(1 << 20)), "9".repeat(64) + "…");
+        // Counted in characters and cut between them, not inside one.
+        let wide = "ж".repeat(SHOWN_VALUE_CHARS);
+        assert_eq!(shown(&wide), wide);
+        assert_eq!(shown(&"ж".repeat(100)), wide.clone() + "…");
+        assert_eq!(shown(&"😀".repeat(65)), "😀".repeat(64) + "…");
+    }
+}

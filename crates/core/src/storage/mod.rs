@@ -290,8 +290,9 @@ enum Protect<'a> {
     Backup(&'a Path),
     /// Every backup: nothing is pruned. Finishing an interrupted restore
     /// does not know which backup its copy came from, and that backup may
-    /// be the oldest (#50). The next open prunes as usual; by then the day's
-    /// backup holds the restored data.
+    /// be the oldest (#50). The next open prunes as usual and may delete
+    /// it then; the restored data is in the live database (and in the
+    /// day's backup, unless one existed earlier that UTC day).
     Everything,
 }
 

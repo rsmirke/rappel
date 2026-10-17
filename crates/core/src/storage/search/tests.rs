@@ -554,14 +554,23 @@ fn a_word_that_starts_another_is_left_out() {
 fn only_the_start_of_a_long_query_is_searched() {
     let (mut store, deck) = store_with_deck();
     store.add_card_at(&deck, "alpha beta", "gamma", T0).unwrap();
-    // The words after the limit are not searched: "zzz" would find nothing.
-    let long = format!("{}alpha zzz", " ".repeat(MAX_QUERY_BYTES - 6));
+    // 300 × "alpha" is 1,500 bytes of words: "zzz" after them is not
+    // searched, and would find nothing.
+    let long = format!("{}zzz", "alpha ".repeat(300));
     assert_eq!(fronts(&store, &query(&long)), ["alpha beta"]);
-    // A word cut by the limit is searched as its start.
-    let cut = format!("{}gammazzz", " ".repeat(MAX_QUERY_BYTES - 5));
+    // A word cut by the limit is searched as its start: 204 × "alpha" is
+    // 1,020 bytes, so "gammazzz" is searched as "gamm".
+    let cut = format!("{}gammazzz", "alpha ".repeat(204));
     assert_eq!(fronts(&store, &query(&cut)), ["alpha beta"]);
-    // The cut falls between two characters: é is two bytes.
-    let accents = format!("{}éé", " ".repeat(MAX_QUERY_BYTES - 3));
-    assert_eq!(query_start(&accents).len(), MAX_QUERY_BYTES - 1);
-    assert_eq!(fts_query(&accents), Some("\"e\"*".to_owned()));
+    // What separates words does not count: spaces, or punctuation that
+    // has no letter or digit to search for (#50 review).
+    for gap in [" ", "- ", "** ", "\t\0"] {
+        let padded = format!("{}alpha", gap.repeat(MAX_QUERY_BYTES + 10));
+        assert_eq!(fronts(&store, &query(&padded)), ["alpha beta"], "{gap:?}");
+    }
+    // The cut falls between two characters: ж is two bytes.
+    assert_eq!(cut_to("жжж", 5), "жж");
+    assert_eq!(cut_to("жжж", 6), "жжж");
+    let multibyte = format!("{}жжж", "alpha ".repeat(204));
+    assert_eq!(fts_query(&multibyte), Some("\"alpha\"* \"жж\"*".to_owned()));
 }

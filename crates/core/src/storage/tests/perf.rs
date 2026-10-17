@@ -604,7 +604,7 @@ const PLAN_IMPORT_MS: u64 = 1_000;
 const BROWSE_MS: u64 = 500;
 /// Each hostile search of `hostile_searches_at_five_thousand_cards_are_fast`
 /// (measured 63 ms at most, for 20,000 hyphens cut to 1 KiB).
-const HOSTILE_SEARCH_MS: u64 = 1_000;
+const HOSTILE_SEARCH_MS: u64 = 600;
 /// Each bulk write on 5,000 cards. The slowest is `undo_entries` (measured
 /// 0.9 s: it replays every card's log); the others take 25 to 420 ms.
 const BULK_MS: u64 = 9_000;

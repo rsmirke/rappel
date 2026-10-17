@@ -1235,9 +1235,9 @@ enum Write {
 fn write() -> impl Strategy<Value = Write> {
     let delta = prop_oneof![5 => Just(0i64), 1 => -STEP_MS..0, 3 => 0..=2 * DAY_MS];
     prop_oneof![
-        6 => (0usize..2, delta.clone()).prop_map(|(c, d)| Write::Review(c, d)),
-        3 => (0usize..2, delta.clone()).prop_map(|(c, d)| Write::Reset(c, d)),
-        3 => (0usize..2, delta).prop_map(|(c, d)| Write::Undo(c, d)),
+        6 => (0usize..4, delta.clone()).prop_map(|(c, d)| Write::Review(c, d)),
+        3 => (0usize..4, delta.clone()).prop_map(|(c, d)| Write::Reset(c, d)),
+        3 => (0usize..4, delta).prop_map(|(c, d)| Write::Undo(c, d)),
     ]
 }
 
@@ -1254,7 +1254,13 @@ proptest! {
         writes in prop::collection::vec(write(), 0..60),
         starts in prop::collection::vec(0..=60 * DAY_MS, 1..6),
     ) {
-        let (mut store, deck, cards) = store_with_cards(2);
+        // Two cards in each of two decks: each deck's counts must see only
+        // its own cards' entries, resets included.
+        let (mut store, deck, mut cards) = store_with_cards(2);
+        let other = store.create_deck_at("Other", T0).unwrap().id;
+        for f in ["o1", "o2"] {
+            cards.push(store.add_card_at(&other, f, "a", T0).unwrap().id);
+        }
         let mut clock = T0;
         for w in writes {
             let (Write::Review(c, d) | Write::Reset(c, d) | Write::Undo(c, d)) = w;
@@ -1277,21 +1283,23 @@ proptest! {
         }
         for offset in starts {
             let day_start = T0 + offset;
-            let (mut reviews_today, mut new_today) = (0, 0);
-            for card in &cards {
-                let log = store.review_events(card).unwrap();
-                let counted = crate::stats::counted_reviews(&log).unwrap();
-                let times = counted.iter().map(|e| e.reviewed_at);
-                if let (Some(first), Some(last)) = (times.clone().min(), times.max()) {
-                    reviews_today += u32::from(first < day_start && last >= day_start);
-                    new_today += u32::from(first >= day_start);
+            for (deck_id, deck_cards) in [(&deck, &cards[..2]), (&other, &cards[2..])] {
+                let (mut reviews_today, mut new_today) = (0, 0);
+                for card in deck_cards {
+                    let log = store.review_events(card).unwrap();
+                    let counted = crate::stats::counted_reviews(&log).unwrap();
+                    let times = counted.iter().map(|e| e.reviewed_at);
+                    if let (Some(first), Some(last)) = (times.clone().min(), times.max()) {
+                        reviews_today += u32::from(first < day_start && last >= day_start);
+                        new_today += u32::from(first >= day_start);
+                    }
                 }
+                prop_assert_eq!(
+                    today_counts_in(&store.conn, deck_id, day_start).unwrap(),
+                    (reviews_today, new_today),
+                    "day start {}", day_start
+                );
             }
-            prop_assert_eq!(
-                today_counts_in(&store.conn, &deck, day_start).unwrap(),
-                (reviews_today, new_today),
-                "day start {}", day_start
-            );
         }
     }
 }

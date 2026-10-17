@@ -69,23 +69,37 @@ pub(crate) fn rebuild_search_index(conn: &Connection) -> Result<()> {
 /// `card`, or `card` twice) is left out: every card the longer one finds,
 /// the shorter finds too, so the result is the same. FTS5 reads each word's
 /// matches separately, so 5,000 copies of `a` took 10 s of CPU on 5,000
-/// cards in a debug build; once left out, the words that remain can never
-/// share a token, so their matches add up to at most the whole index
-/// (ADR 0050).
+/// cards in a debug build (ADR 0050). The work left is bounded by
+/// [`MAX_QUERY_BYTES`].
 ///
-/// Only the first [`MAX_QUERY_BYTES`] of `text` are searched.
+/// Only the first [`MAX_QUERY_BYTES`] of the words searched are read,
+/// counted once folded; what separates them (spaces, and words without a
+/// letter or digit) does not count.
 #[must_use]
 pub(crate) fn fts_query(text: &str) -> Option<String> {
-    let text = query_start(text);
+    let mut budget = MAX_QUERY_BYTES;
+    let mut words: Vec<String> = Vec::new();
     // NUL cannot be quoted in an FTS5 string; it separates words here.
-    let mut words: Vec<String> = text
-        .split(|c: char| c.is_whitespace() || c == '\0')
-        .map(search_key)
+    for raw in text.split(|c: char| c.is_whitespace() || c == '\0') {
+        if budget == 0 {
+            break;
+        }
+        // Never folds much more than the budget can keep, even of a huge
+        // word: four times the budget of its start. Folding leaves a
+        // character at least a quarter of its bytes, except an accent on
+        // its own, which folds to nothing; a word cut short by that only
+        // requires less, so it still finds at least what the whole would.
+        let mut word = search_key(cut_to(raw, budget.saturating_mul(4)));
         // A word without a letter or digit (`**`, `-`) has no token to match.
         // FTS5 may read a lone symbol Rust calls alphanumeric (ⓐ) as no
         // token at all and ignore that word; harmless.
-        .filter(|w| w.chars().any(char::is_alphanumeric))
-        .collect();
+        if !word.chars().any(char::is_alphanumeric) {
+            continue;
+        }
+        word.truncate(cut_to(&word, budget).len());
+        budget -= word.len();
+        words.push(word);
+    }
     let words = without_implied(&mut words);
     if words.is_empty() {
         None
@@ -100,22 +114,23 @@ pub(crate) fn fts_query(text: &str) -> Option<String> {
     }
 }
 
-/// How much of what was typed is searched, in UTF-8 bytes: far more than
-/// any search needs (about 150 words). FTS5 reads the matches of every
+/// How much of what was typed is searched, in UTF-8 bytes of the folded
+/// words: far more than any search needs (about 150 words). FTS5 reads the matches of every
 /// token of a phrase, so its work grows with the number of tokens in the
 /// query times the cards that have them: one pasted word of 20,000 tokens
 /// joined by hyphens (`card-card-…`) took 10 s of CPU on 5,000 cards in a
 /// debug build (ADR 0050).
 pub const MAX_QUERY_BYTES: usize = 1024;
 
-/// The start of `text` that is searched: at most [`MAX_QUERY_BYTES`], cut
-/// between two characters. A word cut in two is searched as the start of a
-/// word, so a cut query finds at least what the whole one would.
-fn query_start(text: &str) -> &str {
-    if text.len() <= MAX_QUERY_BYTES {
+/// The start of `text`, at most `max` bytes, cut between two characters.
+/// A word cut in two is searched as the start of a word, and a word left
+/// out requires nothing, so a cut query finds at least what the whole one
+/// would.
+fn cut_to(text: &str, max: usize) -> &str {
+    if text.len() <= max {
         return text;
     }
-    let mut end = MAX_QUERY_BYTES;
+    let mut end = max;
     while !text.is_char_boundary(end) {
         end -= 1;
     }
