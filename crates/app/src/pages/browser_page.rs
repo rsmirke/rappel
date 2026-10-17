@@ -1282,8 +1282,6 @@ mod tests {
     }
 
     fn page_over(state: &AppState, deck: Option<&str>) -> BrowserPage {
-        adw::init().unwrap();
-        gio::resources_register_include!("rappel.gresource").unwrap();
         BrowserPage::new(state.clone(), deck).unwrap()
     }
 
@@ -1398,7 +1396,7 @@ mod tests {
 
     #[test]
     fn typing_and_the_filters_narrow_the_list() {
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let (_tmp, state, ids, maths) = state_with_cards();
             let page = page_over(&state, None);
             let imp = page.imp();
@@ -1449,7 +1447,7 @@ mod tests {
 
     #[test]
     fn opened_from_a_deck_it_starts_filtered_to_it() {
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let (_tmp, state, _, maths) = state_with_cards();
             let page = page_over(&state, Some(&maths));
             assert_eq!(shown(&page).len(), 3);
@@ -1459,7 +1457,7 @@ mod tests {
 
     #[test]
     fn an_empty_collection_says_so() {
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let tmp = tempfile::tempdir().unwrap();
             let state = AppState::open(tmp.path().join("data")).unwrap();
             let page = page_over(&state, None);
@@ -1481,7 +1479,7 @@ mod tests {
 
     #[test]
     fn opened_from_an_empty_deck_it_says_no_cards_or_no_results() {
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let tmp = tempfile::tempdir().unwrap();
             let state = AppState::open(tmp.path().join("data")).unwrap();
             let empty = state.create_deck("Empty").unwrap();
@@ -1504,7 +1502,7 @@ mod tests {
 
     #[test]
     fn chosen_cards_are_suspended_and_selection_mode_ends() {
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let (_tmp, state, ids, _) = state_with_cards();
             let page = page_over(&state, None);
             let imp = page.imp();
@@ -1550,7 +1548,7 @@ mod tests {
 
     #[test]
     fn the_header_buttons_enter_and_leave_selection_mode() {
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let (_tmp, state, _, _) = state_with_cards();
             let page = page_over(&state, None);
             let imp = page.imp();
@@ -1580,7 +1578,7 @@ mod tests {
 
     #[test]
     fn choose_all_then_leave_forgets_the_choice() {
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let (_tmp, state, _, _) = state_with_cards();
             let page = page_over(&state, None);
             page.select_all();
@@ -1596,7 +1594,7 @@ mod tests {
 
     #[test]
     fn a_suspended_card_reads_as_suspended() {
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let (_tmp, state, ids, _) = state_with_cards();
             state.set_suspended(&ids[..1], true).unwrap();
             let page = page_over(&state, None);
@@ -1607,7 +1605,7 @@ mod tests {
 
     #[test]
     fn escape_leaves_selection_mode_then_clears_the_search_without_panicking() {
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let (_tmp, state, ids, _) = state_with_cards();
             let page = page_over(&state, None);
             let imp = page.imp();
@@ -1632,7 +1630,7 @@ mod tests {
 
     #[test]
     fn an_action_on_a_list_that_is_out_of_date_changes_nothing_and_reads_again() {
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let (_tmp, state, ids, _) = state_with_cards();
             let page = page_over(&state, None);
             assert_eq!(page.ids().len(), 4);
@@ -1651,9 +1649,7 @@ mod tests {
     /// bound, and the list only builds the rows that fit on screen.
     #[test]
     fn five_thousand_cards_stay_fast_and_virtual() {
-        crate::testing::with_gtk(|| {
-            adw::init().unwrap();
-            gio::resources_register_include!("rappel.gresource").unwrap();
+        crate::testing::with_widgets(|| {
             let tmp = tempfile::tempdir().unwrap();
             let state = AppState::open(tmp.path().join("data")).unwrap();
             let deck = state.create_deck("Scratch").unwrap();

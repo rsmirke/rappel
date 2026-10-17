@@ -43,6 +43,27 @@ pub fn check_tag_input(input: &str) -> TagNameCheck {
     }
 }
 
+/// The choice dialog and its dropdown; `None` after logging which is
+/// missing.
+pub(crate) fn choose_layout() -> Option<(adw::AlertDialog, gtk::DropDown)> {
+    let builder = dialog::builder(FILE);
+    Some((
+        dialog::object(&builder, FILE, "choose_dialog")?,
+        dialog::object(&builder, FILE, "choice_dropdown")?,
+    ))
+}
+
+/// The Add Tag dialog, its entry and its error label; `None` after logging
+/// which is missing.
+pub(crate) fn tag_name_layout() -> Option<(adw::AlertDialog, adw::EntryRow, gtk::Label)> {
+    let builder = dialog::builder(FILE);
+    Some((
+        dialog::object(&builder, FILE, "tag_name_dialog")?,
+        dialog::object(&builder, FILE, "tag_entry")?,
+        dialog::object(&builder, FILE, "error_label")?,
+    ))
+}
+
 /// Shows a list of `labels` over `parent` and returns the index chosen, or
 /// `None` if cancelled. `labels` are the user's own names: the dropdown
 /// shows them as plain text.
@@ -53,13 +74,7 @@ pub async fn choose(
     confirm_label: &str,
     labels: &[String],
 ) -> Option<usize> {
-    let builder = dialog::builder(FILE);
-    let (Some(dialog), Some(dropdown)) = (
-        dialog::object::<adw::AlertDialog>(&builder, FILE, "choose_dialog"),
-        dialog::object::<gtk::DropDown>(&builder, FILE, "choice_dropdown"),
-    ) else {
-        return None;
-    };
+    let (dialog, dropdown) = choose_layout()?;
     dialog.set_heading(Some(heading));
     dialog.set_body(body);
     dialog.set_response_label("confirm", confirm_label);
@@ -76,14 +91,7 @@ pub async fn choose(
 /// Shows the Add Tag dialog over `parent` and returns the name typed
 /// (trimmed), or `None` if cancelled.
 pub async fn ask_tag_name(parent: &impl IsA<gtk::Widget>) -> Option<String> {
-    let builder = dialog::builder(FILE);
-    let (Some(dialog), Some(entry), Some(error_label)) = (
-        dialog::object::<adw::AlertDialog>(&builder, FILE, "tag_name_dialog"),
-        dialog::object::<adw::EntryRow>(&builder, FILE, "tag_entry"),
-        dialog::object::<gtk::Label>(&builder, FILE, "error_label"),
-    ) else {
-        return None;
-    };
+    let (dialog, entry, error_label) = tag_name_layout()?;
     // Screen readers read the error with the entry (see deck_name_dialog).
     entry
         .upcast_ref::<gtk::Widget>()

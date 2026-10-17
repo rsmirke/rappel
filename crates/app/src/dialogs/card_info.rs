@@ -62,47 +62,68 @@ pub fn open(
     }
 }
 
+/// The objects of `data/card_info_dialog.blp` this file fills in.
+pub(crate) struct Layout {
+    dialog: adw::Dialog,
+    created: adw::ActionRow,
+    edited: adw::ActionRow,
+    status: adw::ActionRow,
+    reviews: adw::ActionRow,
+    pass_rate: adw::ActionRow,
+    lapses: adw::ActionRow,
+    stability: adw::ActionRow,
+    difficulty: adw::ActionRow,
+    recall: adw::ActionRow,
+    next_due: adw::ActionRow,
+    front: gtk::Label,
+    history: gtk::ListBox,
+    note: gtk::Label,
+}
+
+impl Layout {
+    /// Loads the layout; `None` after logging which object is missing.
+    pub(crate) fn load() -> Option<Self> {
+        let builder = dialog::builder(FILE);
+        let row = |id: &str| dialog::object::<adw::ActionRow>(&builder, FILE, id);
+        Some(Self {
+            dialog: dialog::object(&builder, FILE, "card_info_dialog")?,
+            created: row("created_row")?,
+            edited: row("edited_row")?,
+            status: row("status_row")?,
+            reviews: row("reviews_row")?,
+            pass_rate: row("pass_rate_row")?,
+            lapses: row("lapses_row")?,
+            stability: row("stability_row")?,
+            difficulty: row("difficulty_row")?,
+            recall: row("recall_row")?,
+            next_due: row("next_due_row")?,
+            front: dialog::object(&builder, FILE, "front_label")?,
+            history: dialog::object(&builder, FILE, "history_list")?,
+            note: dialog::object(&builder, FILE, "history_note")?,
+        })
+    }
+}
+
 /// The dialog for card `card_id` as of `now`, filled in.
 fn build(state: &AppState, card_id: &str, now: i64) -> Result<Built, Failure> {
     let card = state.card(card_id).map_err(Failure::Read)?;
     let info = state.card_info(card_id, now).map_err(Failure::Read)?;
-    let builder = dialog::builder(FILE);
-    let get = |id: &str| dialog::object::<adw::ActionRow>(&builder, FILE, id);
-    let (
-        Some(card_dialog),
-        Some(created),
-        Some(edited),
-        Some(status),
-        Some(reviews),
-        Some(pass_rate),
-        Some(lapses),
-        Some(stability),
-        Some(difficulty),
-        Some(recall),
-        Some(next_due),
-    ) = (
-        dialog::object::<adw::Dialog>(&builder, FILE, "card_info_dialog"),
-        get("created_row"),
-        get("edited_row"),
-        get("status_row"),
-        get("reviews_row"),
-        get("pass_rate_row"),
-        get("lapses_row"),
-        get("stability_row"),
-        get("difficulty_row"),
-        get("recall_row"),
-        get("next_due_row"),
-    )
-    else {
-        return Err(Failure::Layout);
-    };
-    let (Some(front), Some(list), Some(note)) = (
-        dialog::object::<gtk::Label>(&builder, FILE, "front_label"),
-        dialog::object::<gtk::ListBox>(&builder, FILE, "history_list"),
-        dialog::object::<gtk::Label>(&builder, FILE, "history_note"),
-    ) else {
-        return Err(Failure::Layout);
-    };
+    let Layout {
+        dialog: card_dialog,
+        created,
+        edited,
+        status,
+        reviews,
+        pass_rate,
+        lapses,
+        stability,
+        difficulty,
+        recall,
+        next_due,
+        front,
+        history: list,
+        note,
+    } = Layout::load().ok_or(Failure::Layout)?;
 
     // Card text is untrusted: plain text in labels with markup off.
     front.set_label(&plain_summary(&card.front_md));
@@ -176,8 +197,6 @@ mod tests {
     }
 
     fn state() -> (tempfile::TempDir, AppState) {
-        adw::init().unwrap();
-        gtk::gio::resources_register_include!("rappel.gresource").unwrap();
         let tmp = tempfile::tempdir().unwrap();
         let state = AppState::open(tmp.path().join("data")).unwrap();
         (tmp, state)
@@ -185,7 +204,7 @@ mod tests {
 
     #[test]
     fn the_history_shows_resets_as_markers_newest_first() {
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let (_tmp, state) = state();
             let deck = state.create_deck("Deck").unwrap();
             let id = state
@@ -214,7 +233,7 @@ mod tests {
 
     #[test]
     fn a_card_never_studied_says_so() {
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let (_tmp, state) = state();
             let deck = state.create_deck("Deck").unwrap();
             let id = state
@@ -232,7 +251,7 @@ mod tests {
 
     #[test]
     fn a_missing_card_is_not_built() {
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let (_tmp, state) = state();
             assert!(matches!(
                 build(&state, "no-such-card", rappel_core::time::now_ms()),

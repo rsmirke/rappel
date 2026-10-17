@@ -64,6 +64,18 @@ pub fn name_error(check: &NameCheck) -> Option<String> {
     }
 }
 
+/// The dialog, its name entry and its error label, from
+/// `data/deck_name_dialog.blp`; `None` after logging which is missing.
+pub(crate) fn layout() -> Option<(adw::AlertDialog, adw::EntryRow, gtk::Label)> {
+    const FILE: &str = "deck_name_dialog.ui";
+    let builder = dialog::builder(FILE);
+    Some((
+        dialog::object(&builder, FILE, "deck_name_dialog")?,
+        dialog::object(&builder, FILE, "name_entry")?,
+        dialog::object(&builder, FILE, "error_label")?,
+    ))
+}
+
 /// Shows the dialog over `parent` and returns the name typed, or `None`
 /// if it was cancelled. `decks` are the live decks, for the duplicate check.
 pub async fn ask(
@@ -71,15 +83,7 @@ pub async fn ask(
     purpose: Purpose,
     decks: Vec<Deck>,
 ) -> Option<String> {
-    const FILE: &str = "deck_name_dialog.ui";
-    let builder = dialog::builder(FILE);
-    let (Some(dialog), Some(entry), Some(error_label)) = (
-        dialog::object::<adw::AlertDialog>(&builder, FILE, "deck_name_dialog"),
-        dialog::object::<adw::EntryRow>(&builder, FILE, "name_entry"),
-        dialog::object::<gtk::Label>(&builder, FILE, "error_label"),
-    ) else {
-        return None;
-    };
+    let (dialog, entry, error_label) = layout()?;
 
     let exclude = match &purpose {
         Purpose::Create => {

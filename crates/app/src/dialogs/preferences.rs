@@ -107,7 +107,7 @@ struct Context {
 }
 
 /// The widgets of `preferences_dialog.blp` this file uses.
-struct Rows {
+pub(crate) struct Rows {
     dialog: adw::PreferencesDialog,
     page: adw::PreferencesPage,
     new_per_day: adw::SpinRow,
@@ -120,7 +120,7 @@ struct Rows {
 
 impl Rows {
     /// Loads the layout; `None` after logging which object is missing.
-    fn load() -> Option<Self> {
+    pub(crate) fn load() -> Option<Self> {
         let b = dialog::builder(PREFERENCES_FILE);
         let rows = Self {
             dialog: object(&b, "preferences_dialog")?,
@@ -156,6 +156,16 @@ impl Rows {
 
 fn object<T: IsA<glib::Object>>(builder: &gtk::Builder, id: &str) -> Option<T> {
     dialog::object(builder, PREFERENCES_FILE, id)
+}
+
+/// The retention question and its spin row, from
+/// `data/retention_dialog.blp`; `None` after logging which is missing.
+pub(crate) fn retention_layout() -> Option<(adw::AlertDialog, adw::SpinRow)> {
+    let builder = dialog::builder(RETENTION_FILE);
+    Some((
+        dialog::object(&builder, RETENTION_FILE, "retention_dialog")?,
+        dialog::object(&builder, RETENTION_FILE, "retention_spin")?,
+    ))
 }
 
 /// Shows the preferences over `window`, unless they are already open.
@@ -390,11 +400,7 @@ async fn change_retention(
             return;
         }
     };
-    let builder = dialog::builder(RETENTION_FILE);
-    let (Some(alert), Some(spin)) = (
-        dialog::object::<adw::AlertDialog>(&builder, RETENTION_FILE, "retention_dialog"),
-        dialog::object::<adw::SpinRow>(&builder, RETENTION_FILE, "retention_spin"),
-    ) else {
+    let Some((alert, spin)) = retention_layout() else {
         return;
     };
     spin.set_value(f64::from(current));
@@ -544,10 +550,7 @@ mod tests {
     /// dialog is opened.)
     #[test]
     fn the_rows_show_and_save_the_settings() {
-        crate::testing::with_gtk(|| {
-            adw::init().unwrap();
-            // Registered again if another test did: harmless, the same bytes.
-            gio::resources_register_include!("rappel.gresource").unwrap();
+        crate::testing::with_widgets(|| {
             let (_tmp, state) = temporary_state();
 
             let rows = Rows::load().expect("preferences_dialog.ui has every object");
@@ -602,15 +605,8 @@ mod tests {
 
     #[test]
     fn the_retention_question_loads_with_its_range() {
-        crate::testing::with_gtk(|| {
-            adw::init().unwrap();
-            gio::resources_register_include!("rappel.gresource").unwrap();
-            let builder = dialog::builder(RETENTION_FILE);
-            let alert: adw::AlertDialog =
-                dialog::object(&builder, RETENTION_FILE, "retention_dialog")
-                    .expect("retention_dialog.ui has the dialog");
-            let spin: adw::SpinRow = dialog::object(&builder, RETENTION_FILE, "retention_spin")
-                .expect("retention_dialog.ui has the spin row");
+        crate::testing::with_widgets(|| {
+            let (alert, spin) = retention_layout().expect("retention_dialog.ui has every object");
             let adjustment = spin.adjustment();
             assert_eq!(
                 (adjustment.lower(), adjustment.upper()),

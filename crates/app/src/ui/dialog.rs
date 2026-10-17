@@ -22,7 +22,41 @@ pub fn object<T: IsA<glib::Object>>(builder: &gtk::Builder, file: &str, id: &str
     object
 }
 
-/// The `AdwAlertDialog` `id` of `file`, when it is the only object needed.
-pub fn alert(file: &str, id: &str) -> Option<adw::AlertDialog> {
-    object(&builder(file), file, id)
+/// An `AdwAlertDialog` that is the only object the code needs from its
+/// `.ui` file. Named here, not at the call, so the test of every Blueprint
+/// file (`ui_files.rs`) loads what the code loads.
+pub struct Alert {
+    file: &'static str,
+    id: &'static str,
 }
+
+impl Alert {
+    /// A new copy of the dialog, or `None` after logging that it is missing.
+    pub fn load(&self) -> Option<adw::AlertDialog> {
+        object(&builder(self.file), self.file, self.id)
+    }
+}
+
+/// "Restore This Backup?" on the recovery page (its heading is set in code).
+pub const RESTORE_BACKUP: Alert = Alert {
+    file: "restore_dialog.ui",
+    id: "restore_dialog",
+};
+
+/// "Start With an Empty Database?" on the recovery page.
+pub const START_FRESH: Alert = Alert {
+    file: "start_fresh_dialog.ui",
+    id: "start_fresh_dialog",
+};
+
+/// "Discard Changes?" of the card editor.
+pub const DISCARD_CHANGES: Alert = Alert {
+    file: "discard_dialog.ui",
+    id: "discard_dialog",
+};
+
+/// "Delete Card?" of the review page.
+pub const DELETE_CARD: Alert = Alert {
+    file: "delete_card_dialog.ui",
+    id: "delete_card_dialog",
+};

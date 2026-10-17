@@ -788,7 +788,7 @@ impl ReviewPage {
         let Some(id) = imp.current.borrow().clone() else {
             return;
         };
-        let Some(question) = dialog::alert("delete_card_dialog.ui", "delete_card_dialog") else {
+        let Some(question) = dialog::DELETE_CARD.load() else {
             return;
         };
         imp.asking.set(true);
@@ -1169,17 +1169,28 @@ mod tests {
 
     /// A page over a deck of `n` cards that are all due, with the app state.
     fn page_of(n: usize) -> (tempfile::TempDir, AppState, ReviewPage, Vec<String>) {
-        adw::init().unwrap();
-        gtk::gio::resources_register_include!("rappel.gresource").unwrap();
+        let sides: Vec<(String, String)> = (0..n)
+            .map(|i| (format!("front {i}"), "back".to_owned()))
+            .collect();
+        page_with(&sides)
+    }
+
+    /// A page over a deck of one card per (front, back) of `sides`, all due
+    /// now, with the app state and the card ids. The one fixture of these
+    /// tests (#57).
+    fn page_with(
+        sides: &[(String, String)],
+    ) -> (tempfile::TempDir, AppState, ReviewPage, Vec<String>) {
         let tmp = tempfile::tempdir().unwrap();
         let state = AppState::open(tmp.path().join("data")).unwrap();
         let deck = state.create_deck("Deck").unwrap();
         let now = rappel_core::time::now_ms();
         let day = 24 * 60 * 60 * 1000;
-        let ids: Vec<String> = (0..n)
-            .map(|i| {
+        let ids: Vec<String> = sides
+            .iter()
+            .map(|(front, back)| {
                 let id = state
-                    .add_card_with_tags(&deck.id, &format!("front {i}"), "back", &[])
+                    .add_card_with_tags(&deck.id, front, back, &[])
                     .unwrap()
                     .card
                     .id;
@@ -1203,10 +1214,8 @@ mod tests {
 
     #[test]
     fn the_delete_question_loads_and_defaults_to_cancel() {
-        crate::testing::with_gtk(|| {
-            adw::init().unwrap();
-            gtk::gio::resources_register_include!("rappel.gresource").unwrap();
-            let question = dialog::alert("delete_card_dialog.ui", "delete_card_dialog").unwrap();
+        crate::testing::with_widgets(|| {
+            let question = dialog::DELETE_CARD.load().unwrap();
             assert_eq!(question.default_response().as_deref(), Some("cancel"));
             assert_eq!(question.close_response(), "cancel");
             assert_eq!(
@@ -1228,7 +1237,7 @@ mod tests {
 
     #[test]
     fn holding_s_suspends_one_card_not_a_run() {
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let (_tmp, state, page, ids) = page_of(3);
             let _window = in_window(&page);
             let first = current(&page).unwrap();
@@ -1253,7 +1262,7 @@ mod tests {
 
     #[test]
     fn the_keys_do_nothing_while_the_editor_or_the_question_is_open() {
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let (_tmp, state, page, _) = page_of(2);
             let _window = in_window(&page);
             let first = current(&page).unwrap();
@@ -1274,7 +1283,7 @@ mod tests {
 
     #[test]
     fn a_card_already_suspended_elsewhere_leaves_the_session_without_an_undo() {
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let (_tmp, state, page, _) = page_of(2);
             let _window = in_window(&page);
             let first = current(&page).unwrap();
@@ -1288,7 +1297,7 @@ mod tests {
 
     #[test]
     fn an_undo_after_the_page_is_gone_restores_the_card_only_in_the_database() {
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let (_tmp, state, page, ids) = page_of(1);
             let weak = page.downgrade();
             page.remove(&ids[0], Removal::Delete);
@@ -1301,7 +1310,7 @@ mod tests {
 
     #[test]
     fn an_undo_that_cannot_restore_the_card_leaves_it_deleted_and_the_session_alone() {
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let (_tmp, state, page, ids) = page_of(1);
             let _window = in_window(&page);
             let deck = state.card(&ids[0]).unwrap().deck_id;
@@ -1322,7 +1331,7 @@ mod tests {
 
     #[test]
     fn a_suspended_card_leaves_the_session_and_its_undo_brings_it_back() {
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let (_tmp, state, page, _) = page_of(3);
             let _window = in_window(&page);
             let first = current(&page).unwrap();
@@ -1351,7 +1360,7 @@ mod tests {
 
     #[test]
     fn deleting_the_last_card_shows_the_summary_and_undo_shows_the_card_again() {
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let (_tmp, state, page, ids) = page_of(1);
             let _window = in_window(&page);
             page.remove(&ids[0], Removal::Delete);
@@ -1366,7 +1375,7 @@ mod tests {
 
     #[test]
     fn a_removal_of_a_card_gone_elsewhere_just_moves_on() {
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let (_tmp, state, page, ids) = page_of(2);
             let _window = in_window(&page);
             let first = current(&page).unwrap();
@@ -1379,7 +1388,7 @@ mod tests {
 
     #[test]
     fn a_card_suspended_elsewhere_is_skipped_when_its_turn_comes() {
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let (_tmp, state, page, ids) = page_of(2);
             let first = current(&page).unwrap();
             let other = ids.iter().find(|id| **id != first).unwrap().clone();
@@ -1391,7 +1400,7 @@ mod tests {
 
     #[test]
     fn ctrl_z_takes_back_an_answer_without_showing_a_card_suspended_since() {
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let (_tmp, state, page, _) = page_of(2);
             let first = current(&page).unwrap();
             pass(&page);
@@ -1433,12 +1442,40 @@ mod tests {
         None
     }
 
+    /// The header's Undo button: the button bound to `review.undo`.
+    fn undo_button(page: &ReviewPage) -> gtk::Button {
+        let mut todo = vec![page.clone().upcast::<gtk::Widget>()];
+        while let Some(widget) = todo.pop() {
+            if let Some(button) = widget.downcast_ref::<gtk::Button>()
+                && button.action_name().as_deref() == Some("review.undo")
+            {
+                return button.clone();
+            }
+            let mut child = widget.first_child();
+            while let Some(c) = child {
+                child = c.next_sibling();
+                todo.push(c);
+            }
+        }
+        panic!("the review page has an Undo button");
+    }
+
+    /// Whether the user can undo: the Undo button is sensitive, which its
+    /// `GtkActionable` keeps equal to whether `review.undo` is enabled
+    /// (#57). The session must agree. The page must be in a window, as in
+    /// the app: seen with GTK 4.24, a button of a page without a root
+    /// stays insensitive whatever the action says.
     fn can_undo(page: &ReviewPage) -> bool {
-        page.imp()
+        assert!(page.root().is_some(), "put the page in a window first");
+        let enabled = undo_button(page).is_sensitive();
+        let in_session = page
+            .imp()
             .session
             .borrow()
             .as_ref()
-            .is_some_and(|s| s.last_answer().is_some())
+            .is_some_and(|s| s.last_answer().is_some());
+        assert_eq!(enabled, in_session, "the Undo button follows the session");
+        enabled
     }
 
     fn undo_entries(state: &AppState, card: &str) -> usize {
@@ -1450,8 +1487,9 @@ mod tests {
 
     #[test]
     fn undo_goes_back_to_the_first_answer() {
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let (_tmp, state, page, ids) = page_of(3);
+            let _window = in_window(&page);
             let before = state.card_state(&ids[0]).unwrap();
             assert!(!can_undo(&page));
             pass(&page);
@@ -1472,7 +1510,7 @@ mod tests {
 
     #[test]
     fn undo_from_the_summary_brings_the_last_card_back() {
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let (_tmp, state, page, ids) = page_of(2);
             pass(&page);
             pass(&page);
@@ -1490,7 +1528,7 @@ mod tests {
 
     #[test]
     fn undo_shows_the_card_as_edited_meanwhile() {
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let (_tmp, state, page, ids) = page_of(2);
             pass(&page);
             state
@@ -1504,8 +1542,9 @@ mod tests {
 
     #[test]
     fn rapid_repeated_undo_stops_at_the_first_answer() {
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let (_tmp, state, page, ids) = page_of(3);
+            let _window = in_window(&page);
             for _ in 0..3 {
                 pass(&page);
             }
@@ -1521,8 +1560,9 @@ mod tests {
 
     #[test]
     fn an_answer_that_is_no_longer_the_latest_is_not_undone() {
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let (_tmp, state, page, ids) = page_of(2);
+            let _window = in_window(&page);
             pass(&page);
             // Something else (an import, say) made a newer entry.
             state
@@ -1747,27 +1787,6 @@ mod tests {
         });
     }
 
-    /// A card whose back is `back`, due now, on a page.
-    fn page_with_back(back: &str) -> (tempfile::TempDir, ReviewPage) {
-        let tmp = tempfile::tempdir().unwrap();
-        let state = AppState::open(tmp.path().join("data")).unwrap();
-        let deck = state.create_deck("Deck").unwrap();
-        let now = rappel_core::time::now_ms();
-        let day = 24 * 60 * 60 * 1000;
-        let id = state
-            .add_card_with_tags(&deck.id, "front", back, &[])
-            .unwrap()
-            .card
-            .id;
-        for at in [now - 60 * day, now - 60 * day + 11 * 60 * 1000] {
-            state
-                .record_review(&id, Grade::Pass, Duration::ZERO, at)
-                .unwrap();
-        }
-        let page = ReviewPage::new(state, deck, |_| {}).unwrap();
-        (tmp, page)
-    }
-
     /// The reveal animation on the largest backs the page lays out: a 32 KiB
     /// paragraph, 200 inline formulas, a list of 2,000 items. Its frames
     /// change the back's opacity and top margin; the margin re-measures only
@@ -1799,7 +1818,7 @@ mod tests {
         let times = crate::testing::with_widgets(move || {
             sides.map(|(what, back)| {
                 assert!(back.len() <= MAX_SHOWN_BYTES, "{what}");
-                let (_tmp, page) = page_with_back(&back);
+                let (_tmp, _state, page, _) = page_with(&[("front".to_owned(), back)]);
                 let window = on_screen(&page);
                 let finished = || animation(&page) == adw::AnimationState::Finished;
                 page.reveal();
@@ -1830,7 +1849,7 @@ mod tests {
 
     #[test]
     fn the_back_is_shown_whole_at_the_reveal_and_hidden_for_the_next_card() {
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let (_tmp, _state, page, _) = page_of(2);
             let imp = page.imp();
             assert!(!imp.back_part.is_visible());
@@ -1854,7 +1873,7 @@ mod tests {
 
     #[test]
     fn the_summary_replaces_the_bar_and_shows_the_figures() {
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let (_tmp, _state, page, _) = page_of(2);
             let imp = page.imp();
             assert!(imp.bottom_bar.is_visible());
@@ -1882,7 +1901,7 @@ mod tests {
 
     #[test]
     fn a_session_with_nothing_answered_says_so() {
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let (_tmp, _state, page, ids) = page_of(1);
             let _window = in_window(&page);
             page.remove(&ids[0], Removal::Suspend);
@@ -1923,9 +1942,7 @@ mod tests {
 
     #[test]
     fn the_card_menu_shows_the_keys_the_page_binds() {
-        crate::testing::with_gtk(|| {
-            adw::init().unwrap();
-            gtk::gio::resources_register_include!("rappel.gresource").unwrap();
+        crate::testing::with_widgets(|| {
             let page: ReviewPage = glib::Object::new();
             let menu = page
                 .imp()
@@ -1945,7 +1962,12 @@ mod tests {
                 assert!(gtk::accelerator_parse(&accel).is_some());
             }
             // And GTK's menu shows them: each item's GtkModelButton has the
-            // key as its `accel` (what it displays).
+            // key as its `accel` (what it displays). This relies on GTK
+            // internals: GtkModelButton is a private type (no public header
+            // or Rust binding), found by its type name, and `accel` is its
+            // private property. GTK offers no public way to read what a
+            // menu item shows, so a GTK update may change this part (the
+            // check of the menu model above is public API and stays).
             let popover = gtk::PopoverMenu::from_model(Some(&menu));
             let mut shown = Vec::new();
             let mut todo = vec![popover.upcast::<gtk::Widget>()];

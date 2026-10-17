@@ -177,8 +177,6 @@ mod tests {
     use super::*;
 
     fn state() -> (tempfile::TempDir, AppState) {
-        adw::init().unwrap();
-        gtk::gio::resources_register_include!("rappel.gresource").unwrap();
         let tmp = tempfile::tempdir().unwrap();
         let state = AppState::open(tmp.path().join("data")).unwrap();
         (tmp, state)
@@ -218,7 +216,7 @@ mod tests {
 
     #[test]
     fn nothing_studied_shows_the_empty_state() {
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let (_tmp, state) = state();
             let page = StatsPage::new(&state, None).unwrap();
             assert_eq!(shown(&page).as_deref(), Some("empty"));
@@ -246,7 +244,7 @@ mod tests {
 
     #[test]
     fn studied_cards_fill_the_headline_and_the_charts() {
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let (_tmp, state) = state();
             let deck = studied(&state);
             let page = StatsPage::new(&state, Some(&deck)).unwrap();
@@ -268,7 +266,7 @@ mod tests {
 
     #[test]
     fn a_chart_without_data_says_so_instead() {
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let (_tmp, state) = state();
             let deck = state.create_deck("Deck").unwrap();
             let id = state
@@ -293,7 +291,7 @@ mod tests {
 
     #[test]
     fn a_deleted_deck_has_no_page() {
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let (_tmp, state) = state();
             let deck = studied(&state);
             state.delete_deck(&deck.id).unwrap();

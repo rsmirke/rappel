@@ -461,8 +461,7 @@ mod tests {
 
     #[test]
     fn stepping_selects_a_day_and_tells_the_page() {
-        crate::testing::with_gtk(|| {
-            adw::init().unwrap();
+        crate::testing::with_widgets(|| {
             let chart = BarChart::default();
             let heard: Rc<RefCell<Vec<Option<String>>>> = Rc::default();
             let sink = Rc::clone(&heard);
@@ -489,8 +488,7 @@ mod tests {
 
     #[test]
     fn a_day_that_does_not_exist_cannot_be_selected() {
-        crate::testing::with_gtk(|| {
-            adw::init().unwrap();
+        crate::testing::with_widgets(|| {
             let chart = BarChart::default();
             chart.set_data(days(&[(1.0, 0.0)]), 1.0);
             chart.select(Some(5));
@@ -502,8 +500,7 @@ mod tests {
 
     #[test]
     fn the_chart_draws_at_a_phone_width_and_a_wide_one() {
-        crate::testing::with_gtk(|| {
-            adw::init().unwrap();
+        crate::testing::with_widgets(|| {
             let chart = BarChart::default();
             let thirty: Vec<(f64, f64)> = (0..30)
                 .map(|i| (f64::from(i) * 3.0, f64::from(i % 4)))
@@ -527,8 +524,7 @@ mod tests {
 
     #[test]
     fn bars_are_drawn_on_top_of_an_empty_chart() {
-        crate::testing::with_gtk(|| {
-            adw::init().unwrap();
+        crate::testing::with_widgets(|| {
             let chart = BarChart::default();
             chart.set_data(days(&[]), 1.0);
             let empty = painted(&chart, 296);
