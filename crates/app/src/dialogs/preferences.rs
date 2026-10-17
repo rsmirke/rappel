@@ -25,7 +25,7 @@ const PREFERENCES_FILE: &str = "preferences_dialog.ui";
 const RETENTION_FILE: &str = "retention_dialog.ui";
 
 /// The desired retention as a whole percent, for the spin rows and the
-/// value shown ("90 %").
+/// value shown ("90%").
 pub fn percent_from_retention(retention: f32) -> u8 {
     #[expect(
         clippy::cast_possible_truncation,
@@ -44,9 +44,10 @@ pub fn retention_from_percent(percent: u8) -> f32 {
     f32::from(percent) / 100.0
 }
 
-/// The text of the retention row's value.
+/// The text of the retention row's value, written like every other percent
+/// in the app (`ui::text::percent`).
 pub fn retention_label(retention: f32) -> String {
-    format!("{} %", percent_from_retention(retention))
+    format!("{}%", percent_from_retention(retention))
 }
 
 /// A daily limit from a spin row's value.
@@ -503,9 +504,9 @@ mod tests {
 
     #[test]
     fn the_retention_label() {
-        assert_eq!(retention_label(0.90), "90 %");
-        assert_eq!(retention_label(0.8), "80 %");
-        assert_eq!(retention_label(0.97), "97 %");
+        assert_eq!(retention_label(0.90), "90%");
+        assert_eq!(retention_label(0.8), "80%");
+        assert_eq!(retention_label(0.97), "97%");
     }
 
     #[test]
@@ -562,7 +563,7 @@ mod tests {
             assert_eq!(rows.new_per_day.value(), 7.0);
             assert_eq!(rows.reviews_per_day.value(), 300.0);
             assert_eq!(rows.day_start.selected(), 23);
-            assert_eq!(rows.retention_value.label(), "85 %");
+            assert_eq!(rows.retention_value.label(), "85%");
             assert_eq!(
                 rows.day_start.model().map(|m| m.n_items()),
                 Some(24),
@@ -595,7 +596,7 @@ mod tests {
             assert_eq!(state.settings().unwrap().max_new_per_day, 11);
             (ctx.refresh)();
             assert_eq!(rows.new_per_day.value(), 11.0);
-            assert_eq!(rows.retention_value.label(), "90 %");
+            assert_eq!(rows.retention_value.label(), "90%");
         });
     }
 

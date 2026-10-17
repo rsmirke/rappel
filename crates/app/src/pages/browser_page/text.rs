@@ -331,12 +331,12 @@ pub fn suspend_labels(choice: SuspendChoice) -> (&'static str, &'static str) {
 
 /// The body of the Move dialog.
 pub fn move_body(n: usize) -> String {
-    format!("Move {} to:", count_text(n))
+    format!("Choose the deck to move {} to.", count_text(n))
 }
 
 /// The body of the Remove Tag dialog.
 pub fn remove_tag_body(n: usize) -> String {
-    format!("Take a tag off {}:", count_text(n))
+    format!("Choose the tag to take off {}.", count_text(n))
 }
 
 /// The notice when the chosen cards have no tag to take off.
@@ -629,8 +629,8 @@ mod tests {
 
     #[test]
     fn dialog_and_button_texts() {
-        assert_eq!(move_body(3), "Move 3 cards to:");
-        assert_eq!(remove_tag_body(1), "Take a tag off 1 card:");
+        assert_eq!(move_body(3), "Choose the deck to move 3 cards to.");
+        assert_eq!(remove_tag_body(1), "Choose the tag to take off 1 card.");
         assert_eq!(
             suspend_labels(SuspendChoice::Unsuspend),
             ("Unsuspend", "Unsuspend selected cards")

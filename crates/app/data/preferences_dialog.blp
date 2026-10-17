@@ -10,7 +10,7 @@ Adw.PreferencesDialog preferences_dialog {
   Adw.PreferencesPage settings_page {
     Adw.PreferencesGroup {
       title: _("Study");
-      description: _("Limits count for each deck separately.");
+      description: _("Limits count for each deck separately");
 
       Adw.SpinRow new_per_day {
         title: _("New Cards per Day");
@@ -25,7 +25,7 @@ Adw.PreferencesDialog preferences_dialog {
 
       Adw.SpinRow reviews_per_day {
         title: _("Reviews per Day");
-        subtitle: _("The most due cards a deck shows in a day. The rest wait for the next day.");
+        subtitle: _("The most due cards a deck shows in a day; the rest wait for the next day");
         adjustment: Gtk.Adjustment {
           lower: 0;
           upper: 9999;
@@ -45,7 +45,7 @@ Adw.PreferencesDialog preferences_dialog {
 
       Adw.ActionRow retention_row {
         title: _("Desired Retention");
-        subtitle: _("How much you want to remember when a card comes due. Higher means more reviews.");
+        subtitle: _("How much you want to remember when a card comes due; higher means more reviews");
         use-markup: false;
         activatable: true;
 
@@ -54,7 +54,8 @@ Adw.PreferencesDialog preferences_dialog {
           valign: center;
 
           styles [
-            "dim-label",
+            "dimmed",
+            "numeric",
           ]
         }
       }
@@ -62,6 +63,7 @@ Adw.PreferencesDialog preferences_dialog {
 
     Adw.PreferencesGroup {
       title: _("Data");
+      description: _("Rappel backs up your data each day it opens, and before every import");
 
       Adw.ButtonRow open_backups {
         title: _("Open Backup Folder");

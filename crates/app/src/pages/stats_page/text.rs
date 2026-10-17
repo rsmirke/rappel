@@ -25,6 +25,16 @@ pub const FORECAST_TITLE: &str = "Due Forecast";
 
 const NO_DATA: &str = "—";
 
+/// The label of the empty state's button, which goes back to the page the
+/// statistics were opened from: a deck's page, or the deck list.
+pub fn back_label(one_deck: bool) -> &'static str {
+    if one_deck {
+        "_Back to Deck"
+    } else {
+        "_Back to Decks"
+    }
+}
+
 /// The three headline numbers.
 pub fn headline(data: &StatsData) -> [Tile; 3] {
     let stats = &data.stats;
@@ -341,6 +351,12 @@ mod tests {
 
     fn quiet() -> StatsData {
         data(vec![day(0, 0, 0); 30], vec![0; 14], 0)
+    }
+
+    #[test]
+    fn the_empty_state_goes_back_where_it_came_from() {
+        assert_eq!(back_label(true), "_Back to Deck");
+        assert_eq!(back_label(false), "_Back to Decks");
     }
 
     #[test]
