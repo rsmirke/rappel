@@ -7,7 +7,7 @@ use crate::Error;
 use crate::domain::{CardState, EventKind, Grade, ReviewEvent};
 use crate::scheduling::{Scheduler, surviving};
 use crate::stats::{self, DayActivity, HistoryEntry};
-use crate::test_support::{DAY_MS, T0, fastest};
+use crate::test_support::{DAY_MS, T0, assert_cpu_within, fastest};
 
 /// "Now" in these tests: 40 days after the first review of the property
 /// tests, so some of their reviews are in the 30-day window and some not.
@@ -551,12 +551,13 @@ fn stats_are_fast_at_five_thousand_cards_and_a_hundred_thousand_reviews() {
     });
     assert!(info.reviews >= 2_000);
 
-    assert!(all_time < LIMIT, "global stats took {all_time:?}");
-    assert!(deck_time < LIMIT, "deck stats took {deck_time:?}");
-    assert!(card_time < CARD_LIMIT, "card info took {card_time:?}");
+    assert_cpu_within(all_time, LIMIT, "global stats");
+    assert_cpu_within(deck_time, LIMIT, "deck stats");
+    assert_cpu_within(card_time, CARD_LIMIT, "card info");
 }
 
 /// About 10 times what was measured on a debug build (ADR 0025): 0.3 s for
-/// the statistics, 10 ms for one card.
+/// the statistics, 10 ms for one card. In CPU time, checked against the
+/// machine's slowdown (`assert_cpu_within`, ADR 0049).
 const LIMIT: Duration = Duration::from_secs(2);
 const CARD_LIMIT: Duration = Duration::from_millis(100);

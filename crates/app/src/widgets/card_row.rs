@@ -354,7 +354,7 @@ pub fn factory<T: IsA<glib::Object>>(
 
 #[cfg(test)]
 mod tests {
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     use rappel_core::domain::{Card, Tag, TaggedCard};
     use rappel_core::storage::{BrowseRow, CardStatus};
@@ -568,36 +568,30 @@ mod tests {
     /// per CPU (shared caches slow the thread even while it runs).
     #[test]
     fn binding_a_row_to_thousands_of_cards_makes_no_widgets() {
-        let cpu = crate::testing::with_widgets(|| {
+        crate::testing::with_widgets(|| {
             let items: Vec<CardObject> = (0..5_000).map(card).collect();
             let row = CardRow::default();
             let pills = &row.imp().tag_pills;
             // Card 5 has the most tags: every pill and the "+N" pill exist.
             row.bind(&items[5]);
             let made = pills.pill_widgets();
-            let cpu_start = crate::testing::thread_cpu_time();
-            let wall = Instant::now();
-            for item in &items[..4_000] {
-                row.bind(item);
-                drop(item.row_label());
-                row.unbind();
-            }
-            crate::testing::print_timing("CardRow::bind, 4,000 cards (wall)", wall.elapsed());
-            let cpu = cpu_start
-                .zip(crate::testing::thread_cpu_time())
-                .map(|(start, end)| end.saturating_sub(start));
+            let (cpu, ()) = crate::testing::cpu_time_of(|| {
+                for item in &items[..4_000] {
+                    row.bind(item);
+                    drop(item.row_label());
+                    row.unbind();
+                }
+            });
             assert_eq!(pills.pill_widgets(), made);
             assert!(row.imp().menu_button.popover().is_none());
             // Previews are made only for the cards a row showed.
             assert!(items[..4_000].iter().all(CardObject::has_previews));
             assert!(!items[4_000..].iter().any(CardObject::has_previews));
-            cpu
-        });
-        if let Some(cpu) = cpu {
             crate::testing::print_timing("CardRow::bind, 4,000 cards (CPU)", cpu);
-            // Over five times the time measured under load.
-            assert!(cpu < Duration::from_secs(2), "{cpu:?}");
-        }
+            // Over five times the time measured under load; checked on this
+            // thread, which did the work (ADR 0049).
+            crate::testing::assert_cpu_within(cpu, Duration::from_secs(2), "CardRow::bind");
+        });
     }
 
     /// As above, for the rows of All Cards (ADR 0044): binding one row to
@@ -606,7 +600,7 @@ mod tests {
     /// was bound to before.
     #[test]
     fn binding_an_all_cards_row_to_thousands_of_cards_makes_no_widgets() {
-        let cpu = crate::testing::with_widgets(|| {
+        crate::testing::with_widgets(|| {
             let items: Vec<BrowseItem> = (0..5_000).map(browse_item).collect();
             let list_item = glib::Object::new::<gtk::ListItem>();
             let row = CardRow::for_browser();
@@ -614,19 +608,12 @@ mod tests {
             let pills = &row.imp().tag_pills;
             row.bind_browse(&items[5], &list_item);
             let made = pills.pill_widgets();
-            let cpu_start = crate::testing::thread_cpu_time();
-            let wall = Instant::now();
-            for item in &items[..4_000] {
-                row.bind_browse(item, &list_item);
-                row.unbind();
-            }
-            crate::testing::print_timing(
-                "CardRow::bind_browse, 4,000 cards (wall)",
-                wall.elapsed(),
-            );
-            let cpu = cpu_start
-                .zip(crate::testing::thread_cpu_time())
-                .map(|(start, end)| end.saturating_sub(start));
+            let (cpu, ()) = crate::testing::cpu_time_of(|| {
+                for item in &items[..4_000] {
+                    row.bind_browse(item, &list_item);
+                    row.unbind();
+                }
+            });
             assert_eq!(pills.pill_widgets(), made);
             assert!(row.imp().menu_button.popover().is_none());
             assert!(items[..4_000].iter().all(BrowseItem::has_previews));
@@ -638,13 +625,10 @@ mod tests {
                 item.set_selected(true);
             }
             assert_eq!(row.imp().selected_seen.get(), seen);
-            cpu
-        });
-        if let Some(cpu) = cpu {
             crate::testing::print_timing("CardRow::bind_browse, 4,000 cards (CPU)", cpu);
             // The same bound as the deck page's rows, far above the time
             // measured.
-            assert!(cpu < Duration::from_secs(2), "{cpu:?}");
-        }
+            crate::testing::assert_cpu_within(cpu, Duration::from_secs(2), "CardRow::bind_browse");
+        });
     }
 }

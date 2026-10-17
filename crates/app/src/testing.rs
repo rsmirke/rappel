@@ -123,12 +123,27 @@ pub fn settle_until(done: impl Fn() -> bool, timeout: Duration) -> bool {
     }
 }
 
-/// The CPU time the calling thread has used so far (user and system), from
-/// `/proc/thread-self/stat`, or `None` where that cannot be read. Unlike a
-/// wall clock it does not grow while the thread waits for a CPU, so a bound
-/// on it holds on a loaded machine (#67). Counted in clock ticks, which
-/// Linux reports at `USER_HZ` = 100 a second, so it is precise to 10 ms.
+/// The CPU time the calling thread has used so far (user and system), or
+/// `None` where Linux's `/proc` cannot be read. Unlike a wall clock it does
+/// not grow while the thread waits for a CPU, so a bound on it holds on a
+/// loaded machine (#67, ADR 0049). Read from `/proc/thread-self/schedstat`,
+/// whose first field is the thread's `sum_exec_runtime` in nanoseconds
+/// (Linux `fs/proc/base.c`, `proc_pid_schedstat`). The kernel brings that
+/// sum up to date at each scheduler tick and context switch, not on the
+/// read, so a reading can be up to one tick old (1 ms at `CONFIG_HZ=1000`,
+/// 4 ms at 250). Where that file is missing, it falls back to the utime and
+/// stime of `/proc/thread-self/stat`, in `USER_HZ` clock ticks of 10 ms.
+/// The same as `rappel-core`'s `test_support::thread_cpu_time`, which is
+/// not exported.
 pub fn thread_cpu_time() -> Option<Duration> {
+    if let Ok(schedstat) = std::fs::read_to_string("/proc/thread-self/schedstat")
+        && let Some(nanos) = schedstat
+            .split_whitespace()
+            .next()
+            .and_then(|n| n.parse().ok())
+    {
+        return Some(Duration::from_nanos(nanos));
+    }
     let stat = std::fs::read_to_string("/proc/thread-self/stat").ok()?;
     // The command name, field 2, is in parentheses and may hold spaces;
     // utime and stime are fields 14 and 15, the 12th and 13th after it.
@@ -139,6 +154,111 @@ pub fn thread_cpu_time() -> Option<Duration> {
     Some(Duration::from_millis((utime + stime) * 10))
 }
 
+/// The CPU time `f` used on this thread, and its result: the thread's CPU
+/// time where `/proc` can be read ([`thread_cpu_time`]), else the wall
+/// clock. For time bounds on work that has to run on the main-context
+/// thread (GTK), where [`within`] cannot be used.
+pub fn cpu_time_of<T>(f: impl FnOnce() -> T) -> (Duration, T) {
+    let wall = Instant::now();
+    let start = thread_cpu_time();
+    let value = f();
+    let used = start
+        .zip(thread_cpu_time())
+        .map_or_else(|| wall.elapsed(), |(start, end)| end.saturating_sub(start));
+    (used, value)
+}
+
+/// How long [`within`] waits before it calls the work hung: ten times its
+/// CPU-time bound, and at least 30 s. It is a wall clock, so it grows with
+/// the load on the machine; a thread that gets a third of a CPU (three busy
+/// threads per core) still finishes far within it. The same as
+/// `rappel-core`'s `test_support::hang_limit`.
+pub fn hang_limit(limit: Duration) -> Duration {
+    limit.saturating_mul(10).max(Duration::from_secs(30))
+}
+
+/// A fixed piece of work that allocates, formats, sorts and looks up: the
+/// yardstick of [`slowdown`]. Larger in a release build, so it stays well
+/// above the CPU clock's precision. The same as `rappel-core`'s
+/// `test_support::reference_work`, so [`REFERENCE_CPU`] is the same.
+fn reference_work() {
+    let n: u64 = if cfg!(debug_assertions) {
+        20_000
+    } else {
+        100_000
+    };
+    let mut words: Vec<String> = (0..n)
+        .map(|i| format!("{:016x}", i.wrapping_mul(0x9E37_79B9_7F4A_7C15)))
+        .collect();
+    words.sort_unstable();
+    let index: std::collections::BTreeMap<&str, usize> = words
+        .iter()
+        .enumerate()
+        .map(|(i, w)| (w.as_str(), i))
+        .collect();
+    let sum: usize = words.iter().map(|w| index[w.as_str()]).sum();
+    std::hint::black_box(sum);
+}
+
+/// The CPU time of [`reference_work`] on the machine the time bounds were
+/// set on (an i7-12700H laptop, unloaded, best of 30 runs), in a debug and
+/// a release test build. The bounds are in CPU time on that machine.
+const REFERENCE_CPU: Duration = if cfg!(debug_assertions) {
+    Duration::from_millis(17)
+} else {
+    Duration::from_millis(21)
+};
+
+/// How many times slower this thread runs now than the machine the bounds
+/// were set on, never less than 1: the least CPU time of three runs of
+/// [`reference_work`], over [`REFERENCE_CPU`]. Load makes a thread slower
+/// even in CPU time (a busy thread on the same core, a lower clock speed, a
+/// slower core, shared caches), and this measures by how much (ADR 0049).
+/// Never less than 1, so a faster machine is held to the bounds as they
+/// are. The same as `rappel-core`'s `test_support::slowdown`.
+pub fn slowdown() -> f64 {
+    let best = (0..3)
+        .map(|_| cpu_time_of(reference_work).0)
+        .min()
+        .unwrap_or(REFERENCE_CPU);
+    let slowdown = (best.as_secs_f64() / REFERENCE_CPU.as_secs_f64()).max(1.0);
+    if std::env::var_os("RAPPEL_TIMINGS").is_some() {
+        eprintln!("slowdown: {slowdown:.2} (reference work: {best:?} CPU)");
+    }
+    slowdown
+}
+
+/// Whether `used`, a CPU time of this thread, is within `limit` on the
+/// machine the bounds were set on: at once if `used` is within it, else
+/// once divided by the [`slowdown`] measured now, on this thread. Only a
+/// time over the bound pays for the measurement, and the measurement is
+/// taken in the conditions the work just ran in.
+pub fn cpu_within(used: Duration, limit: Duration) -> Result<(), String> {
+    if used <= limit {
+        return Ok(());
+    }
+    let slowdown = slowdown();
+    let scaled = used.div_f64(slowdown);
+    if scaled <= limit {
+        Ok(())
+    } else {
+        Err(format!(
+            "{used:?} of CPU time, {scaled:?} at this machine's slowdown of {slowdown:.2}, \
+             more than {limit:?}"
+        ))
+    }
+}
+
+/// Fails the test unless `used`, a CPU time of this thread, is within
+/// `limit` ([`cpu_within`]). Call it on the thread that did the work: for
+/// GTK work, inside the [`with_gtk`] or [`with_widgets`] body.
+#[track_caller]
+pub fn assert_cpu_within(used: Duration, limit: Duration, what: &str) {
+    if let Err(message) = cpu_within(used, limit) {
+        panic!("{what}: {message}");
+    }
+}
+
 /// The stack hostile input is handled on in tests: a sixteenth of the main
 /// thread's usual 8 MiB, where the app draws cards, so a recursion that only
 /// just passes here has a wide margin in the app. A stack overflow aborts
@@ -146,10 +266,18 @@ pub fn thread_cpu_time() -> Option<Duration> {
 /// `test_support::SMALL_STACK`, which is not exported.
 pub const SMALL_STACK: usize = 512 * 1024;
 
-/// Runs `f` on a new thread with a [`SMALL_STACK`] and returns its result,
-/// failing the test if it takes longer than `limit`. A hang fails the test
-/// instead of blocking the run (the thread is left behind; the test process
-/// ends anyway). `RAPPEL_TIMINGS=1` prints how long it took. The same as
+/// Runs `f` on a new thread with a [`SMALL_STACK`] and returns its result.
+/// Two bounds, kept apart (ADR 0049):
+/// - **Performance:** the test fails if `f` used more than `limit` of CPU
+///   time ([`cpu_within`], on that thread). Waiting for a CPU on a loaded
+///   machine does not count, and a thread slowed by the load is measured
+///   against a reference, so the bound holds under load and still fails a
+///   blow-up.
+/// - **Hang:** the test fails if `f` has not returned after [`hang_limit`]
+///   of wall-clock time, so a hang fails the test instead of blocking the
+///   run (the thread is left behind; the test process ends anyway).
+///
+/// `RAPPEL_TIMINGS=1` prints the CPU and wall-clock times. The same as
 /// `rappel-core`'s `test_support::within`, which is not exported.
 pub fn within<T: Send + 'static>(
     limit: Duration,
@@ -167,20 +295,27 @@ pub fn within_stack<T: Send + 'static>(
     f: impl FnOnce() -> T + Send + 'static,
 ) -> T {
     let (sender, answer) = mpsc::channel();
-    let start = Instant::now();
+    let wall = Instant::now();
     thread::Builder::new()
         .stack_size(stack)
         .spawn(move || {
+            let (cpu, value) = cpu_time_of(f);
+            let verdict = cpu_within(cpu, limit);
             // The receiver is gone only if the test already failed.
-            let _ = sender.send(f());
+            let _ = sender.send((cpu, verdict, value));
         })
         .expect("tests can start a thread");
-    match answer.recv_timeout(limit) {
-        Ok(value) => {
-            print_timing(what, start.elapsed());
+    let hang = hang_limit(limit);
+    match answer.recv_timeout(hang) {
+        Ok((cpu, verdict, value)) => {
+            print_timing(&format!("{what} (wall)"), wall.elapsed());
+            print_timing(&format!("{what} (CPU)"), cpu);
+            if let Err(message) = verdict {
+                panic!("{what}: {message}");
+            }
             value
         }
-        Err(mpsc::RecvTimeoutError::Timeout) => panic!("{what} took longer than {limit:?}"),
+        Err(mpsc::RecvTimeoutError::Timeout) => panic!("{what} hung: no result after {hang:?}"),
         Err(mpsc::RecvTimeoutError::Disconnected) => panic!("{what} panicked"),
     }
 }

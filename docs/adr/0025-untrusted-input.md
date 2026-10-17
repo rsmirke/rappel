@@ -2,6 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-10-16
+- Amended by: ADR 0049 (time bounds are on CPU time at the speed of the machine they were set on, with a separate wall-clock hang timeout)
 
 ## Context
 

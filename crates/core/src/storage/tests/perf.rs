@@ -1,14 +1,21 @@
 //! Speed at the scale of issue #42: one deck of 5,000 cards, 2,000 of
 //! them due, as `fill_scratch_db 5000 --due 2000` makes. The bounds are
-//! for a debug test build, about 10 times what was measured (ADR 0025);
-//! set `RAPPEL_TIMINGS=1` to print the measurements.
+//! for a debug test build, about 10 times what was measured (ADR 0025).
+//! Each is on the least CPU time of the thread over its runs (`fastest`),
+//! so a loaded machine does not fail them, while a blow-up of the order of
+//! the bound (a quadratic loop, a query per card) still does (ADR 0049).
+//! Set `RAPPEL_TIMINGS=1` to print the measurements.
 
 use std::time::Duration;
 
 use super::*;
 use crate::domain::Grade;
 use crate::scheduling::STEP_MS;
-use crate::test_support::{DAY_MS, T0, fastest};
+use crate::test_support::{DAY_MS, T0, assert_cpu_within, fastest};
+
+fn ms(millis: u64) -> Duration {
+    Duration::from_millis(millis)
+}
 
 const CARDS: usize = 5_000;
 const DUE: usize = 2_000;
@@ -84,21 +91,33 @@ fn deck_reads_are_fast_at_five_thousand_cards() {
     });
     let (cards, listed) = fastest("list_cards", 3, || store.list_cards(&deck).unwrap());
     assert_eq!(listed.len(), CARDS);
-    let (all, _) = fastest("decks", 3, || store.decks().unwrap());
-    let (one, _) = fastest("deck", 3, || store.deck(&deck).unwrap());
+    // A hundred calls each: one takes about 0.01 ms, under the precision of
+    // the CPU clock (one scheduler tick, `thread_cpu_time`).
+    let (all, ()) = fastest("decks, 100 times", 3, || {
+        for _ in 0..100 {
+            store.decks().unwrap();
+        }
+    });
+    let (one, ()) = fastest("deck, 100 times", 3, || {
+        for _ in 0..100 {
+            store.deck(&deck).unwrap();
+        }
+    });
 
     // What the deck page does on every change (#42 item 2).
-    assert!(
-        input + next < Duration::from_millis(STUDY_MS),
-        "{input:?} + {next:?}"
+    assert_cpu_within(
+        input + next,
+        ms(STUDY_MS),
+        "study_input + next_study_change",
     );
-    assert!(list < Duration::from_millis(STUDY_MS), "{list:?}");
-    assert!(cards < Duration::from_millis(LIST_CARDS_MS), "{cards:?}");
+    assert_cpu_within(list, ms(STUDY_MS), "list_decks");
+    assert_cpu_within(cards, ms(LIST_CARDS_MS), "list_cards");
     // The point of `deck` / `decks` (#42 item 1): finding a deck or the
     // names does not count every card, so it is far cheaper than the
     // counted list whatever the machine's speed.
-    assert!(all * 10 < list, "decks {all:?}, list_decks {list:?}");
-    assert!(one * 10 < list, "deck {one:?}, list_decks {list:?}");
+    // `x / 100 * 10 < list`: one call at least ten times cheaper.
+    assert!(all < list * 10, "decks ×100 {all:?}, list_decks {list:?}");
+    assert!(one < list * 10, "deck ×100 {one:?}, list_decks {list:?}");
 }
 
 #[test]
@@ -120,7 +139,7 @@ fn listing_five_thousand_tagged_cards_is_fast() {
     });
     assert_eq!(listed.len(), CARDS);
     assert!(listed.iter().all(|c| c.tags.len() == 2));
-    assert!(tagged < Duration::from_millis(LIST_TAGGED_MS), "{tagged:?}");
+    assert_cpu_within(tagged, ms(LIST_TAGGED_MS), "list_tagged_cards");
 }
 
 #[test]
@@ -136,7 +155,7 @@ fn planning_a_five_thousand_card_import_is_fast() {
             .clone()
     });
     assert_eq!(summary.cards.new, CARDS);
-    assert!(plan < Duration::from_millis(PLAN_IMPORT_MS), "{plan:?}");
+    assert_cpu_within(plan, ms(PLAN_IMPORT_MS), "plan_import");
 }
 
 /// A scratch store whose cards also have tags and a second deck, as the
@@ -205,7 +224,7 @@ fn browsing_five_thousand_cards_is_fast() {
     );
     assert_eq!(n, 100);
     for t in [all, text, rare, filtered, suspended] {
-        assert!(t < Duration::from_millis(BROWSE_MS), "{t:?}");
+        assert_cpu_within(t, ms(BROWSE_MS), "browse");
     }
 }
 
@@ -236,8 +255,8 @@ fn browsing_twenty_thousand_cards_is_fast() {
             .unwrap()
     });
     assert_eq!(rows.len(), 1);
-    assert!(all < Duration::from_millis(4 * BROWSE_MS), "{all:?}");
-    assert!(text < Duration::from_millis(4 * BROWSE_MS), "{text:?}");
+    assert_cpu_within(all, ms(4 * BROWSE_MS), "browse 20,000 (all)");
+    assert_cpu_within(text, ms(4 * BROWSE_MS), "browse 20,000 (text)");
 }
 
 #[test]
@@ -277,7 +296,7 @@ fn bulk_writes_on_five_thousand_cards_are_fast() {
     for t in [
         suspend, moved, unmove, tagged, reset, undo, deleted, undeleted,
     ] {
-        assert!(t < Duration::from_millis(BULK_MS), "{t:?}");
+        assert_cpu_within(t, ms(BULK_MS), "a bulk write");
     }
 }
 
@@ -289,7 +308,7 @@ fn rebuilding_the_search_index_of_five_thousand_cards_is_fast() {
         crate::storage::search::rebuild_search_index(&tx).unwrap();
         tx.commit().unwrap();
     });
-    assert!(t < Duration::from_millis(REBUILD_INDEX_MS), "{t:?}");
+    assert_cpu_within(t, ms(REBUILD_INDEX_MS), "rebuild_search_index");
 }
 
 /// `study_input` + `next_study_change`, and `list_decks`, each. Measured
