@@ -899,8 +899,6 @@ mod tests {
 
     /// A page over a deck of `n` cards that are all due.
     fn page_of(n: usize) -> (tempfile::TempDir, AppState, DeckPage, Vec<String>) {
-        adw::init().unwrap();
-        gio::resources_register_include!("rappel.gresource").unwrap();
         let tmp = tempfile::tempdir().unwrap();
         let state = AppState::open(tmp.path().join("data")).unwrap();
         let deck = state.create_deck("Deck").unwrap();
@@ -927,7 +925,7 @@ mod tests {
 
     #[test]
     fn a_reset_changes_the_counts_and_its_undo_changes_them_back() {
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let (_tmp, state, page, ids) = page_of(2);
             let subtitle = || page.imp().window_title.subtitle().to_string();
             assert_eq!(subtitle(), "2 due");
@@ -948,7 +946,7 @@ mod tests {
 
     #[test]
     fn a_suspended_card_leaves_the_counts_and_its_undo_brings_it_back() {
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let (_tmp, state, page, ids) = page_of(2);
             let subtitle = || page.imp().window_title.subtitle().to_string();
             assert_eq!(subtitle(), "2 due");
@@ -964,7 +962,7 @@ mod tests {
 
     #[test]
     fn the_study_bar_follows_the_width_and_the_cards() {
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let (_tmp, state, page, ids) = page_of(1);
             let bar = || page.imp().study_bar.is_revealed();
             assert!(!bar());
@@ -982,7 +980,7 @@ mod tests {
 
     #[test]
     fn an_undo_after_the_card_was_studied_again_changes_nothing() {
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let (_tmp, state, page, ids) = page_of(1);
             page.reset(&ids[0]);
             let reset = state

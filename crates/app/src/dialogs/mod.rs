@@ -7,4 +7,4 @@ pub mod card_info;
 pub mod deck_name_dialog;
 pub mod preferences;
 #[cfg(test)]
-mod shortcuts;
+pub(crate) mod shortcuts;

@@ -56,6 +56,17 @@ fn plain(key: gtk::gdk::Key) -> String {
         .to_string()
 }
 
+/// The dialog, under the id `AdwApplication` looks for ("a resource
+/// located at `shortcuts-dialog.ui` which defines an `AdwShortcutsDialog`
+/// with the ID `shortcuts_dialog`", libadwaita docs, `AdwApplication`),
+/// with the builder that holds the rest of the file; `Err` with the id
+/// after logging that it is missing.
+pub(crate) fn load() -> Result<(gtk::Builder, adw::ShortcutsDialog), &'static str> {
+    let builder = dialog::builder(FILE);
+    let dialog = dialog::object(&builder, FILE, "shortcuts_dialog")?;
+    Ok((builder, dialog))
+}
+
 /// The items of one section of the dialog, as (title, accelerators).
 type Items = Vec<(String, Vec<String>)>;
 
@@ -63,9 +74,7 @@ type Items = Vec<(String, Vec<String>)>;
 /// `AdwShortcutsSection` is a `GListModel` of its `AdwShortcutsItem`s
 /// (libadwaita docs, `AdwShortcutsSection`).
 fn sections() -> Vec<(String, Items)> {
-    let builder = dialog::builder(FILE);
-    let _: adw::ShortcutsDialog = dialog::object(&builder, FILE, "shortcuts_dialog")
-        .expect("AdwApplication needs the id shortcuts_dialog");
+    let (builder, _) = load().expect("AdwApplication needs the id shortcuts_dialog");
     builder
         .objects()
         .into_iter()
@@ -149,9 +158,7 @@ fn bound_keys() -> Vec<(&'static str, Vec<String>)> {
 
 #[test]
 fn every_accelerator_parses_and_every_bound_key_is_listed_in_its_section() {
-    crate::testing::with_gtk(|| {
-        adw::init().unwrap();
-        gio::resources_register_include!("rappel.gresource").unwrap();
+    crate::testing::with_widgets(|| {
         let sections = sections();
         let count: usize = sections.iter().map(|(_, items)| items.len()).sum();
         assert!(count >= 20, "the dialog lost its items");

@@ -19,7 +19,6 @@ rappel-core = { path = "crates/core" }
 # UI (app crate only; never in rappel-core).
 gtk = { package = "gtk4", version = "0.11", features = ["v4_14"] }
 adw = { package = "libadwaita", version = "0.9", features = ["v1_8"] }
-glib-build-tools = "0.22"
 # The card editor (SPEC §4.4, ADR 0022): GtkSourceView 5 bindings, same
 # gtk-rs release as gtk4 0.11. v5_10 for the built-in Adwaita style schemes.
 sourceview5 = { version = "0.11", features = ["v5_10"] }

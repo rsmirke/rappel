@@ -10,6 +10,8 @@ mod state;
 mod testing;
 mod transfer;
 mod ui;
+#[cfg(test)]
+mod ui_files;
 mod widgets;
 mod window;
 mod window_state;

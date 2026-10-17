@@ -91,14 +91,22 @@ pub async fn import(window: &RappelWindow, state: &AppState) {
     apply(window, data_dir, plan).await;
 }
 
-/// Shows the plan; whether the user chose Import.
-async fn confirm(window: &RappelWindow, state: &AppState, summary: &ImportSummary) -> bool {
+/// The import question and its conflicts label, from
+/// `data/import_dialog.blp`; `Err` with the first missing object's id,
+/// after logging every missing one.
+pub(crate) fn confirm_layout() -> Result<(adw::AlertDialog, gtk::Label), &'static str> {
     const FILE: &str = "import_dialog.ui";
     let builder = dialog::builder(FILE);
-    let (Some(dialog), Some(conflicts_label)) = (
-        dialog::object::<adw::AlertDialog>(&builder, FILE, "import_dialog"),
-        dialog::object::<gtk::Label>(&builder, FILE, "conflicts_label"),
-    ) else {
+    let (dialog, conflicts_label) = (
+        dialog::object(&builder, FILE, "import_dialog"),
+        dialog::object(&builder, FILE, "conflicts_label"),
+    );
+    Ok((dialog?, conflicts_label?))
+}
+
+/// Shows the plan; whether the user chose Import.
+async fn confirm(window: &RappelWindow, state: &AppState, summary: &ImportSummary) -> bool {
+    let Ok((dialog, conflicts_label)) = confirm_layout() else {
         return false;
     };
     let view = plan_view(summary);

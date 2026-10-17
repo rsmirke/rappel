@@ -732,9 +732,9 @@ impl CardEditor {
         if asking.replace(true) {
             return false;
         }
-        let discard = match dialog::alert("discard_dialog.ui", "discard_dialog") {
-            Some(dialog) => dialog.choose_future(Some(self)).await == "discard",
-            None => false,
+        let discard = match dialog::DISCARD_CHANGES.load() {
+            Ok(dialog) => dialog.choose_future(Some(self)).await == "discard",
+            Err(_) => false,
         };
         asking.set(false);
         discard
@@ -882,8 +882,6 @@ mod tests {
         CardEditor,
         Rc<std::cell::RefCell<Vec<Saved>>>,
     ) {
-        adw::init().unwrap();
-        gtk::gio::resources_register_include!("rappel.gresource").unwrap();
         let tmp = tempfile::tempdir().unwrap();
         let state = AppState::open(tmp.path().join("data")).unwrap();
         let deck = state.create_deck("Deck").unwrap();
@@ -909,7 +907,7 @@ mod tests {
 
     #[test]
     fn a_card_is_saved_with_its_tags_and_the_next_one_keeps_them() {
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let (_tmp, state, deck, editor, saved) = editor_over(None);
             // Two names made pills by their commas, and spaces typed after.
             type_into(&editor, "2 + 2", " maths ,Alg\u{E8}bre, ");
@@ -949,7 +947,7 @@ mod tests {
 
     #[test]
     fn a_name_typed_without_a_comma_is_saved_too() {
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let (_tmp, state, deck, editor, _saved) = editor_over(None);
             type_into(&editor, "front", "maths, geo");
             editor.save(false);
@@ -961,7 +959,7 @@ mod tests {
 
     #[test]
     fn an_invalid_tag_shows_an_error_and_blocks_saving() {
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let (_tmp, state, deck, editor, _saved) = editor_over(None);
             let imp = editor.imp();
             type_into(&editor, "front", &"x".repeat(300));
@@ -983,7 +981,7 @@ mod tests {
 
     #[test]
     fn editing_a_card_loads_its_tags_and_unlinks_the_ones_removed() {
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let (_tmp, state, deck, editor, saved) = editor_over(Some(("front", &["a", "b"])));
             let imp = editor.imp();
             assert_eq!(imp.tag_entry.pill_names(), ["a", "b"]);
@@ -1009,7 +1007,7 @@ mod tests {
 
     #[test]
     fn unreadable_tags_disable_the_field_and_say_why_and_a_save_keeps_them() {
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let (_tmp, state, deck, editor, _saved) = editor_over(Some(("front", &["a"])));
             let imp = editor.imp();
             let card = state.list_tagged_cards(&deck).unwrap().remove(0);
@@ -1029,7 +1027,7 @@ mod tests {
 
     #[test]
     fn a_suggestion_becomes_a_pill_of_the_card() {
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let (_tmp, _state, _deck, editor, _saved) =
                 editor_over(Some(("front", &["algebra", "maths"])));
             let imp = editor.imp();
@@ -1045,7 +1043,7 @@ mod tests {
 
     #[test]
     fn a_narrow_editor_shows_the_text_or_the_preview() {
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let (_tmp, _state, _deck, editor, _saved) = editor_over(None);
             let imp = editor.imp();
             assert!(imp.edit_pane.is_visible() && imp.preview_pane.is_visible());
@@ -1068,7 +1066,7 @@ mod tests {
     #[test]
     fn switching_panes_keeps_the_focus_where_keys_reach() {
         use std::time::Duration;
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let (_tmp, _state, _deck, editor, _saved) = editor_over(None);
             let imp = editor.imp();
             // Wide enough that the breakpoint stays off by itself.
@@ -1154,7 +1152,7 @@ mod tests {
             ("words", "word ".repeat(MAX_CARD_SIDE_BYTES / 5)),
             ("no spaces", "x".repeat(MAX_CARD_SIDE_BYTES)),
         ];
-        let results = crate::testing::with_gtk(move || {
+        let results = crate::testing::with_widgets(move || {
             sides.map(|(what, side)| {
                 let buffer = sourceview5::Buffer::new(None);
                 buffer.set_language(
