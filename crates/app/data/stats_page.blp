@@ -19,10 +19,24 @@ template $RappelStatsPage: Adw.NavigationPage {
       Gtk.StackPage {
         name: "empty";
 
+        // The brief's empty state: icon, title, one sentence, one pill
+        // button. The button goes back (`navigation.pop`, an action of
+        // AdwNavigationView); its label is set in pages/stats_page.rs.
         child: Adw.StatusPage {
-          icon-name: "view-continuous-symbolic";
+          icon-name: "document-open-recent-symbolic";
           title: _("No Statistics Yet");
           description: _("Study some cards to see your progress here");
+
+          child: Gtk.Button back_button {
+            use-underline: true;
+            halign: center;
+            action-name: "navigation.pop";
+
+            styles [
+              "pill",
+              "suggested-action",
+            ]
+          };
         };
       }
 
@@ -70,9 +84,12 @@ template $RappelStatsPage: Adw.NavigationPage {
 
                     Gtk.Label retention_value {
                       margin-top: 12;
+                      margin-start: 6;
+                      margin-end: 6;
 
                       styles [
                         "title-1",
+                        "numeric",
                       ]
                     }
 
@@ -85,7 +102,7 @@ template $RappelStatsPage: Adw.NavigationPage {
 
                       styles [
                         "caption",
-                        "dim-label",
+                        "dimmed",
                       ]
                     }
                   }
@@ -100,9 +117,12 @@ template $RappelStatsPage: Adw.NavigationPage {
 
                     Gtk.Label pass_rate_value {
                       margin-top: 12;
+                      margin-start: 6;
+                      margin-end: 6;
 
                       styles [
                         "title-1",
+                        "numeric",
                       ]
                     }
 
@@ -115,7 +135,7 @@ template $RappelStatsPage: Adw.NavigationPage {
 
                       styles [
                         "caption",
-                        "dim-label",
+                        "dimmed",
                       ]
                     }
                   }
@@ -130,9 +150,12 @@ template $RappelStatsPage: Adw.NavigationPage {
 
                     Gtk.Label time_value {
                       margin-top: 12;
+                      margin-start: 6;
+                      margin-end: 6;
 
                       styles [
                         "title-1",
+                        "numeric",
                       ]
                     }
 
@@ -145,7 +168,7 @@ template $RappelStatsPage: Adw.NavigationPage {
 
                       styles [
                         "caption",
-                        "dim-label",
+                        "dimmed",
                       ]
                     }
                   }

@@ -24,8 +24,9 @@ template $RappelChartCard: Gtk.Box {
       xalign: 1;
 
       styles [
-        "dim-label",
+        "dimmed",
         "caption",
+        "numeric",
       ]
     }
   }
@@ -38,13 +39,13 @@ template $RappelChartCard: Gtk.Box {
     margin-bottom: 6;
 
     styles [
-      "dim-label",
+      "dimmed",
     ]
   }
 
   Gtk.Box chart_box {
     orientation: vertical;
-    spacing: 4;
+    spacing: 6;
 
     $RappelBarChart chart {}
 
@@ -54,8 +55,9 @@ template $RappelChartCard: Gtk.Box {
         hexpand: true;
 
         styles [
-          "dim-label",
+          "dimmed",
           "caption",
+          "numeric",
         ]
       }
 
@@ -63,8 +65,9 @@ template $RappelChartCard: Gtk.Box {
         xalign: 1;
 
         styles [
-          "dim-label",
+          "dimmed",
           "caption",
+          "numeric",
         ]
       }
     }
@@ -74,13 +77,15 @@ template $RappelChartCard: Gtk.Box {
     Gtk.Label caption_label {
       xalign: 0;
       wrap: true;
-      margin-top: 4;
+
+      styles [
+        "numeric",
+      ]
     }
 
     Gtk.Box legend_box {
       visible: false;
       spacing: 6;
-      margin-top: 4;
 
       Gtk.DrawingArea passed_swatch {
         content-width: 14;
@@ -119,7 +124,7 @@ template $RappelChartCard: Gtk.Box {
     wrap: true;
 
     styles [
-      "dim-label",
+      "dimmed",
       "caption",
     ]
   }

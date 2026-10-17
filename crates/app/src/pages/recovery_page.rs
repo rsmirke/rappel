@@ -83,6 +83,8 @@ mod imp {
     impl ObjectImpl for RecoveryPage {
         fn constructed(&self) {
             self.parent_constructed();
+            // The page's only focusable widget when it offers nothing to do.
+            crate::ui::focus::unselect_on_first_focus(&self.path_label);
             // No confirmation: nothing is deleted, the old files are moved
             // aside, and this restore was already chosen.
             self.finish_restore_button.connect_clicked(glib::clone!(
@@ -153,24 +155,10 @@ impl RecoveryPage {
             .to_owned();
         match AppState::list_backups(&dir) {
             Ok(backups) if backups.is_empty() => {
-                if offers_start_fresh(imp.reason.get()) {
-                    imp.start_fresh_button.set_visible(true);
-                    description.push_str(
-                        "\n\nNo backups were found, so there is nothing to restore. You can \
-                         start with an empty database; the current files are kept in the data \
-                         folder, not deleted. Do not copy files there by hand.",
-                    );
-                } else if offers_finish_restore(imp.reason.get()) {
-                    description.push_str(
-                        "\n\nNo backups were found, but the waiting copy can be installed.",
-                    );
-                } else {
-                    description.push_str(
-                        "\n\nNo backups were found, so there is nothing to restore. Leave the \
-                         files in the data folder as they are and do not copy files there by \
-                         hand.",
-                    );
-                }
+                imp.start_fresh_button
+                    .set_visible(offers_start_fresh(imp.reason.get()));
+                description.push_str("\n\n");
+                description.push_str(no_backups_text(imp.reason.get()));
             }
             Ok(backups) => {
                 for backup in backups {
@@ -205,11 +193,9 @@ impl RecoveryPage {
         let Some(dialog) = dialog::alert("restore_dialog.ui", "restore_dialog") else {
             return;
         };
-        dialog.set_heading(Some(&format!("Restore Backup From {when}?")));
-        dialog.set_body(
-            "Changes made after this backup will not be in the restored database. \
-             The current database is kept in the data folder, not deleted.",
-        );
+        let (heading, body) = restore_question(when);
+        dialog.set_heading(Some(heading));
+        dialog.set_body(&body);
         glib::spawn_future_local(glib::clone!(
             #[weak(rename_to = page)]
             self,
@@ -385,6 +371,37 @@ impl RecoveryPage {
     }
 }
 
+/// The heading and body of the question before a restore of the backup
+/// made at `when` (as the row shows it).
+fn restore_question(when: &str) -> (&'static str, String) {
+    (
+        "Restore This Backup?",
+        format!(
+            "The backup from {when} replaces the current database, so changes made after it \
+             will not be in the restored one. The current database is kept in the data \
+             folder, not deleted."
+        ),
+    )
+}
+
+/// What the page adds to its explanation when there is no backup. Where
+/// the user may be tempted to fix the folder by hand, it warns against
+/// copying database files into it: a copy over `rappel.sqlite3` with an
+/// old `-wal` beside it replays that WAL into the copy (ADR 0007, 0016).
+fn no_backups_text(reason: Option<RecoveryReason>) -> &'static str {
+    if offers_start_fresh(reason) {
+        "No backups were found, so there is nothing to restore. You can start with an empty \
+         database instead: the current files stay in the data folder, nothing is deleted. \
+         Don’t copy database files into the data folder yourself: that can damage them."
+    } else if offers_finish_restore(reason) {
+        "No backups were found, but the waiting copy can be installed."
+    } else {
+        "No backups were found, so there is nothing to restore. Leave the files in the data \
+         folder as they are, so they can still be recovered. Don’t copy database files into \
+         the data folder yourself: that can damage them."
+    }
+}
+
 /// Whether "Finish Restore" is offered: exactly while an interrupted
 /// restore's checked copy waits, with or without backups (ADR 0026).
 fn offers_finish_restore(reason: Option<RecoveryReason>) -> bool {
@@ -453,6 +470,37 @@ mod tests {
         ] {
             assert!(
                 !(offers_finish_restore(reason) && offers_start_fresh(reason)),
+                "{reason:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_restore_question_names_the_backup() {
+        let (heading, body) = restore_question("16/10/26 11:00:00");
+        assert_eq!(heading, "Restore This Backup?");
+        assert!(body.starts_with("The backup from 16/10/26 11:00:00 replaces"));
+        assert!(body.ends_with("kept in the data folder, not deleted."));
+    }
+
+    #[test]
+    fn without_backups_the_page_says_what_is_left_to_do() {
+        assert!(no_backups_text(Some(RecoveryReason::Damaged)).contains("start with an empty"));
+        assert!(no_backups_text(Some(RecoveryReason::InterruptedRestore)).contains("waiting copy"));
+        assert!(no_backups_text(None).contains("Leave the files"));
+        for reason in [None, Some(RecoveryReason::NotRappel)] {
+            assert!(no_backups_text(reason).starts_with("No backups were found"));
+        }
+        // The one on-screen warning about a real way to lose data.
+        for reason in [
+            None,
+            Some(RecoveryReason::Damaged),
+            Some(RecoveryReason::MissingFile),
+        ] {
+            assert!(
+                no_backups_text(reason).ends_with(
+                    "Don’t copy database files into the data folder yourself: that can damage them."
+                ),
                 "{reason:?}"
             );
         }

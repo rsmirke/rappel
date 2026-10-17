@@ -45,6 +45,16 @@ pub struct Pill {
     remove: Option<gtk::Button>,
 }
 
+/// The keys that remove the pill whose button has the focus, without Ctrl,
+/// Alt or Shift, and whether the focus then walks back (Backspace) rather
+/// than staying in place. The Keyboard Shortcuts dialog lists them (a test
+/// checks it).
+pub(crate) const REMOVE_KEYS: [(gdk::Key, bool); 3] = [
+    (gdk::Key::BackSpace, true),
+    (gdk::Key::Delete, false),
+    (gdk::Key::KP_Delete, false),
+];
+
 mod imp {
     use std::cell::{Cell, RefCell};
 
@@ -349,14 +359,13 @@ impl TagPills {
                         | gdk::ModifierType::ALT_MASK
                         | gdk::ModifierType::SHIFT_MASK,
                 );
-                match key {
-                    gdk::Key::BackSpace if plain => pills.removed(&remove, true),
-                    gdk::Key::Delete | gdk::Key::KP_Delete if plain => {
-                        pills.removed(&remove, false);
+                match REMOVE_KEYS.iter().find(|(bound, _)| *bound == key) {
+                    Some(&(_, backwards)) if plain => {
+                        pills.removed(&remove, backwards);
+                        glib::Propagation::Stop
                     }
-                    _ => return glib::Propagation::Proceed,
+                    _ => glib::Propagation::Proceed,
                 }
-                glib::Propagation::Stop
             }
         ));
         remove.add_controller(keys);

@@ -7,6 +7,10 @@ using Adw 1;
 template $RappelBackupRow: Adw.ActionRow {
   use-markup: false;
 
+  styles [
+    "numeric",
+  ]
+
   [suffix]
   Gtk.Button restore_button {
     label: _("_Restore");

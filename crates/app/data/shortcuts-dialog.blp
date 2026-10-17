@@ -5,7 +5,7 @@ using Adw 1;
 // at `shortcuts-dialog.ui` under the resource base path and sets up
 // `app.shortcuts` and Ctrl+? itself (AdwApplication docs, "Shortcuts
 // Dialog"). It lists every shortcut the app has; a test in
-// `dialogs/shortcuts.rs` checks the review and editor keys against the code.
+// `dialogs/shortcuts.rs` checks every key table in the code against it.
 Adw.ShortcutsDialog shortcuts_dialog {
   Adw.ShortcutsSection {
     title: _("General");
@@ -110,32 +110,54 @@ Adw.ShortcutsDialog shortcuts_dialog {
     }
 
     Adw.ShortcutsItem {
-      title: _("Close");
-      accelerator: "Escape";
+      title: _("Edit or Preview");
+      subtitle: _("When the window is narrow");
+      accelerator: "<Alt>e <Alt>p";
     }
 
     Adw.ShortcutsItem {
-      title: _("Previous or Next Suggested Tag");
+      title: _("Close");
+      accelerator: "Escape";
+    }
+  }
+
+  Adw.ShortcutsSection {
+    title: _("Tags");
+
+    Adw.ShortcutsItem {
+      title: _("Add Tag");
+      subtitle: _("The typed name, or the highlighted suggestion");
+      accelerator: "Return";
+    }
+
+    Adw.ShortcutsItem {
+      title: _("Previous or Next Suggestion");
       subtitle: _("While tags are suggested");
       accelerator: "Up Down";
     }
 
     Adw.ShortcutsItem {
-      title: _("Take the Highlighted or First Tag");
-      subtitle: _("While tags are suggested");
+      title: _("Accept Suggestion");
+      subtitle: _("The highlighted one, or else the first");
       accelerator: "Tab";
     }
 
     Adw.ShortcutsItem {
-      title: _("Take the Highlighted Tag");
+      title: _("Close Suggestions");
       subtitle: _("While tags are suggested");
-      accelerator: "Return";
+      accelerator: "Escape";
     }
 
     Adw.ShortcutsItem {
-      title: _("Close the Suggestions");
-      subtitle: _("While tags are suggested");
-      accelerator: "Escape";
+      title: _("Go to the Last Tag");
+      subtitle: _("In an empty tag field");
+      accelerator: "BackSpace";
+    }
+
+    Adw.ShortcutsItem {
+      title: _("Remove Tag");
+      subtitle: _("On a tag’s remove button");
+      accelerator: "BackSpace Delete";
     }
   }
 
@@ -165,21 +187,23 @@ Adw.ShortcutsDialog shortcuts_dialog {
     }
 
     Adw.ShortcutsItem {
-      title: _("Stop Selecting, Then Clear the Search");
+      title: _("Stop Selecting or Clear the Search");
       accelerator: "Escape";
     }
   }
 
   Adw.ShortcutsSection {
-    title: _("Statistics Charts");
+    title: _("Statistics");
 
     Adw.ShortcutsItem {
       title: _("Previous or Next Day");
+      subtitle: _("On a chart");
       accelerator: "Left Right";
     }
 
     Adw.ShortcutsItem {
       title: _("First or Last Day");
+      subtitle: _("On a chart");
       accelerator: "Home End";
     }
   }

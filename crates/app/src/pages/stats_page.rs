@@ -35,6 +35,8 @@ mod imp {
         #[template_child]
         pub content_stack: TemplateChild<gtk::Stack>,
         #[template_child]
+        pub back_button: TemplateChild<gtk::Button>,
+        #[template_child]
         pub retention_value: TemplateChild<gtk::Label>,
         #[template_child]
         pub retention_caption: TemplateChild<gtk::Label>,
@@ -102,6 +104,9 @@ impl StatsPage {
         page.imp()
             .window_title
             .set_subtitle(deck.map_or("All Decks", |d| d.name.as_str()));
+        page.imp()
+            .back_button
+            .set_label(text::back_label(deck.is_some()));
         page.fill(&data);
         Ok(page)
     }
@@ -148,10 +153,13 @@ impl StatsPage {
         }
     }
 
-    /// Puts the keyboard focus on the first chart that is drawn.
+    /// Puts the keyboard focus on the first chart that is drawn, or on the
+    /// empty state's button.
     fn focus_first_chart(&self) {
         let imp = self.imp();
-        if let Some(card) = [&*imp.reviews_chart, &*imp.time_chart, &*imp.forecast_chart]
+        if imp.content_stack.visible_child_name().as_deref() == Some("empty") {
+            imp.back_button.grab_focus();
+        } else if let Some(card) = [&*imp.reviews_chart, &*imp.time_chart, &*imp.forecast_chart]
             .into_iter()
             .find(|card| card.shows_chart())
         {
@@ -214,6 +222,14 @@ mod tests {
             let (_tmp, state) = state();
             let page = StatsPage::new(&state, None).unwrap();
             assert_eq!(shown(&page).as_deref(), Some("empty"));
+            assert_eq!(
+                page.imp().back_button.label().as_deref(),
+                Some("_Back to Decks")
+            );
+            assert_eq!(
+                page.imp().back_button.action_name().as_deref(),
+                Some("navigation.pop")
+            );
             // A deck of new cards has nothing to show either.
             let deck = state.create_deck("Deck").unwrap();
             state
@@ -221,6 +237,10 @@ mod tests {
                 .unwrap();
             let page = StatsPage::new(&state, Some(&deck)).unwrap();
             assert_eq!(shown(&page).as_deref(), Some("empty"));
+            assert_eq!(
+                page.imp().back_button.label().as_deref(),
+                Some("_Back to Deck")
+            );
         });
     }
 

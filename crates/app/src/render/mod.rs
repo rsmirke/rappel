@@ -131,7 +131,7 @@ fn block_widget(block: &Block, lists: usize, math: &mut Budget) -> gtk::Widget {
             let quote = gtk::Box::new(gtk::Orientation::Horizontal, BLOCK_SPACING);
             quote.append(&gtk::Separator::new(gtk::Orientation::Vertical));
             let inner = blocks_widget(blocks, lists, math);
-            inner.add_css_class("dim-label");
+            inner.add_css_class("dimmed");
             inner.set_hexpand(true);
             quote.append(&inner);
             quote.upcast()

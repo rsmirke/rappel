@@ -130,6 +130,9 @@ mod imp {
             window.action_set_enabled("win.new", false);
             window.action_set_enabled("win.search", false);
             window.action_set_enabled("win.preferences", false);
+            // The only focusable widgets of their pages.
+            crate::ui::focus::unselect_on_first_focus(&self.too_new_path);
+            crate::ui::focus::unselect_on_first_focus(&self.error_details);
             for action in super::TRANSFER_ACTIONS {
                 window.action_set_enabled(action, false);
             }
