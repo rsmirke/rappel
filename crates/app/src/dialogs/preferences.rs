@@ -557,13 +557,6 @@ mod tests {
         assert_eq!(hour_from_position(u32::MAX), None);
     }
 
-    /// A state over a new database in a temporary directory.
-    fn temporary_state() -> (tempfile::TempDir, AppState) {
-        let tmp = tempfile::tempdir().unwrap();
-        let state = AppState::open(tmp.path().join("data")).unwrap();
-        (tmp, state)
-    }
-
     /// The layouts load with every object this file asks for, the rows show
     /// the settings without saving them, and a change the user makes is
     /// saved. (A wrong object id in a `.blp` file would only show when the
@@ -571,7 +564,7 @@ mod tests {
     #[test]
     fn the_rows_show_and_save_the_settings() {
         crate::testing::with_widgets(|| {
-            let (_tmp, state) = temporary_state();
+            let (_tmp, state) = crate::testing::temporary_state();
 
             let rows = Rows::load().expect("preferences_dialog.ui has every object");
             let ctx = context(&rows, &state);

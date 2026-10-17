@@ -176,7 +176,7 @@ impl Default for TagPills {
 }
 
 impl TagPills {
-    /// Shows `names` (each already one line, `text::pill_text`). Cheap
+    /// Shows `names` (each already one line, `ui::text::one_line`). Cheap
     /// when they are the tags already shown, and otherwise only relabels
     /// the kept pills.
     pub fn set_tags(&self, names: &[String]) {

@@ -20,9 +20,10 @@ use crate::dialogs::card_editor::{CardEditor, Saved};
 use crate::dialogs::{browser_dialogs, card_info};
 use crate::state::AppState;
 use crate::ui::focus::index_after_removal;
+use crate::ui::text::one_line;
 use crate::ui::toast::{info_toast, show_error, show_toast_from, undo_toast};
-use crate::ui::{dropdown, init_once, nav};
-use crate::widgets::{BrowseItem, CardRow};
+use crate::ui::{breakpoint, dropdown, init_once, nav};
+use crate::widgets::{BrowseItem, CardRow, card_row};
 use crate::window::RappelWindow;
 
 pub mod selection;
@@ -84,7 +85,13 @@ mod imp {
         #[template_child]
         pub action_bar: TemplateChild<gtk::ActionBar>,
         #[template_child]
+        pub move_button: TemplateChild<gtk::Button>,
+        #[template_child]
         pub suspend_button: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub delete_button: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub reset_button: TemplateChild<gtk::Button>,
         #[template_child]
         pub suspend_content: TemplateChild<adw::ButtonContent>,
         /// A narrow window; the rows follow it.
@@ -169,7 +176,22 @@ mod imp {
 
     #[glib::derived_properties]
     impl ObjectImpl for BrowserPage {}
-    impl WidgetImpl for BrowserPage {}
+    impl WidgetImpl for BrowserPage {
+        fn root(&self) {
+            // Roots the children first (`gtk_widget_real_root`), so every
+            // `AdwButtonContent` has named its button by then.
+            self.parent_root();
+            for button in [
+                &*self.select_all_button,
+                &*self.move_button,
+                &*self.suspend_button,
+                &*self.delete_button,
+                &*self.reset_button,
+            ] {
+                super::name_by_own_label(button);
+            }
+        }
+    }
     impl NavigationPageImpl for BrowserPage {}
 }
 
@@ -307,22 +329,17 @@ impl BrowserPage {
 
     fn connect_signals(&self) {
         let imp = self.imp();
-        imp.breakpoint.connect_apply(glib::clone!(
-            #[weak(rename_to = page)]
-            self,
-            move |_| {
-                page.set_compact(true);
-                page.update_selection_ui();
-            }
-        ));
-        imp.breakpoint.connect_unapply(glib::clone!(
-            #[weak(rename_to = page)]
-            self,
-            move |_| {
-                page.set_compact(false);
-                page.update_selection_ui();
-            }
-        ));
+        breakpoint::follow(
+            &imp.breakpoint,
+            glib::clone!(
+                #[weak(rename_to = page)]
+                self,
+                move |compact| {
+                    page.set_compact(compact);
+                    page.update_selection_ui();
+                }
+            ),
+        );
         imp.search_entry.connect_search_changed(glib::clone!(
             #[weak(rename_to = page)]
             self,
@@ -533,43 +550,12 @@ impl BrowserPage {
     /// A row per visible card, following the page's `compact` and
     /// `selecting` properties.
     fn row_factory(&self) -> gtk::SignalListItemFactory {
-        let factory = gtk::SignalListItemFactory::new();
-        let page = self.downgrade();
-        factory.connect_setup(move |_, item| {
-            let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
-                return;
-            };
-            let row = CardRow::for_browser();
-            if let Some(page) = page.upgrade() {
-                page.bind_property("compact", &row, "compact")
-                    .sync_create()
-                    .build();
-                page.bind_property("selecting", &row, "selecting")
-                    .sync_create()
-                    .build();
-            }
-            item.set_child(Some(&row));
-        });
-        factory.connect_bind(|_, item| {
-            let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
-                return;
-            };
-            if let (Some(card), Some(row)) = (
-                item.item().and_downcast::<BrowseItem>(),
-                item.child().and_downcast::<CardRow>(),
-            ) {
-                row.bind_browse(&card, item);
-            }
-        });
-        factory.connect_unbind(|_, item| {
-            if let Some(row) = item
-                .downcast_ref::<gtk::ListItem>()
-                .and_then(|item| item.child().and_downcast::<CardRow>())
-            {
-                row.unbind();
-            }
-        });
-        factory
+        card_row::factory(
+            self,
+            CardRow::for_browser,
+            &["compact", "selecting"],
+            CardRow::bind_browse,
+        )
     }
 
     // --- reading ---------------------------------------------------------
@@ -902,10 +888,10 @@ impl BrowserPage {
         // Tags is a menu button, which does not follow its menu's actions.
         imp.tags_button.set_sensitive(n > 0);
         let choice = self.suspend_choice();
-        let (label, tooltip) = text::suspend_labels(choice);
-        imp.suspend_button.set_tooltip_text(Some(tooltip));
+        let (label, accessible) = text::suspend_labels(choice);
+        imp.suspend_button.set_tooltip_text(Some(label));
         imp.suspend_button
-            .update_property(&[gtk::accessible::Property::Label(tooltip)]);
+            .update_property(&[gtk::accessible::Property::Label(accessible)]);
         imp.suspend_content.set_icon_name(match choice {
             SuspendChoice::Suspend => "media-playback-pause-symbolic",
             SuspendChoice::Unsuspend => "media-playback-start-symbolic",
@@ -1239,8 +1225,26 @@ fn undo(
 /// "All …" first, then the names, each on one line.
 fn labels<'a>(all: &str, names: impl Iterator<Item = &'a String>) -> Vec<String> {
     std::iter::once(all.to_owned())
-        .chain(names.map(|n| text::one_line(n)))
+        .chain(names.map(|n| one_line(n)))
         .collect()
+}
+
+/// Lets `button`'s own accessible label (Blueprint, or `suspend_labels`)
+/// name it, not its `AdwButtonContent`'s text. That content makes its
+/// label the button's mnemonic label when it is rooted
+/// (`adw_button_content_root`, source read for libadwaita 1.9 and main),
+/// which sets the button's labelled-by relation
+/// (`gtk_widget_add_mnemonic_label`, source read for GTK 4.24), and
+/// a labelled-by relation names a widget before its label property does
+/// (`gtk_at_context_get_text_accumulate`, steps 2B and 2C of the ARIA
+/// name computation, gtk/gtkatcontext.c, GTK 4.24). The button was then
+/// named by its visible word ("Move…") and, on a phone, where the
+/// breakpoint empties the words, not at all (observed over AT-SPI with
+/// libadwaita 1.10.0 and GTK 4.24.1). Only the accessible relation is
+/// reset: the mnemonic label stays, so a mnemonic such as Select All's
+/// "_All" still activates the button.
+fn name_by_own_label(button: &gtk::Button) {
+    button.reset_relation(gtk::AccessibleRelation::LabelledBy);
 }
 
 #[cfg(test)]
@@ -1252,7 +1256,7 @@ mod tests {
 
     use super::*;
 
-    const DAY_MS: i64 = 24 * 60 * 60 * 1000;
+    use crate::ui::time::DAY_MS;
 
     fn tags(names: &[&str]) -> Vec<String> {
         names.iter().map(|n| (*n).to_owned()).collect()
@@ -1261,8 +1265,7 @@ mod tests {
     /// A state with decks "Maths" (algebra cards) and "Art" (one card).
     /// Returns the ids of the Maths cards.
     fn state_with_cards() -> (tempfile::TempDir, AppState, Vec<String>, String) {
-        let tmp = tempfile::tempdir().unwrap();
-        let state = AppState::open(tmp.path().join("data")).unwrap();
+        let (tmp, state) = crate::testing::temporary_state();
         let maths = state.create_deck("Maths").unwrap();
         let art = state.create_deck("Art").unwrap();
         let ids = ["alpha equation", "beta matrix", "gamma vector"]
@@ -1458,8 +1461,7 @@ mod tests {
     #[test]
     fn an_empty_collection_says_so() {
         crate::testing::with_widgets(|| {
-            let tmp = tempfile::tempdir().unwrap();
-            let state = AppState::open(tmp.path().join("data")).unwrap();
+            let (_tmp, state) = crate::testing::temporary_state();
             let page = page_over(&state, None);
             let imp = page.imp();
             assert_eq!(
@@ -1480,8 +1482,7 @@ mod tests {
     #[test]
     fn opened_from_an_empty_deck_it_says_no_cards_or_no_results() {
         crate::testing::with_widgets(|| {
-            let tmp = tempfile::tempdir().unwrap();
-            let state = AppState::open(tmp.path().join("data")).unwrap();
+            let (_tmp, state) = crate::testing::temporary_state();
             let empty = state.create_deck("Empty").unwrap();
             // No card anywhere: "No Cards Yet" at once, even filtered.
             let page = page_over(&state, Some(&empty.id));
@@ -1592,6 +1593,64 @@ mod tests {
         });
     }
 
+    /// The action buttons have no labelled-by relation once rooted, so
+    /// their own accessible label names them (`name_by_own_label`), also on
+    /// a phone, where the breakpoint empties their words. A button with an
+    /// `AdwButtonContent` that is not reset has the relation, so the check
+    /// can fail.
+    #[test]
+    fn the_action_buttons_are_named_by_their_own_labels() {
+        use gtk::{AccessibleProperty, AccessibleRelation};
+        crate::testing::with_widgets(|| {
+            let control = gtk::Button::new();
+            control.set_child(Some(&adw::ButtonContent::builder().label("Move…").build()));
+            let control_window = gtk::Window::new();
+            control_window.set_child(Some(&control));
+            assert!(gtk::test_accessible_has_relation(
+                &control,
+                AccessibleRelation::LabelledBy
+            ));
+            control_window.destroy();
+
+            let (_tmp, state, _, _) = state_with_cards();
+            let page = page_over(&state, None);
+            let imp = page.imp();
+            let buttons = [
+                &*imp.select_all_button,
+                &*imp.move_button,
+                &*imp.suspend_button,
+                &*imp.delete_button,
+                &*imp.reset_button,
+            ];
+            let check = |when: &str| {
+                for button in buttons {
+                    assert!(
+                        !gtk::test_accessible_has_relation(button, AccessibleRelation::LabelledBy),
+                        "{when}: {:?} is labelled by its words",
+                        button.tooltip_text()
+                    );
+                    assert!(
+                        gtk::test_accessible_has_property(button, AccessibleProperty::Label),
+                        "{when}: {:?} has no label",
+                        button.tooltip_text()
+                    );
+                }
+            };
+            let window = gtk::Window::new();
+            window.set_default_size(360, 640);
+            window.set_child(Some(&page));
+            check("rooted");
+            // Shown at 360 px, the breakpoint applies and empties the words.
+            window.present();
+            assert!(crate::testing::settle_until(
+                || page.compact(),
+                std::time::Duration::from_secs(5)
+            ));
+            check("narrow");
+            window.destroy();
+        });
+    }
+
     #[test]
     fn a_suspended_card_reads_as_suspended() {
         crate::testing::with_widgets(|| {
@@ -1650,8 +1709,7 @@ mod tests {
     #[test]
     fn five_thousand_cards_stay_fast_and_virtual() {
         crate::testing::with_widgets(|| {
-            let tmp = tempfile::tempdir().unwrap();
-            let state = AppState::open(tmp.path().join("data")).unwrap();
+            let (_tmp, state) = crate::testing::temporary_state();
             let deck = state.create_deck("Scratch").unwrap();
             for i in 0..5_000 {
                 state

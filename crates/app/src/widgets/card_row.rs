@@ -304,6 +304,54 @@ impl CardRow {
     }
 }
 
+/// A list factory of card rows, for the deck page's list and All Cards':
+/// `make` makes each row, which then follows `page`'s properties named in
+/// `follows` (`compact`, `selecting`); `bind` shows the list item's item, a
+/// `T`, in its row; and a row is unbound before it is recycled.
+pub fn factory<T: IsA<glib::Object>>(
+    page: &impl IsA<glib::Object>,
+    make: fn() -> CardRow,
+    follows: &'static [&'static str],
+    bind: fn(&CardRow, &T, &gtk::ListItem),
+) -> gtk::SignalListItemFactory {
+    let factory = gtk::SignalListItemFactory::new();
+    let page = page.upcast_ref::<glib::Object>().downgrade();
+    factory.connect_setup(move |_, item| {
+        let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
+            return;
+        };
+        let row = make();
+        if let Some(page) = page.upgrade() {
+            for &property in follows {
+                page.bind_property(property, &row, property)
+                    .sync_create()
+                    .build();
+            }
+        }
+        item.set_child(Some(&row));
+    });
+    factory.connect_bind(move |_, item| {
+        let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
+            return;
+        };
+        if let (Some(shown), Some(row)) = (
+            item.item().and_downcast::<T>(),
+            item.child().and_downcast::<CardRow>(),
+        ) {
+            bind(&row, &shown, item);
+        }
+    });
+    factory.connect_unbind(|_, item| {
+        if let Some(row) = item
+            .downcast_ref::<gtk::ListItem>()
+            .and_then(|item| item.child().and_downcast::<CardRow>())
+        {
+            row.unbind();
+        }
+    });
+    factory
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::{Duration, Instant};

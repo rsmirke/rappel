@@ -41,7 +41,7 @@ use crate::state::AppState;
 use crate::ui::callback::Callback;
 use crate::ui::text::group_digits;
 use crate::ui::toast::{info_toast, show_error};
-use crate::ui::{dialog, init_once};
+use crate::ui::{breakpoint, dialog, init_once};
 use crate::widgets::tag_entry::field::{self as tags, TagsCheck};
 
 use self::layout::Mode;
@@ -416,16 +416,14 @@ impl CardEditor {
     /// (`AdwBreakpoint::apply` docs).
     fn setup_layout(&self) {
         let imp = self.imp();
-        imp.breakpoint.connect_apply(glib::clone!(
-            #[weak(rename_to = editor)]
-            self,
-            move |_| editor.set_narrow(true)
-        ));
-        imp.breakpoint.connect_unapply(glib::clone!(
-            #[weak(rename_to = editor)]
-            self,
-            move |_| editor.set_narrow(false)
-        ));
+        breakpoint::follow(
+            &imp.breakpoint,
+            glib::clone!(
+                #[weak(rename_to = editor)]
+                self,
+                move |narrow| editor.set_narrow(narrow)
+            ),
+        );
         imp.mode_toggles.connect_active_name_notify(glib::clone!(
             #[weak(rename_to = editor)]
             self,
@@ -882,8 +880,7 @@ mod tests {
         CardEditor,
         Rc<std::cell::RefCell<Vec<Saved>>>,
     ) {
-        let tmp = tempfile::tempdir().unwrap();
-        let state = AppState::open(tmp.path().join("data")).unwrap();
+        let (tmp, state) = crate::testing::temporary_state();
         let deck = state.create_deck("Deck").unwrap();
         let card = existing.map(|(front, tags)| {
             let names: Vec<String> = tags.iter().map(|t| (*t).to_owned()).collect();

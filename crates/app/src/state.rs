@@ -492,8 +492,7 @@ mod tests {
 
     #[test]
     fn the_statistics_cover_thirty_past_days_ending_today_and_fourteen_ahead() {
-        let tmp = tempfile::tempdir().unwrap();
-        let state = AppState::open(tmp.path().join("data")).unwrap();
+        let (_tmp, state) = crate::testing::temporary_state();
         let now = rappel_core::time::now_ms();
         let data = state.stats(None, now).unwrap();
         assert_eq!(data.past_starts.len(), STATS_PAST_DAYS);

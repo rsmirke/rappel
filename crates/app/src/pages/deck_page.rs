@@ -23,12 +23,12 @@ use crate::dialogs::card_editor::{CardEditor, Saved};
 use crate::dialogs::card_info;
 use crate::pages::{ReviewPage, StatsPage};
 use crate::state::AppState;
-use crate::ui::focus::index_after_removal;
+use crate::ui::focus::{self, ShownFocus, index_after_removal};
 use crate::ui::text::due_new_line;
 use crate::ui::toast::{info_toast, log_failure, show_error, show_toast_from, undo_toast};
 use crate::ui::undo::{self, UndoFailure};
 use crate::ui::{init_once, nav};
-use crate::widgets::{CardObject, CardRow};
+use crate::widgets::{CardObject, CardRow, card_row};
 use crate::window::RappelWindow;
 
 mod imp {
@@ -41,6 +41,7 @@ mod imp {
     use rappel_core::domain::Deck;
 
     use crate::state::AppState;
+    use crate::ui::breakpoint;
     use crate::ui::debounce::Debounce;
     use crate::ui::rows;
 
@@ -117,22 +118,20 @@ mod imp {
             self.parent_constructed();
             let page = self.obj();
             // Back from studying: what is left to study changed.
-            page.connect_shown(super::DeckPage::update_study);
+            page.connect_shown(|page| {
+                page.update_study();
+                page.focus_when_shown();
+            });
             page.connect_compact_notify(super::DeckPage::update_study_bar);
-            // AdwBreakpoint emits `apply` and `unapply` as its condition
-            // starts and stops matching, the first time too when the page
-            // is first sized (AdwBreakpoint docs; the browser page does
-            // the same, ADR 0036).
-            self.breakpoint.connect_apply(glib::clone!(
-                #[weak]
-                page,
-                move |_| page.set_compact(true)
-            ));
-            self.breakpoint.connect_unapply(glib::clone!(
-                #[weak]
-                page,
-                move |_| page.set_compact(false)
-            ));
+            // As on All Cards (ADR 0036).
+            breakpoint::follow(
+                &self.breakpoint,
+                glib::clone!(
+                    #[weak]
+                    page,
+                    move |compact| page.set_compact(compact)
+                ),
+            );
         }
     }
     impl WidgetImpl for DeckPage {}
@@ -249,10 +248,6 @@ impl DeckPage {
         let Some(view) = nav::navigation_view(self) else {
             return;
         };
-        // A double click or key repeat must not push two sessions.
-        if view.visible_page().is_some_and(|p| p.is::<ReviewPage>()) {
-            return;
-        }
         // Cards saved from the session's editor update this list too.
         let on_saved = glib::clone!(
             #[weak(rename_to = deck_page)]
@@ -261,12 +256,13 @@ impl DeckPage {
                 deck_page.show_saved(saved);
             }
         );
-        match ReviewPage::new(state.clone(), deck.clone(), on_saved) {
-            Ok(page) => {
-                self.action_set_enabled("deck.study", false);
-                view.push(&page);
-            }
-            Err(err) => self.error_toast(&format!("The session could not start: {err}")),
+        let pushed = nav::push_unless_on_top(&view, || {
+            let page = ReviewPage::new(state.clone(), deck.clone(), on_saved)?;
+            self.action_set_enabled("deck.study", false);
+            Ok::<_, rappel_core::Error>(page)
+        });
+        if let Err(err) = pushed {
+            self.error_toast(&format!("The session could not start: {err}"));
         }
     }
 
@@ -279,13 +275,8 @@ impl DeckPage {
         let Some(view) = nav::navigation_view(self) else {
             return;
         };
-        // Key repeat must not stack a second page.
-        if view.visible_page().is_some_and(|p| p.is::<StatsPage>()) {
-            return;
-        }
-        match StatsPage::new(state, Some(deck)) {
-            Ok(page) => view.push(&page),
-            Err(err) => self.error_toast(&format!("The statistics could not be read: {err}")),
+        if let Err(err) = nav::push_unless_on_top(&view, || StatsPage::new(state, Some(deck))) {
+            self.error_toast(&format!("The statistics could not be read: {err}"));
         }
     }
 
@@ -386,12 +377,7 @@ impl DeckPage {
             return;
         }
         store.remove(position);
-        match index_after_removal(position, store.n_items()) {
-            Some(next) => self.focus(next),
-            None => {
-                imp.empty_add_button.grab_focus();
-            }
-        }
+        self.focus_or_empty_state(index_after_removal(position, store.n_items()));
 
         // Undo must work after going back to the deck list too, when this
         // page may be gone: the closure keeps the state, not the page.
@@ -540,6 +526,50 @@ impl DeckPage {
                 store.splice(0, store.n_items(), &items);
             }
             Err(err) => self.error_toast(&format!("The cards could not be read: {err}")),
+        }
+    }
+
+    /// Focuses the first card (or Add Card) unless the focus is already
+    /// on this page (see [`focus::when_shown`]). On a push the focus is
+    /// set here, in `shown`, never before: a grab before or during the push
+    /// is lost (`ui::nav`). At startup the page is pushed without animation
+    /// before the window is shown, and `shown` is emitted during that push:
+    /// with animations off `switch_page` skips the transition, whose `done`
+    /// handler emits it (`adw_animation_skip`, `transition_done_cb`,
+    /// source read for libadwaita 1.8 and 1.9). The window then keeps this focus widget
+    /// (`gtk_window_show` moves the focus only when it has none,
+    /// gtk/gtkwindow.c, source read for GTK 4.22). Observed with
+    /// libadwaita 1.10.0 and GTK 4.24.1, where the window test runs.
+    fn focus_when_shown(&self) {
+        let inside = self
+            .root()
+            .and_then(|root| root.focus())
+            .is_some_and(|focus| focus.is_ancestor(self));
+        let rows = self.imp().cards.get().map_or(0, gio::ListStore::n_items);
+        match focus::when_shown(inside, rows) {
+            ShownFocus::Keep => {}
+            ShownFocus::FirstRow => {
+                // `scroll_to` with FOCUS only moves the list's focus item
+                // while the focus is outside it; the grab then focuses that
+                // item's row, making it if needed (`gtk_list_base_scroll_to`,
+                // `gtk_list_base_grab_focus`, gtk/gtklistbase.c, source read
+                // for GTK 4.20 and 4.22; observed with GTK 4.24.1).
+                let list = &self.imp().card_list;
+                list.scroll_to(0, gtk::ListScrollFlags::FOCUS, None);
+                list.grab_focus();
+            }
+            ShownFocus::EmptyState => self.focus_or_empty_state(None),
+        }
+    }
+
+    /// Focuses the card at `position`, or with `None` the empty state's
+    /// Add Card button.
+    fn focus_or_empty_state(&self, position: Option<u32>) {
+        match position {
+            Some(position) => self.focus(position),
+            None => {
+                self.imp().empty_add_button.grab_focus();
+            }
         }
     }
 
@@ -726,7 +756,7 @@ fn study_bar_shown(compact: bool, empty: bool) -> bool {
 /// The longest single wait before re-checking what there is to study. A
 /// later change is reached in steps, so a changed clock or time zone is
 /// noticed within this long.
-const MAX_STUDY_WAIT_MS: u64 = 3_600_000;
+const MAX_STUDY_WAIT_MS: u64 = crate::ui::time::HOUR_MS.unsigned_abs();
 
 /// How long to wait from `now` until the earlier of `next_change` (the next
 /// card that becomes due, if any) and `next_day` (the next study day, which
@@ -759,43 +789,17 @@ fn insert_in_order(store: &gio::ListStore, item: &CardObject) -> u32 {
 /// Builds a [`CardRow`] per visible row, following the page's `compact`,
 /// and points it at its card.
 fn row_factory(page: &DeckPage) -> gtk::SignalListItemFactory {
-    let factory = gtk::SignalListItemFactory::new();
-    let page = page.downgrade();
-    factory.connect_setup(move |_, item| {
-        let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
-            return;
-        };
-        let row = CardRow::default();
-        if let Some(page) = page.upgrade() {
-            page.bind_property("compact", &row, "compact")
-                .sync_create()
-                .build();
-        }
-        item.set_child(Some(&row));
-    });
-    factory.connect_bind(|_, item| {
-        let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
-            return;
-        };
-        if let (Some(card), Some(row)) = (
-            item.item().and_downcast::<CardObject>(),
-            item.child().and_downcast::<CardRow>(),
-        ) {
-            row.bind(&card);
-            // Screen readers read the front, the back and the tags, not
-            // "row" (`card_row::text::row_label`).
+    card_row::factory(
+        page,
+        CardRow::default,
+        &["compact"],
+        |row, card: &CardObject, item| {
+            row.bind(card);
+            // Screen readers read the front, the back and the tags, not "row"
+            // (`card_row::text::row_label`).
             item.set_accessible_label(&card.row_label());
-        }
-    });
-    factory.connect_unbind(|_, item| {
-        if let Some(row) = item
-            .downcast_ref::<gtk::ListItem>()
-            .and_then(|item| item.child().and_downcast::<CardRow>())
-        {
-            row.unbind();
-        }
-    });
-    factory
+        },
+    )
 }
 
 #[cfg(test)]
@@ -899,11 +903,10 @@ mod tests {
 
     /// A page over a deck of `n` cards that are all due.
     fn page_of(n: usize) -> (tempfile::TempDir, AppState, DeckPage, Vec<String>) {
-        let tmp = tempfile::tempdir().unwrap();
-        let state = AppState::open(tmp.path().join("data")).unwrap();
+        let (tmp, state) = crate::testing::temporary_state();
         let deck = state.create_deck("Deck").unwrap();
         let now = rappel_core::time::now_ms();
-        let day = 24 * 60 * 60 * 1000;
+        let day = crate::ui::time::DAY_MS;
         let ids = (0..n)
             .map(|i| {
                 let id = state

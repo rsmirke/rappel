@@ -13,7 +13,7 @@ use rappel_core::content::plain_summary;
 use rappel_core::domain::Card;
 use rappel_core::storage::{BrowseRow, CardStatus};
 
-use super::tag_pills::text::pill_text;
+use crate::ui::text::one_line;
 
 mod imp {
     use super::{BrowseRow, Card, CardStatus, Cell, OnceCell, RefCell};
@@ -80,7 +80,7 @@ impl BrowseItem {
         let obj: Self = glib::Object::new();
         obj.imp()
             .tags
-            .replace(row.tags.iter().map(|tag| pill_text(&tag.name)).collect());
+            .replace(row.tags.iter().map(|tag| one_line(&tag.name)).collect());
         obj.imp().row.replace(row);
         obj
     }
@@ -112,7 +112,7 @@ impl BrowseItem {
             .get_or_init(|| plain_summary(&self.imp().row.borrow().card.back_md))
     }
 
-    /// The tag names, each on one line (`tag_pills::text::pill_text`).
+    /// The tag names, each on one line (`ui::text::one_line`).
     pub fn tags(&self) -> Ref<'_, Vec<String>> {
         self.imp().tags.borrow()
     }

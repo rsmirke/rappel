@@ -1,7 +1,15 @@
-//! Texts with numbers: grouped digits and counted nouns. Pure, so they
-//! are unit-tested. English only until translations exist (SPEC §5).
+//! Texts with numbers (grouped digits, counted nouns, times) and names on
+//! one line. Pure, so they are unit-tested. English only until translations exist (SPEC §5).
 
 use std::time::Duration;
+
+use super::time::{DAY_MS, HOUR_MS, MINUTE_MS};
+
+/// A name (deck or tag) on one line: every run of whitespace, such as a
+/// line break in a pasted name, as one space. Plain text, never markup.
+pub fn one_line(name: &str) -> String {
+    name.split_whitespace().collect::<Vec<_>>().join(" ")
+}
 
 /// `n` with its digits in groups of three: 5210 → "5,210".
 pub fn group_digits(n: usize) -> String {
@@ -20,6 +28,12 @@ pub fn group_digits(n: usize) -> String {
 pub fn count(n: usize, singular: &str, plural: &str) -> String {
     let noun = if n == 1 { singular } else { plural };
     format!("{} {noun}", group_digits(n))
+}
+
+/// [`count`] of a number of time units ("3 days", "1 hour"); a negative
+/// number, which no caller passes, counts as zero.
+pub fn unit_count(n: i64, singular: &str, plural: &str) -> String {
+    count(usize::try_from(n).unwrap_or(0), singular, plural)
 }
 
 /// "12 due", "1,234 due": cards to review now, steps included. The deck
@@ -102,27 +116,23 @@ pub fn percent(fraction: f64) -> String {
 /// A span of time, one unit and rounded: "10 min", "5 h", "3 days",
 /// "2 months", "1.5 years". Under a minute is "1 min".
 pub fn interval_text(ms: i64) -> String {
-    const MIN: i64 = 60_000;
-    const HOUR: i64 = 60 * MIN;
-    const DAY: i64 = 24 * HOUR;
     let ms = ms.max(0);
-    let unit = |n: i64, one: &str, many: &str| count(usize::try_from(n).unwrap_or(0), one, many);
     // The unit is chosen from the rounded number, so 59 min 40 s is "1 h",
     // not "60 min".
-    let minutes = ((ms + MIN / 2) / MIN).max(1);
-    let hours = (ms + HOUR / 2) / HOUR;
-    let days = (ms + DAY / 2) / DAY;
+    let minutes = ((ms + MINUTE_MS / 2) / MINUTE_MS).max(1);
+    let hours = (ms + HOUR_MS / 2) / HOUR_MS;
+    let days = (ms + DAY_MS / 2) / DAY_MS;
     if minutes < 60 {
-        unit(minutes, "min", "min")
+        unit_count(minutes, "min", "min")
     } else if hours < 24 {
-        unit(hours, "h", "h")
+        unit_count(hours, "h", "h")
     } else if days < 60 {
-        unit(days, "day", "days")
-    } else if ms < 730 * DAY {
-        let month = DAY * 3044 / 100;
-        unit((ms + month / 2) / month, "month", "months")
+        unit_count(days, "day", "days")
+    } else if ms < 730 * DAY_MS {
+        let month = DAY_MS * 3044 / 100;
+        unit_count((ms + month / 2) / month, "month", "months")
     } else {
-        let year = DAY * 36525 / 100;
+        let year = DAY_MS * 36525 / 100;
         let tenths = (ms.min(1_000 * year) * 10 + year / 2) / year;
         format!("{}.{} years", tenths / 10, tenths % 10).replace(".0 ", " ")
     }
@@ -131,6 +141,26 @@ pub fn interval_text(ms: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn time_units_are_counted_and_a_negative_number_is_zero() {
+        assert_eq!(unit_count(1, "day", "days"), "1 day");
+        assert_eq!(unit_count(0, "day", "days"), "0 days");
+        assert_eq!(unit_count(25, "minute", "minutes"), "25 minutes");
+        assert_eq!(unit_count(1_500, "day", "days"), "1,500 days");
+        assert_eq!(unit_count(-3, "hour", "hours"), "0 hours");
+    }
+
+    /// Moved here from `tag_pills::text` (`a_pill_is_one_plain_line`) and
+    /// `browser_page::text`, which had a copy each.
+    #[test]
+    fn a_name_is_one_plain_line() {
+        assert_eq!(one_line("maths"), "maths");
+        assert_eq!(one_line(" a\n  b\tc "), "a b c");
+        assert_eq!(one_line("a\n  b"), "a b");
+        // Untrusted names stay as typed: labels never parse markup.
+        assert_eq!(one_line("<b>x</b> &amp;"), "<b>x</b> &amp;");
+    }
 
     #[test]
     fn digits_are_grouped_by_three() {
@@ -205,8 +235,8 @@ mod tests {
 
     #[test]
     fn intervals_use_one_rounded_unit() {
-        const MIN: i64 = 60_000;
-        const DAY: i64 = 86_400_000;
+        const MIN: i64 = MINUTE_MS;
+        const DAY: i64 = DAY_MS;
         assert_eq!(interval_text(0), "1 min");
         assert_eq!(interval_text(10 * MIN), "10 min");
         assert_eq!(interval_text(59 * MIN), "59 min");

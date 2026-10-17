@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-10-16
-- Amends: ADR 0005 (which backups are kept), ADR 0007 (the restored backup, the moved-aside set), ADR 0016 (the follow-up it names)
+- Amends: ADR 0005 (which backups are kept), ADR 0007 (the restored backup, the moved-aside set), ADR 0016 (the follow-up it names), ADR 0017 (which backups an import can push out), ADR 0018 (backups made by imports no longer push out daily ones)
 - Closes: #8, #9, #22, #27
 
 ## Context

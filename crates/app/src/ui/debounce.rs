@@ -43,18 +43,14 @@ mod tests {
 
     use super::*;
 
-    /// Iterates the default main context, as the app's main loop would,
-    /// until `done`. Fails after a few seconds rather than hanging the test
-    /// run if the awaited source never fires.
+    /// Runs the default main context, as the app's main loop would, until
+    /// `done`. Fails after a few seconds rather than hanging the test run
+    /// if the awaited source never fires.
     fn run_until(done: impl Fn() -> bool) {
-        let timed_out = Rc::new(Cell::new(false));
-        let flag = Rc::clone(&timed_out);
-        let guard = glib::timeout_add_local_once(Duration::from_secs(5), move || flag.set(true));
-        while !done() && !timed_out.get() {
-            glib::MainContext::default().iteration(true);
-        }
-        assert!(!timed_out.get(), "timed out waiting for the main context");
-        guard.remove();
+        assert!(
+            crate::testing::settle_until(done, Duration::from_secs(5)),
+            "timed out waiting for the main context"
+        );
     }
 
     /// `Debounce` uses the process-wide default main context

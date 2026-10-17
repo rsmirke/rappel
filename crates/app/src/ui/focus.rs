@@ -1,6 +1,6 @@
-//! Where the keyboard focus goes in a list after a change (pure, so it is
-//! unit-tested without GTK), and a selectable label that takes a page's
-//! first focus without selecting its text.
+//! Where the keyboard focus goes in a list after a change or when its page
+//! is shown (pure, so it is unit-tested without GTK), and a selectable
+//! label that takes a page's first focus without selecting its text.
 
 use std::cell::Cell;
 use std::ops::Sub;
@@ -17,6 +17,34 @@ where
     T: Copy + Ord + Sub<Output = T> + From<u8>,
 {
     (remaining > T::from(0)).then(|| removed.min(remaining - T::from(1)))
+}
+
+/// Where the focus goes when a page with a list is shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShownFocus {
+    /// It is already inside the page: leave it.
+    Keep,
+    /// The first row.
+    FirstRow,
+    /// The list is empty: the empty state's button.
+    EmptyState,
+}
+
+/// Where the focus goes when a page is shown with `rows` rows, given
+/// whether the window's focus is already inside the page. A push moves it
+/// into the page when it was in the page below, and a pop gives the page
+/// back the widget that had it (`switch_page` in `adw-navigation-view.c`,
+/// source read for libadwaita 1.8 and 1.9), so that is kept. It is outside the page only
+/// when the window had no focus yet: the deck page reopened at startup,
+/// before the window is shown.
+pub fn when_shown(focus_inside: bool, rows: u32) -> ShownFocus {
+    if focus_inside {
+        ShownFocus::Keep
+    } else if rows > 0 {
+        ShownFocus::FirstRow
+    } else {
+        ShownFocus::EmptyState
+    }
 }
 
 /// Keeps `label` (selectable) from showing all of its text selected when
@@ -149,6 +177,15 @@ mod tests {
     fn removing_the_last_row_focuses_the_new_last_row() {
         assert_eq!(index_after_removal(3_usize, 3), Some(2));
         assert_eq!(index_after_removal(1_u32, 1), Some(0));
+    }
+
+    #[test]
+    fn a_shown_page_keeps_a_focus_inside_it_or_focuses_its_list() {
+        assert_eq!(when_shown(true, 3), ShownFocus::Keep);
+        assert_eq!(when_shown(true, 0), ShownFocus::Keep);
+        assert_eq!(when_shown(false, 3), ShownFocus::FirstRow);
+        assert_eq!(when_shown(false, 1), ShownFocus::FirstRow);
+        assert_eq!(when_shown(false, 0), ShownFocus::EmptyState);
     }
 
     #[test]
