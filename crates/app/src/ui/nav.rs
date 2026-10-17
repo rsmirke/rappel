@@ -34,7 +34,8 @@ pub fn pop(widget: &impl IsA<gtk::Widget>) {
 /// Returns whether it pushed. The check holds at once: `push` appends to
 /// the navigation stack and `visible_page` is its last item, both
 /// synchronous (`push_to_stack` and `adw_navigation_view_get_visible_page`
-/// in `adw-navigation-view.c`, libadwaita 1.8 and 1.9).
+/// in `adw-navigation-view.c`, source read for libadwaita 1.8 and 1.9;
+/// the app is built and tested here against 1.10.0).
 pub fn push_unless_on_top<P, E>(
     view: &adw::NavigationView,
     build: impl FnOnce() -> Result<P, E>,

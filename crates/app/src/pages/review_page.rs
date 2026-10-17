@@ -1180,7 +1180,7 @@ mod tests {
         let (tmp, state) = crate::testing::temporary_state();
         let deck = state.create_deck("Deck").unwrap();
         let now = rappel_core::time::now_ms();
-        let day = 24 * 60 * 60 * 1000;
+        let day = crate::ui::time::DAY_MS;
         let ids: Vec<String> = sides
             .iter()
             .map(|(front, back)| {

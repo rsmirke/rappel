@@ -1,6 +1,6 @@
 //! Where the keyboard focus goes in a list after a change or when its page
-//! is shown (pure, so it is unit-tested without GTK), and a selectable label that takes a page's
-//! first focus without selecting its text.
+//! is shown (pure, so it is unit-tested without GTK), and a selectable
+//! label that takes a page's first focus without selecting its text.
 
 use std::cell::Cell;
 use std::ops::Sub;
@@ -34,7 +34,7 @@ pub enum ShownFocus {
 /// whether the window's focus is already inside the page. A push moves it
 /// into the page when it was in the page below, and a pop gives the page
 /// back the widget that had it (`switch_page` in `adw-navigation-view.c`,
-/// libadwaita 1.8 and 1.9), so that is kept. It is outside the page only
+/// source read for libadwaita 1.8 and 1.9), so that is kept. It is outside the page only
 /// when the window had no focus yet: the deck page reopened at startup,
 /// before the window is shown.
 pub fn when_shown(focus_inside: bool, rows: u32) -> ShownFocus {

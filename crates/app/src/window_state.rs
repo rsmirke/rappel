@@ -8,6 +8,7 @@
 //! This state belongs to one device. A missing or broken file gives the
 //! defaults, and a failed save is only logged: neither may stop the app.
 
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use gtk::glib;
@@ -19,6 +20,9 @@ const WIDTH: &str = "width";
 const HEIGHT: &str = "height";
 const MAXIMIZED: &str = "maximized";
 const DECK: &str = "deck";
+/// The file's mode, like the database's: only the user reads it.
+const FILE_MODE_BITS: u32 = 0o600;
+const FILE_MODE: i32 = 0o600;
 
 /// The window's default size, as in `data/window.blp`.
 pub const DEFAULT_WIDTH: i32 = 640;
@@ -113,18 +117,33 @@ pub fn load(data_dir: &Path) -> WindowState {
 /// Saves `state` in `data_dir`. `g_file_set_contents_full` with
 /// `G_FILE_SET_CONTENTS_CONSISTENT` writes a temporary file created with
 /// `mode` (less the umask) and renames it over the old one (`GLib` docs), so
-/// a crash leaves the old file or the new one. A new file is never there
-/// with a wider mode than 0600, like the database; an existing file keeps
-/// its mode (same docs). A failure is logged.
+/// a crash leaves the old file or the new one, and a new file is never there
+/// with a wider mode than 0600, like the database. An existing file keeps
+/// its mode (same docs), so a wider one is narrowed to 0600 afterwards, as
+/// the database's files are (`prepare_private_file` in core). A failure is
+/// logged.
 pub fn save(data_dir: &Path, state: &WindowState) {
+    let path = path(data_dir);
     let data = to_key_file(state).to_data();
     if let Err(err) = glib::file_set_contents_full(
-        path(data_dir),
+        &path,
         data.as_bytes(),
         glib::FileSetContentsFlags::CONSISTENT,
-        0o600,
+        FILE_MODE,
     ) {
         tracing::warn!("the window state could not be saved: {err}");
+        return;
+    }
+    match std::fs::metadata(&path) {
+        Ok(meta) if meta.permissions().mode() & 0o7777 != FILE_MODE_BITS => {
+            if let Err(err) =
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(FILE_MODE_BITS))
+            {
+                tracing::warn!("the window state's permissions could not be set: {err}");
+            }
+        }
+        Ok(_) => {}
+        Err(err) => tracing::warn!("the window state's permissions could not be read: {err}"),
     }
 }
 
@@ -137,8 +156,6 @@ pub fn deck_to_reopen(pages: impl IntoIterator<Item = Option<String>>) -> Option
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::fs::PermissionsExt;
-
     use super::*;
 
     const DECK_ID: &str = "019a0000-0000-7000-8000-000000000001";
@@ -217,13 +234,13 @@ mod tests {
         assert!(meta.is_file());
         assert_eq!(meta.permissions().mode() & 0o777, 0o600);
         assert_eq!(load(dir.path()), state);
-        // An existing file keeps its mode, whatever the user set
-        // (`g_file_set_contents_full` docs); the data directory is 0700.
+        // An existing file with a wider mode (by hand, or an older
+        // version) is narrowed to 0600 again.
         let path = dir.path().join(FILE_NAME);
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640))?;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))?;
         save(dir.path(), &WindowState::default());
         let meta = std::fs::metadata(&path)?;
-        assert_eq!(meta.permissions().mode() & 0o777, 0o640);
+        assert_eq!(meta.permissions().mode() & 0o777, 0o600);
         assert_eq!(load(dir.path()), WindowState::default());
         std::fs::write(dir.path().join(FILE_NAME), b"\xff\xfe garbage")?;
         assert_eq!(load(dir.path()), WindowState::default());

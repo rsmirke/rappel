@@ -142,6 +142,15 @@ pub fn interval_text(ms: i64) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn time_units_are_counted_and_a_negative_number_is_zero() {
+        assert_eq!(unit_count(1, "day", "days"), "1 day");
+        assert_eq!(unit_count(0, "day", "days"), "0 days");
+        assert_eq!(unit_count(25, "minute", "minutes"), "25 minutes");
+        assert_eq!(unit_count(1_500, "day", "days"), "1,500 days");
+        assert_eq!(unit_count(-3, "hour", "hours"), "0 hours");
+    }
+
     /// Moved here from `tag_pills::text` (`a_pill_is_one_plain_line`) and
     /// `browser_page::text`, which had a copy each.
     #[test]
@@ -226,8 +235,8 @@ mod tests {
 
     #[test]
     fn intervals_use_one_rounded_unit() {
-        const MIN: i64 = 60_000;
-        const DAY: i64 = 86_400_000;
+        const MIN: i64 = MINUTE_MS;
+        const DAY: i64 = DAY_MS;
         assert_eq!(interval_text(0), "1 min");
         assert_eq!(interval_text(10 * MIN), "10 min");
         assert_eq!(interval_text(59 * MIN), "59 min");

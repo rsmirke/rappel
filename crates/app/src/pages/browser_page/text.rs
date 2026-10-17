@@ -401,7 +401,7 @@ mod tests {
     use super::*;
 
     const NOW: i64 = 1_000_000_000_000;
-    const DAY: i64 = 86_400_000;
+    const DAY: i64 = crate::ui::time::DAY_MS;
 
     #[test]
     fn the_list_keys() {

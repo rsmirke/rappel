@@ -230,7 +230,7 @@ mod tests {
                 .card
                 .id;
             let now = rappel_core::time::now_ms();
-            let day = 86_400_000;
+            let day = crate::ui::time::DAY_MS;
             state
                 .record_review(&id, Grade::Pass, Duration::from_secs(3), now - 3 * day)
                 .unwrap();

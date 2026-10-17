@@ -181,13 +181,12 @@ mod imp {
             // Roots the children first (`gtk_widget_real_root`), so every
             // `AdwButtonContent` has named its button by then.
             self.parent_root();
-            let imp = self;
             for button in [
-                &*imp.select_all_button,
-                &*imp.move_button,
-                &*imp.suspend_button,
-                &*imp.delete_button,
-                &*imp.reset_button,
+                &*self.select_all_button,
+                &*self.move_button,
+                &*self.suspend_button,
+                &*self.delete_button,
+                &*self.reset_button,
             ] {
                 super::name_by_own_label(button);
             }
@@ -1233,14 +1232,17 @@ fn labels<'a>(all: &str, names: impl Iterator<Item = &'a String>) -> Vec<String>
 /// Lets `button`'s own accessible label (Blueprint, or `suspend_labels`)
 /// name it, not its `AdwButtonContent`'s text. That content makes its
 /// label the button's mnemonic label when it is rooted
-/// (`adw_button_content_root`, libadwaita 1.9), which sets the button's
-/// labelled-by relation (`gtk_widget_add_mnemonic_label`, GTK 4.22), and
+/// (`adw_button_content_root`, source read for libadwaita 1.9 and main),
+/// which sets the button's labelled-by relation
+/// (`gtk_widget_add_mnemonic_label`, source read for GTK 4.24), and
 /// a labelled-by relation names a widget before its label property does
 /// (`gtk_at_context_get_text_accumulate`, steps 2B and 2C of the ARIA
-/// name computation, gtk/gtkatcontext.c). The button was then named by
-/// its visible word ("Move…") and, on a phone, where the breakpoint
-/// empties the words, not at all. No mnemonic is lost: the words have no
-/// underline.
+/// name computation, gtk/gtkatcontext.c, GTK 4.24). The button was then
+/// named by its visible word ("Move…") and, on a phone, where the
+/// breakpoint empties the words, not at all (observed over AT-SPI with
+/// libadwaita 1.10.0 and GTK 4.24.1). Only the accessible relation is
+/// reset: the mnemonic label stays, so a mnemonic such as Select All's
+/// "_All" still activates the button.
 fn name_by_own_label(button: &gtk::Button) {
     button.reset_relation(gtk::AccessibleRelation::LabelledBy);
 }
@@ -1254,7 +1256,7 @@ mod tests {
 
     use super::*;
 
-    const DAY_MS: i64 = 24 * 60 * 60 * 1000;
+    use crate::ui::time::DAY_MS;
 
     fn tags(names: &[&str]) -> Vec<String> {
         names.iter().map(|n| (*n).to_owned()).collect()
@@ -1588,6 +1590,64 @@ mod tests {
             page.choose_mode(false);
             assert_eq!(page.chosen_ids().len(), 0);
             assert!(!page.selecting());
+        });
+    }
+
+    /// The action buttons have no labelled-by relation once rooted, so
+    /// their own accessible label names them (`name_by_own_label`), also on
+    /// a phone, where the breakpoint empties their words. A button with an
+    /// `AdwButtonContent` that is not reset has the relation, so the check
+    /// can fail.
+    #[test]
+    fn the_action_buttons_are_named_by_their_own_labels() {
+        use gtk::{AccessibleProperty, AccessibleRelation};
+        crate::testing::with_widgets(|| {
+            let control = gtk::Button::new();
+            control.set_child(Some(&adw::ButtonContent::builder().label("Move…").build()));
+            let control_window = gtk::Window::new();
+            control_window.set_child(Some(&control));
+            assert!(gtk::test_accessible_has_relation(
+                &control,
+                AccessibleRelation::LabelledBy
+            ));
+            control_window.destroy();
+
+            let (_tmp, state, _, _) = state_with_cards();
+            let page = page_over(&state, None);
+            let imp = page.imp();
+            let buttons = [
+                &*imp.select_all_button,
+                &*imp.move_button,
+                &*imp.suspend_button,
+                &*imp.delete_button,
+                &*imp.reset_button,
+            ];
+            let check = |when: &str| {
+                for button in buttons {
+                    assert!(
+                        !gtk::test_accessible_has_relation(button, AccessibleRelation::LabelledBy),
+                        "{when}: {:?} is labelled by its words",
+                        button.tooltip_text()
+                    );
+                    assert!(
+                        gtk::test_accessible_has_property(button, AccessibleProperty::Label),
+                        "{when}: {:?} has no label",
+                        button.tooltip_text()
+                    );
+                }
+            };
+            let window = gtk::Window::new();
+            window.set_default_size(360, 640);
+            window.set_child(Some(&page));
+            check("rooted");
+            // Shown at 360 px, the breakpoint applies and empties the words.
+            window.present();
+            assert!(crate::testing::settle_until(
+                || page.compact(),
+                std::time::Duration::from_secs(5)
+            ));
+            check("narrow");
+            window.destroy();
         });
     }
 

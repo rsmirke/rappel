@@ -181,7 +181,7 @@ mod tests {
     fn studied(state: &AppState) -> Deck {
         let deck = state.create_deck("Deck").unwrap();
         let now = rappel_core::time::now_ms();
-        let day = 86_400_000;
+        let day = crate::ui::time::DAY_MS;
         for i in 0..2 {
             let id = state
                 .add_card_with_tags(&deck.id, &format!("front {i}"), "back", &[])
@@ -269,7 +269,7 @@ mod tests {
                 .card
                 .id;
             // Reviewed once, long ago and failed: no review in the window.
-            let long_ago = rappel_core::time::now_ms() - 90 * 86_400_000;
+            let long_ago = rappel_core::time::now_ms() - 90 * crate::ui::time::DAY_MS;
             state
                 .record_review(&id, Grade::Fail, Duration::from_secs(3), long_ago)
                 .unwrap();

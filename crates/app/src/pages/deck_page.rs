@@ -536,9 +536,10 @@ impl DeckPage {
     /// before the window is shown, and `shown` is emitted during that push:
     /// with animations off `switch_page` skips the transition, whose `done`
     /// handler emits it (`adw_animation_skip`, `transition_done_cb`,
-    /// libadwaita 1.8 and 1.9). The window then keeps this focus widget
+    /// source read for libadwaita 1.8 and 1.9). The window then keeps this focus widget
     /// (`gtk_window_show` moves the focus only when it has none,
-    /// gtk/gtkwindow.c, GTK 4.22).
+    /// gtk/gtkwindow.c, source read for GTK 4.22). Observed with
+    /// libadwaita 1.10.0 and GTK 4.24.1, where the window test runs.
     fn focus_when_shown(&self) {
         let inside = self
             .root()
@@ -551,7 +552,8 @@ impl DeckPage {
                 // `scroll_to` with FOCUS only moves the list's focus item
                 // while the focus is outside it; the grab then focuses that
                 // item's row, making it if needed (`gtk_list_base_scroll_to`,
-                // `gtk_list_base_grab_focus`, gtk/gtklistbase.c, GTK 4.22).
+                // `gtk_list_base_grab_focus`, gtk/gtklistbase.c, source read
+                // for GTK 4.20 and 4.22; observed with GTK 4.24.1).
                 let list = &self.imp().card_list;
                 list.scroll_to(0, gtk::ListScrollFlags::FOCUS, None);
                 list.grab_focus();
@@ -754,7 +756,7 @@ fn study_bar_shown(compact: bool, empty: bool) -> bool {
 /// The longest single wait before re-checking what there is to study. A
 /// later change is reached in steps, so a changed clock or time zone is
 /// noticed within this long.
-const MAX_STUDY_WAIT_MS: u64 = 3_600_000;
+const MAX_STUDY_WAIT_MS: u64 = crate::ui::time::HOUR_MS.unsigned_abs();
 
 /// How long to wait from `now` until the earlier of `next_change` (the next
 /// card that becomes due, if any) and `next_day` (the next study day, which
@@ -904,7 +906,7 @@ mod tests {
         let (tmp, state) = crate::testing::temporary_state();
         let deck = state.create_deck("Deck").unwrap();
         let now = rappel_core::time::now_ms();
-        let day = 24 * 60 * 60 * 1000;
+        let day = crate::ui::time::DAY_MS;
         let ids = (0..n)
             .map(|i| {
                 let id = state
