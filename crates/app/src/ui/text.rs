@@ -11,6 +11,37 @@ pub fn one_line(name: &str) -> String {
     name.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// `name` in a bidi isolate (U+2068 FIRST STRONG ISOLATE … U+2069 POP
+/// DIRECTIONAL ISOLATE), for a name set among other text: its own
+/// direction is kept, and a right-to-left name, or one holding a bidi
+/// override (U+202E) left open, cannot reorder the text after it (Unicode
+/// Standard Annex #9, "Explicit Directional Isolates"). Pango draws the two
+/// marks as nothing. For visible text; a screen reader gets the names as
+/// they are.
+pub fn isolate(name: &str) -> String {
+    format!("\u{2068}{name}\u{2069}")
+}
+
+/// The most names a list of names spells out (a tooltip, an accessible
+/// label) before it says how many more there are: a card can have
+/// thousands of tags (ADR 0050, row 31).
+pub const MAX_NAMED: usize = 20;
+
+/// `names` joined by ", ", at most [`MAX_NAMED`] of them, then "and 4,980
+/// more". Each name goes through `each` first ([`isolate`] for visible
+/// text).
+pub fn name_list(names: &[String], each: impl Fn(&str) -> String) -> String {
+    let shown: Vec<String> = names.iter().take(MAX_NAMED).map(|n| each(n)).collect();
+    let mut list = shown.join(", ");
+    let more = names.len().saturating_sub(MAX_NAMED);
+    if more > 0 {
+        list.push_str(" and ");
+        list.push_str(&group_digits(more));
+        list.push_str(" more");
+    }
+    list
+}
+
 /// `n` with its digits in groups of three: 5210 → "5,210".
 pub fn group_digits(n: usize) -> String {
     let digits = n.to_string();
@@ -110,6 +141,10 @@ pub fn studied_text(ms: i64) -> String {
 /// A fraction as a whole percent: 0.912 → "91%". Out-of-range values are
 /// clamped, so a rounding error never shows "101%".
 pub fn percent(fraction: f64) -> String {
+    if fraction.is_nan() {
+        // No number at all: not "NaN%".
+        return "—".to_owned();
+    }
     format!("{}%", (fraction.clamp(0.0, 1.0) * 100.0).round())
 }
 
@@ -117,11 +152,14 @@ pub fn percent(fraction: f64) -> String {
 /// "2 months", "1.5 years". Under a minute is "1 min".
 pub fn interval_text(ms: i64) -> String {
     let ms = ms.max(0);
+    // Rounding adds half a unit: saturating, since a time from the
+    // database can be as large as `i64::MAX` (ADR 0050, row 34).
+    let round = |unit: i64| ms.saturating_add(unit / 2) / unit;
     // The unit is chosen from the rounded number, so 59 min 40 s is "1 h",
     // not "60 min".
-    let minutes = ((ms + MINUTE_MS / 2) / MINUTE_MS).max(1);
-    let hours = (ms + HOUR_MS / 2) / HOUR_MS;
-    let days = (ms + DAY_MS / 2) / DAY_MS;
+    let minutes = round(MINUTE_MS).max(1);
+    let hours = round(HOUR_MS);
+    let days = round(DAY_MS);
     if minutes < 60 {
         unit_count(minutes, "min", "min")
     } else if hours < 24 {
@@ -130,7 +168,7 @@ pub fn interval_text(ms: i64) -> String {
         unit_count(days, "day", "days")
     } else if ms < 730 * DAY_MS {
         let month = DAY_MS * 3044 / 100;
-        unit_count((ms + month / 2) / month, "month", "months")
+        unit_count(round(month), "month", "months")
     } else {
         let year = DAY_MS * 36525 / 100;
         let tenths = (ms.min(1_000 * year) * 10 + year / 2) / year;
@@ -160,6 +198,27 @@ mod tests {
         assert_eq!(one_line("a\n  b"), "a b");
         // Untrusted names stay as typed: labels never parse markup.
         assert_eq!(one_line("<b>x</b> &amp;"), "<b>x</b> &amp;");
+    }
+
+    #[test]
+    fn a_name_among_others_is_isolated() {
+        assert_eq!(isolate("maths"), "\u{2068}maths\u{2069}");
+        // An override left open stays inside its isolate.
+        assert_eq!(isolate("\u{202e}evil"), "\u{2068}\u{202e}evil\u{2069}");
+    }
+
+    #[test]
+    fn a_long_list_of_names_names_the_first_and_counts_the_rest() {
+        let names = |n: usize| (0..n).map(|i| format!("t{i}")).collect::<Vec<_>>();
+        assert_eq!(name_list(&[], str::to_owned), "");
+        assert_eq!(name_list(&names(2), str::to_owned), "t0, t1");
+        let twenty = name_list(&names(MAX_NAMED), str::to_owned);
+        assert!(twenty.ends_with("t18, t19"));
+        assert!(!twenty.contains("more"));
+        let many = name_list(&names(5_000), str::to_owned);
+        assert!(many.starts_with("t0, t1, "));
+        assert!(many.ends_with("t19 and 4,980 more"));
+        assert_eq!(name_list(&names(1), isolate), "\u{2068}t0\u{2069}");
     }
 
     #[test]
@@ -231,6 +290,22 @@ mod tests {
         assert_eq!(percent(0.995), "100%");
         assert_eq!(percent(1.2), "100%");
         assert_eq!(percent(-0.1), "0%");
+        assert_eq!(percent(f64::NAN), "—");
+        assert_eq!(percent(f64::INFINITY), "100%");
+        assert_eq!(percent(f64::NEG_INFINITY), "0%");
+    }
+
+    /// Times as large as the database holds, read back from a hostile
+    /// history (ADR 0050, row 34): no overflow, a sane text.
+    #[test]
+    fn extreme_times_never_overflow() {
+        assert_eq!(interval_text(i64::MAX), "1000 years");
+        assert_eq!(interval_text(i64::MAX - 1), "1000 years");
+        assert_eq!(interval_text(i64::MIN), "1 min");
+        assert_eq!(studied_text(i64::MAX), "2562047788015 h 12 min");
+        assert_eq!(studied_text(i64::MIN), "0 min");
+        assert_eq!(duration_text(Duration::MAX), "5124095576030431 h 0 min");
+        assert_eq!(unit_count(i64::MIN, "day", "days"), "0 days");
     }
 
     #[test]

@@ -436,7 +436,7 @@ mod tests {
             let item = browse_item(4);
             row.bind_browse(&item, &list_item);
             let imp = row.imp();
-            assert_eq!(imp.caption_label.label(), "Maths · New");
+            assert_eq!(imp.caption_label.label(), "\u{2068}Maths\u{2069} · New");
             assert!(imp.caption_label.is_visible());
             assert!(!imp.check.is_visible() && imp.menu_button.is_visible());
             assert_eq!(imp.tag_pills.tags().len(), 4);
@@ -472,7 +472,10 @@ mod tests {
             other.set_selected(true);
             assert_eq!(imp.selected_seen.get(), seen + 1);
             assert!(imp.check.is_active());
-            assert_eq!(imp.caption_label.label(), "Maths · Suspended");
+            assert_eq!(
+                imp.caption_label.label(),
+                "\u{2068}Maths\u{2069} · Suspended"
+            );
             assert!(imp.suspended_icon.is_visible());
             // A deck page row has no third line.
             assert!(!CardRow::default().imp().caption_label.is_visible());
@@ -629,6 +632,82 @@ mod tests {
             // The same bound as the deck page's rows, far above the time
             // measured.
             crate::testing::assert_cpu_within(cpu, Duration::from_secs(2), "CardRow::bind_browse");
+        });
+    }
+
+    /// Card `i` with `n` tags of 60 bytes each, as an import may give.
+    fn heavily_tagged(i: usize, n: usize) -> TaggedCard {
+        let mut card = card(i).card().clone();
+        card.id = format!("tagged-{i}");
+        TaggedCard {
+            card,
+            tags: (0..n)
+                .map(|t| Tag {
+                    id: format!("tag-{t}"),
+                    name: format!("{t:05} {}", "x".repeat(54)),
+                })
+                .collect(),
+        }
+    }
+
+    /// A card with 5,000 tags: a row makes only the pills it shows and the
+    /// "+N" pill, its tooltip and accessible label name 20 tags and count
+    /// the rest, and binding stays cheap. Twenty such cards bound 200 times
+    /// over took about 20 ms of CPU in a debug build.
+    #[test]
+    fn a_card_with_thousands_of_tags_binds_cheaply() {
+        crate::testing::with_widgets(|| {
+            let cards: Vec<TaggedCard> = (0..20).map(|i| heavily_tagged(i, 5_000)).collect();
+            let items: Vec<CardObject> = cards.iter().cloned().map(CardObject::new).collect();
+            let browse: Vec<BrowseItem> = cards
+                .into_iter()
+                .map(|tagged| {
+                    BrowseItem::new(BrowseRow {
+                        card: tagged.card,
+                        deck_name: "Maths".to_owned(),
+                        tags: tagged.tags,
+                        status: CardStatus::New,
+                    })
+                })
+                .collect();
+            let row = CardRow::default();
+            let all_cards_row = CardRow::for_browser();
+            let list_item = glib::Object::new::<gtk::ListItem>();
+            row.bind(&items[0]);
+            all_cards_row.bind_browse(&browse[0], &list_item);
+            let (cpu, ()) = crate::testing::cpu_time_of(|| {
+                for round in 0..10 {
+                    for (item, browse_item) in items.iter().zip(&browse) {
+                        row.bind(item);
+                        drop(item.row_label());
+                        row.unbind();
+                        all_cards_row.bind_browse(browse_item, &list_item);
+                        all_cards_row.unbind();
+                    }
+                    std::hint::black_box(round);
+                }
+            });
+            for pills in [&row.imp().tag_pills, &all_cards_row.imp().tag_pills] {
+                let made = pills.pill_widgets();
+                assert_eq!(made.len(), ROW_PILLS as usize + 1);
+                let overflow = made.last().map(|l| l.label().to_string());
+                assert_eq!(overflow.as_deref(), Some("+4,997"));
+                let tooltip = made
+                    .last()
+                    .and_then(gtk::prelude::WidgetExt::tooltip_text)
+                    .unwrap_or_default();
+                assert!(tooltip.ends_with(" and 4,977 more"), "{tooltip}");
+                assert!(tooltip.len() < 2_000);
+            }
+            let said = items[0].row_label();
+            assert!(said.contains(" and 4,980 more"), "{said}");
+            assert!(said.len() < 2_000);
+            crate::testing::print_timing("CardRow: 400 binds of 5,000 tags (CPU)", cpu);
+            crate::testing::assert_cpu_within(
+                cpu,
+                Duration::from_millis(300),
+                "binding 5,000 tags",
+            );
         });
     }
 }

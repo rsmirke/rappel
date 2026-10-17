@@ -19,7 +19,7 @@ pub fn set_labels(dropdown: &gtk::DropDown, labels: &[String]) {
 
 /// Lets `dropdown` be narrower than its chosen entry: the button shows the
 /// entry on one line ending in "…" when it does not fit, and the popup
-/// keeps every entry whole, with a check mark on the chosen one as
+/// keeps every entry whole (wrapped past [`POPUP_CHARS`]), with a check mark on the chosen one as
 /// `GtkDropDown`'s own factory has. That factory makes a label that does
 /// not ellipsize, so the button would be at least as wide as the entry
 /// (gtkdropdown.c, `setup_item`); `factory` is used for the button and
@@ -37,6 +37,25 @@ fn string_label() -> gtk::Label {
         .xalign(0.0)
         .use_markup(false)
         .single_line_mode(true)
+        .build()
+}
+
+/// The widest an entry of the popup gets, in characters, before it wraps.
+/// Deck names can be 1 KiB and tag names 256 bytes: unwrapped, the popup
+/// would be wider than any window.
+const POPUP_CHARS: i32 = 40;
+
+/// A popup entry: whole, on as many lines as it needs past
+/// [`POPUP_CHARS`], breaking between words or, in a word longer than the
+/// line, between characters.
+fn popup_label() -> gtk::Label {
+    gtk::Label::builder()
+        .xalign(0.0)
+        .use_markup(false)
+        .wrap(true)
+        .wrap_mode(gtk::pango::WrapMode::WordChar)
+        .max_width_chars(POPUP_CHARS)
+        .hexpand(true)
         .build()
 }
 
@@ -95,8 +114,7 @@ fn popup_factory(dropdown: &gtk::DropDown) -> gtk::SignalListItemFactory {
             return;
         };
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        let label = string_label();
-        label.set_hexpand(true);
+        let label = popup_label();
         row.append(&label);
         let check = gtk::Image::builder()
             .icon_name("object-select-symbolic")
@@ -171,6 +189,43 @@ mod tests {
             assert!(!same_item(chosen.as_ref(), model.item(1).as_ref()));
             assert!(!same_item(None, model.item(1).as_ref()));
             assert!(!same_item(None, None));
+        });
+    }
+
+    /// A long name wraps in the popup instead of widening it: a 1 KiB
+    /// deck name is no wider than 41 characters.
+    #[test]
+    fn a_long_entry_wraps_in_the_popup() {
+        crate::testing::with_widgets(|| {
+            let width = |text: &str| {
+                let label = popup_label();
+                label.set_label(text);
+                label.measure(gtk::Orientation::Horizontal, -1).1
+            };
+            let long = width(&"wide ".repeat(205));
+            let one_word = width(&"W".repeat(1_024));
+            let limit = width(&"w".repeat(41));
+            assert!(long <= limit, "{long} > {limit}");
+            assert!(one_word <= width(&"W".repeat(41)), "{one_word}");
+            assert!(!popup_label().uses_markup());
+        });
+    }
+
+    /// Thousands of tags fill the filter at once.
+    #[test]
+    fn thousands_of_entries_are_set_quickly() {
+        crate::testing::with_widgets(|| {
+            let names: Vec<String> = (0..10_000).map(|i| format!("tag {i}")).collect();
+            let dropdown = gtk::DropDown::builder().enable_search(true).build();
+            shrinkable(&dropdown);
+            let (cpu, ()) = crate::testing::cpu_time_of(|| set_labels(&dropdown, &names));
+            assert_eq!(dropdown.model().map(|m| m.n_items()), Some(10_000));
+            crate::testing::print_timing("drop-down: 10,000 entries", cpu);
+            crate::testing::assert_cpu_within(
+                cpu,
+                std::time::Duration::from_millis(50),
+                "set_labels",
+            );
         });
     }
 

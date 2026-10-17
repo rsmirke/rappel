@@ -912,6 +912,8 @@ mod tests {
     fn a_huge_pasted_list_makes_at_most_the_limit_of_pills_quickly() {
         crate::testing::with_widgets(|| {
             let entry = TagEntry::default();
+            // About 180 KB; GTK keeps the first 65,535 bytes of a paste in
+            // the text (`GTK_ENTRY_BUFFER_MAX_SIZE`), about 7,000 names.
             let names: Vec<String> = (0..20_000).map(|i| format!("tag {i}")).collect();
             let pasted = format!("{},", names.join(","));
             let (paste, ()) = crate::testing::cpu_time_of(|| entry.type_text(&pasted));
