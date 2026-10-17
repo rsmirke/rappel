@@ -6,7 +6,10 @@ use gtk::glib;
 
 use super::text::{count, interval_text};
 
-const DAY_MS: i64 = 86_400_000;
+/// Lengths of time in milliseconds, the unit of every timestamp.
+pub const MINUTE_MS: i64 = 60_000;
+pub const HOUR_MS: i64 = 60 * MINUTE_MS;
+pub const DAY_MS: i64 = 24 * HOUR_MS;
 
 /// `ms` (UTC milliseconds) formatted by `GLib` in the local zone, or
 /// `None` when `GLib` cannot represent it.

@@ -21,11 +21,8 @@
 
 use rappel_core::domain::DeckSummary;
 
-use crate::ui::text::{due_count, interval_text, new_count};
-
-const MINUTE_MS: i64 = 60_000;
-const HOUR_MS: i64 = 60 * MINUTE_MS;
-const DAY_MS: i64 = 24 * HOUR_MS;
+use crate::ui::text::{due_count, interval_text, new_count, unit_count};
+use crate::ui::time::{DAY_MS, HOUR_MS, MINUTE_MS};
 
 /// The line under a deck's name, in parts: the due count (accent colour),
 /// the rest (dimmed), and the whole line as a screen reader says it.
@@ -120,31 +117,27 @@ fn when(at: i64, now: i64, next_day: i64) -> (String, String) {
     if minutes < 60 {
         return (
             format!("in {minutes} min"),
-            format!("in {}", unit(minutes, "minute", "minutes")),
+            format!("in {}", unit_count(minutes, "minute", "minutes")),
         );
     }
     if at < next_day || delta < 12 * HOUR_MS {
         let hours = ((delta + HOUR_MS / 2) / HOUR_MS).clamp(1, 23);
         return (
             format!("in {hours} h"),
-            format!("in {}", unit(hours, "hour", "hours")),
+            format!("in {}", unit_count(hours, "hour", "hours")),
         );
     }
     let days = at.saturating_sub(next_day) / DAY_MS + 1;
     if days <= 1 {
         ("tomorrow".to_owned(), "tomorrow".to_owned())
     } else if days < 60 {
-        let text = format!("in {}", unit(days, "day", "days"));
+        let text = format!("in {}", unit_count(days, "day", "days"));
         (text.clone(), text)
     } else {
         // "in 3 months", "in 1.5 years": the same words either way.
         let text = format!("in {}", interval_text(delta));
         (text.clone(), text)
     }
-}
-
-fn unit(n: i64, one: &str, many: &str) -> String {
-    format!("{n} {}", if n == 1 { one } else { many })
 }
 
 /// The longest wait between two re-reads of the deck list, by how soon the

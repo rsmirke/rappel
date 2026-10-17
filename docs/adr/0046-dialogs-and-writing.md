@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-10-17
-- Amends: ADR 0027 (Preferences), ADR 0032 (Statistics' empty state), ADR 0039 (the shortcuts test covers every key table)
+- Amends: ADR 0019 (`dim-label` is now `dimmed`), ADR 0027 (Preferences), ADR 0032 (Statistics' empty state), ADR 0039 (the shortcuts test covers every key table)
 - Refers to: ADR 0016, 0026 (recovery), `docs/briefs/phase-1-finish.md` ("Dialogs", "Design rules")
 
 ## Context

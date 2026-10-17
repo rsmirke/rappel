@@ -28,7 +28,7 @@ use crate::ui::text::due_new_line;
 use crate::ui::toast::{info_toast, log_failure, show_error, show_toast_from, undo_toast};
 use crate::ui::undo::{self, UndoFailure};
 use crate::ui::{init_once, nav};
-use crate::widgets::{CardObject, CardRow};
+use crate::widgets::{CardObject, CardRow, card_row};
 use crate::window::RappelWindow;
 
 mod imp {
@@ -41,6 +41,7 @@ mod imp {
     use rappel_core::domain::Deck;
 
     use crate::state::AppState;
+    use crate::ui::breakpoint;
     use crate::ui::debounce::Debounce;
     use crate::ui::rows;
 
@@ -122,20 +123,15 @@ mod imp {
                 page.focus_when_shown();
             });
             page.connect_compact_notify(super::DeckPage::update_study_bar);
-            // AdwBreakpoint emits `apply` and `unapply` as its condition
-            // starts and stops matching, the first time too when the page
-            // is first sized (AdwBreakpoint docs; the browser page does
-            // the same, ADR 0036).
-            self.breakpoint.connect_apply(glib::clone!(
-                #[weak]
-                page,
-                move |_| page.set_compact(true)
-            ));
-            self.breakpoint.connect_unapply(glib::clone!(
-                #[weak]
-                page,
-                move |_| page.set_compact(false)
-            ));
+            // As on All Cards (ADR 0036).
+            breakpoint::follow(
+                &self.breakpoint,
+                glib::clone!(
+                    #[weak]
+                    page,
+                    move |compact| page.set_compact(compact)
+                ),
+            );
         }
     }
     impl WidgetImpl for DeckPage {}
@@ -791,43 +787,17 @@ fn insert_in_order(store: &gio::ListStore, item: &CardObject) -> u32 {
 /// Builds a [`CardRow`] per visible row, following the page's `compact`,
 /// and points it at its card.
 fn row_factory(page: &DeckPage) -> gtk::SignalListItemFactory {
-    let factory = gtk::SignalListItemFactory::new();
-    let page = page.downgrade();
-    factory.connect_setup(move |_, item| {
-        let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
-            return;
-        };
-        let row = CardRow::default();
-        if let Some(page) = page.upgrade() {
-            page.bind_property("compact", &row, "compact")
-                .sync_create()
-                .build();
-        }
-        item.set_child(Some(&row));
-    });
-    factory.connect_bind(|_, item| {
-        let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
-            return;
-        };
-        if let (Some(card), Some(row)) = (
-            item.item().and_downcast::<CardObject>(),
-            item.child().and_downcast::<CardRow>(),
-        ) {
-            row.bind(&card);
-            // Screen readers read the front, the back and the tags, not
-            // "row" (`card_row::text::row_label`).
+    card_row::factory(
+        page,
+        CardRow::default,
+        &["compact"],
+        |row, card: &CardObject, item| {
+            row.bind(card);
+            // Screen readers read the front, the back and the tags, not "row"
+            // (`card_row::text::row_label`).
             item.set_accessible_label(&card.row_label());
-        }
-    });
-    factory.connect_unbind(|_, item| {
-        if let Some(row) = item
-            .downcast_ref::<gtk::ListItem>()
-            .and_then(|item| item.child().and_downcast::<CardRow>())
-        {
-            row.unbind();
-        }
-    });
-    factory
+        },
+    )
 }
 
 #[cfg(test)]

@@ -14,6 +14,8 @@
 
 use gtk::glib;
 
+use crate::ui::time::{DAY_MS, HOUR_MS};
+
 /// The start of the study day containing `now_ms` in time zone `tz`, UTC
 /// milliseconds: `hour`:00 local of today if that has passed, else of
 /// yesterday.
@@ -90,8 +92,8 @@ fn at_hour(
 pub fn local_day_start_ms(now_ms: i64, hour: u8) -> i64 {
     day_start_ms(now_ms, &glib::TimeZone::local(), hour).unwrap_or_else(|err| {
         tracing::warn!("cannot compute the local day start, using UTC: {err}");
-        let offset = i64::from(hour) * 3_600_000;
-        now_ms - (now_ms - offset).rem_euclid(86_400_000)
+        let offset = i64::from(hour) * HOUR_MS;
+        now_ms - (now_ms - offset).rem_euclid(DAY_MS)
     })
 }
 
@@ -100,7 +102,7 @@ pub fn local_day_start_ms(now_ms: i64, hour: u8) -> i64 {
 pub fn local_next_day_start_ms(now_ms: i64, hour: u8) -> i64 {
     next_day_start_ms(now_ms, &glib::TimeZone::local(), hour).unwrap_or_else(|err| {
         tracing::warn!("cannot compute the next local day start: {err}");
-        local_day_start_ms(now_ms, hour) + 86_400_000
+        local_day_start_ms(now_ms, hour) + DAY_MS
     })
 }
 
@@ -149,7 +151,7 @@ pub fn local_day_bounds_ms(now_ms: i64, hour: u8, first: i32, count: usize) -> V
         (0..count)
             .map(|i| {
                 let days = i64::from(first) + i64::try_from(i).unwrap_or(0);
-                today.saturating_add(days.saturating_mul(86_400_000))
+                today.saturating_add(days.saturating_mul(DAY_MS))
             })
             .collect()
     })

@@ -39,8 +39,8 @@ use rappel_core::domain::Tag;
 use self::field::TagsCheck;
 use self::keys::{EntryKey, EntryState, KeyAction, Move};
 use super::TagSuggestions;
-use super::tag_pills::text::pill_text;
 use crate::ui::callback::Callback;
+use crate::ui::text::one_line;
 
 /// Called when the tags or the typed text change.
 type OnChanged = dyn Fn();
@@ -536,7 +536,7 @@ impl TagEntry {
 
     fn refresh_pills(&self) {
         let imp = self.imp();
-        let shown: Vec<String> = imp.names.borrow().iter().map(|n| pill_text(n)).collect();
+        let shown: Vec<String> = imp.names.borrow().iter().map(|n| one_line(n)).collect();
         imp.pills.set_tags(&shown);
     }
 
@@ -558,7 +558,7 @@ impl TagEntry {
             text.grab_focus();
         }
         text.announce(
-            &keys::removed_announcement(&pill_text(&removed)),
+            &keys::removed_announcement(&one_line(&removed)),
             gtk::AccessibleAnnouncementPriority::Medium,
         );
         self.update_error();

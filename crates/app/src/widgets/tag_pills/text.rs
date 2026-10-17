@@ -13,13 +13,7 @@ pub const PILL_CHARS: i32 = 16;
 pub const ROW_PILLS: u32 = 3;
 pub const COMPACT_ROW_PILLS: u32 = 1;
 
-/// A tag name on one line: every run of whitespace (a pasted name can hold
-/// a line break) as one space. Plain text, never markup.
-pub fn pill_text(name: &str) -> String {
-    name.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-/// Whether `text` (a [`pill_text`]) is cut to [`PILL_CHARS`] in its pill,
+/// Whether `text` (a tag name on one line, `ui::text::one_line`) is cut to [`PILL_CHARS`] in its pill,
 /// so the pill needs its whole name as a tooltip. Counted in characters,
 /// like `max-width-chars`; a name of wide letters may still be cut a
 /// little earlier, and then it simply has no tooltip.
@@ -62,14 +56,6 @@ mod tests {
 
     fn names(list: &[&str]) -> Vec<String> {
         list.iter().map(|&n| n.to_owned()).collect()
-    }
-
-    #[test]
-    fn a_pill_is_one_plain_line() {
-        assert_eq!(pill_text("maths"), "maths");
-        assert_eq!(pill_text(" a\n  b\tc "), "a b c");
-        // Untrusted names stay as typed: labels never parse markup.
-        assert_eq!(pill_text("<b>x</b> &amp;"), "<b>x</b> &amp;");
     }
 
     #[test]

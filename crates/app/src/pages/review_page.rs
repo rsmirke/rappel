@@ -38,7 +38,7 @@ use crate::ui::text::{duration_text, group_digits};
 use crate::ui::tile::{Tile, set_tile};
 use crate::ui::toast::{info_toast, log_failure, show_error, show_toast_from, undo_toast};
 use crate::ui::undo::{self, UndoFailure};
-use crate::ui::{init_once, nav};
+use crate::ui::{breakpoint, init_once, nav};
 use crate::window::RappelWindow;
 
 type OnSaved = dyn Fn(Saved);
@@ -524,22 +524,18 @@ impl ReviewPage {
     /// Makes the summary `compact` (libadwaita's style class for a status
     /// page in a small space: less spacing) and drops its icon while the
     /// short-window breakpoint applies, so its figures and Back to Deck fit
-    /// at 360 × 294. `apply` and `unapply` come when the breakpoint starts
-    /// and stops matching (`AdwBreakpoint` docs).
+    /// at 360 × 294.
     fn setup_short_summary(&self) {
         let imp = self.imp();
         let summary = imp.summary_page.downgrade();
-        imp.short_breakpoint.connect_apply(move |_| {
+        breakpoint::follow(&imp.short_breakpoint, move |short| {
             if let Some(summary) = summary.upgrade() {
-                summary.add_css_class("compact");
-                summary.set_icon_name(None);
-            }
-        });
-        let summary = imp.summary_page.downgrade();
-        imp.short_breakpoint.connect_unapply(move |_| {
-            if let Some(summary) = summary.upgrade() {
-                summary.remove_css_class("compact");
-                summary.set_icon_name(Some(SUMMARY_ICON));
+                if short {
+                    summary.add_css_class("compact");
+                } else {
+                    summary.remove_css_class("compact");
+                }
+                summary.set_icon_name((!short).then_some(SUMMARY_ICON));
             }
         });
     }

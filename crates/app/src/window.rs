@@ -262,6 +262,14 @@ impl RappelWindow {
         }
     }
 
+    /// The pages of the navigation stack, bottom first.
+    fn pages(&self) -> Vec<adw::NavigationPage> {
+        let stack = self.imp().navigation_view.navigation_stack();
+        (0..stack.n_items())
+            .filter_map(|i| stack.item(i).and_downcast())
+            .collect()
+    }
+
     /// Saves the size, maximised state and open deck for the next start.
     /// Only from the main page: a recovery or error page has no database
     /// and nothing to remember.
@@ -273,10 +281,9 @@ impl RappelWindow {
         if imp.stack.visible_child_name().as_deref() != Some("main") {
             return;
         }
-        let stack = imp.navigation_view.navigation_stack();
         let deck_id = window_state::deck_to_reopen(
-            (0..stack.n_items())
-                .filter_map(|i| stack.item(i))
+            self.pages()
+                .iter()
                 .map(|page| page.downcast_ref::<DeckPage>().and_then(DeckPage::deck_id)),
         );
         // The size the window has when not maximised: "the recommended way
@@ -363,8 +370,7 @@ impl RappelWindow {
     /// the deck list.
     pub fn study_changed(&self) {
         let imp = self.imp();
-        let stack = imp.navigation_view.navigation_stack();
-        for page in (0..stack.n_items()).filter_map(|i| stack.item(i)) {
+        for page in self.pages() {
             if let Some(deck) = page.downcast_ref::<DeckPage>() {
                 deck.update_study();
             } else if let Some(browser) = page.downcast_ref::<BrowserPage>() {
@@ -379,8 +385,7 @@ impl RappelWindow {
     /// (suspend, delete and their Undo): reads the decks and every open deck page's cards
     /// again. A study session keeps the cards it started with.
     pub fn data_changed(&self) {
-        let stack = self.imp().navigation_view.navigation_stack();
-        for page in (0..stack.n_items()).filter_map(|i| stack.item(i)) {
+        for page in self.pages() {
             if let Some(decks) = page.downcast_ref::<DecksPage>() {
                 decks.refresh();
             } else if let Some(deck) = page.downcast_ref::<DeckPage>() {
@@ -413,8 +418,7 @@ impl RappelWindow {
             page.restored(card);
         }
         // An open All Cards page lists the card too.
-        let stack = imp.navigation_view.navigation_stack();
-        for page in (0..stack.n_items()).filter_map(|i| stack.item(i)) {
+        for page in self.pages() {
             if let Some(browser) = page.downcast_ref::<BrowserPage>() {
                 browser.requery();
             }

@@ -4,7 +4,7 @@
 
 use rappel_core::storage::{BrowseQuery, CardStatus, StateFilter};
 
-use crate::ui::text::{count, group_digits};
+use crate::ui::text::{count, group_digits, one_line};
 use crate::ui::time::relative_due;
 
 /// A card's status as a short phrase: "New", "Learning", "Due now",
@@ -321,7 +321,8 @@ pub fn stale_text() -> String {
 pub const ALL_DECKS: &str = "All Decks";
 pub const ALL_TAGS: &str = "All Tags";
 
-/// The Suspend button's label and tooltip for `choice`.
+/// The Suspend button's word (also its tooltip, like the other action
+/// buttons') and accessible label for `choice`.
 pub fn suspend_labels(choice: SuspendChoice) -> (&'static str, &'static str) {
     match choice {
         SuspendChoice::Suspend => ("Suspend", "Suspend selected cards"),
@@ -393,11 +394,6 @@ pub fn partial_undo_text(done: usize, total: usize) -> Option<String> {
             cards(total)
         )
     })
-}
-
-/// A deck or tag name on one line (names are only trimmed).
-pub fn one_line(name: &str) -> String {
-    name.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 #[cfg(test)]
@@ -635,7 +631,6 @@ mod tests {
             suspend_labels(SuspendChoice::Unsuspend),
             ("Unsuspend", "Unsuspend selected cards")
         );
-        assert_eq!(one_line("a\n  b"), "a b");
     }
 
     #[test]

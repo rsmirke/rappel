@@ -14,7 +14,7 @@ use rappel_core::content::plain_summary;
 use rappel_core::domain::{Card, TaggedCard};
 
 use super::card_row::text::row_label;
-use super::tag_pills::text::pill_text;
+use crate::ui::text::one_line;
 
 mod imp {
     use super::{Card, OnceCell, RefCell};
@@ -69,7 +69,7 @@ impl CardObject {
         let obj: Self = glib::Object::new();
         obj.imp()
             .tags
-            .replace(tags.iter().map(|tag| pill_text(&tag.name)).collect());
+            .replace(tags.iter().map(|tag| one_line(&tag.name)).collect());
         obj.imp().card.replace(card);
         obj
     }
@@ -95,7 +95,7 @@ impl CardObject {
             .get_or_init(|| plain_summary(&self.imp().card.borrow().back_md))
     }
 
-    /// The tag names, each on one line (`tag_pills::text::pill_text`).
+    /// The tag names, each on one line (`ui::text::one_line`).
     pub fn tags(&self) -> Ref<'_, Vec<String>> {
         self.imp().tags.borrow()
     }
