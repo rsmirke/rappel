@@ -64,23 +64,119 @@ pub(crate) fn rebuild_search_index(conn: &Connection) -> Result<()> {
 /// like the index, as a quoted prefix (`"word"*`), all of them required.
 /// Quotes are doubled, so nothing typed is ever FTS5 syntax. `None` if
 /// no word has a letter or digit to search for.
+///
+/// A word that is the start of another word of the query (`ca` next to
+/// `card`, or `card` twice) is left out: every card the longer one finds,
+/// the shorter finds too, so the result is the same. FTS5 reads each word's
+/// matches separately, so 5,000 copies of `a` took 10 s of CPU on 5,000
+/// cards in a debug build (ADR 0050). The work left is bounded by
+/// [`MAX_QUERY_BYTES`].
+///
+/// Only the first [`MAX_QUERY_BYTES`] of the words searched are read,
+/// counted once folded; what separates them (spaces, and words without a
+/// letter or digit) does not count.
 #[must_use]
 pub(crate) fn fts_query(text: &str) -> Option<String> {
+    let mut budget = MAX_QUERY_BYTES;
+    let mut words: Vec<String> = Vec::new();
     // NUL cannot be quoted in an FTS5 string; it separates words here.
-    let words: Vec<String> = text
-        .split(|c: char| c.is_whitespace() || c == '\0')
-        .map(search_key)
+    for raw in text.split(|c: char| c.is_whitespace() || c == '\0') {
+        if budget == 0 {
+            break;
+        }
+        // What comes before a word's first letter or digit (`---abc`,
+        // accents on their own) holds no token, so it is left out before
+        // anything is cut: padding never uses up the budget. Characters
+        // Rust calls neither letter nor digit that FTS5 reads as one
+        // (private use) only make the word require less.
+        let raw = raw.trim_start_matches(|c: char| !c.is_alphanumeric());
+        if raw.is_empty() {
+            continue;
+        }
+        // Never folds much more than the budget can keep, even of a huge
+        // word: four times the budget of its start. Folding leaves a
+        // character at least a quarter of its bytes, except an accent on
+        // its own, which folds to nothing; a word cut short by that only
+        // requires less, so it still finds at least what the whole would.
+        let folded = search_key(cut_to(raw, budget.saturating_mul(4)));
+        // Folding can remove a leading mark and uncover punctuation.
+        let word = folded.trim_start_matches(|c: char| !c.is_alphanumeric());
         // A word without a letter or digit (`**`, `-`) has no token to match.
         // FTS5 may read a lone symbol Rust calls alphanumeric (ⓐ) as no
         // token at all and ignore that word; harmless.
-        .filter(|w| w.chars().any(char::is_alphanumeric))
-        .map(|w| format!("\"{}\"*", w.replace('"', "\"\"")))
-        .collect();
+        if word.is_empty() {
+            continue;
+        }
+        let word = cut_to(word, budget);
+        if word.is_empty() {
+            // Not even its first character fits: the budget is spent.
+            break;
+        }
+        budget -= word.len();
+        words.push(word.to_owned());
+    }
+    let words = without_implied(&mut words);
     if words.is_empty() {
         None
     } else {
-        Some(words.join(" "))
+        Some(
+            words
+                .iter()
+                .map(|w| format!("\"{}\"*", w.replace('"', "\"\"")))
+                .collect::<Vec<_>>()
+                .join(" "),
+        )
     }
+}
+
+/// How much of the query is searched, in UTF-8 bytes of its folded words
+/// from their first letter or digit on: far more than any search needs
+/// (about 150 words). Separators and padding do not count, so this is no
+/// limit on what may be typed; cutting the entry at this many bytes would
+/// hide words behind padding. FTS5 reads the matches of every token of a
+/// phrase, so its work grows with the number of tokens in the query times
+/// the cards that have them: one pasted word of 20,000 tokens joined by
+/// hyphens (`card-card-…`) took 10 s of CPU on 5,000 cards in a debug
+/// build (ADR 0050).
+pub const MAX_QUERY_BYTES: usize = 1024;
+
+/// The start of `text`, at most `max` bytes, cut between two characters.
+/// A word cut in two is searched as the start of a word, and a word left
+/// out requires nothing, so a cut query finds at least what the whole one
+/// would.
+fn cut_to(text: &str, max: usize) -> &str {
+    if text.len() <= max {
+        return text;
+    }
+    let mut end = max;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
+/// `words` without each word that starts another one (or equals it), in
+/// sorted order. Sorted, every word that starts with `w` comes right after
+/// `w`, so comparing each word with the next one is enough.
+///
+/// Leaving such a word out never changes what is found. FTS5's tokenizer
+/// reads a quoted string one character at a time, so the tokens of a
+/// string's start are the string's own tokens, except that the last one
+/// may be cut short: the phrase of a longer word holds the shorter one's
+/// tokens in order, its last one at least as long, and a prefix query of
+/// the shorter phrase matches wherever the longer one does.
+fn without_implied(words: &mut [String]) -> Vec<&String> {
+    words.sort_unstable();
+    let mut kept = Vec::with_capacity(words.len());
+    for (i, w) in words.iter().enumerate() {
+        if words
+            .get(i + 1)
+            .is_none_or(|next| !next.starts_with(w.as_str()))
+        {
+            kept.push(w);
+        }
+    }
+    kept
 }
 
 /// Which cards of the All Cards page to keep (SPEC §4.6).

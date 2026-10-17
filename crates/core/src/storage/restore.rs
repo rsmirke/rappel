@@ -36,7 +36,7 @@ use rusqlite::{Connection, OpenFlags};
 use super::backup::{BackupInfo, SQLITE_HEADER, parse_backup_name, utc_stamp};
 use super::migrations::{MIGRATIONS, Migration, latest, migrate};
 use super::{
-    BACKUP_DIR_NAME, DB_FILE_NAME, FILE_MODE, SIDECAR_SUFFIXES, Store, check_integrity,
+    BACKUP_DIR_NAME, DB_FILE_NAME, FILE_MODE, Protect, SIDECAR_SUFFIXES, Store, check_integrity,
     check_version, exists, sidecar_paths,
 };
 use crate::data_dir::ensure_data_dir;
@@ -174,11 +174,14 @@ fn finish_restore_with(data_dir: &Path, now_ms: i64, migrations: &[Migration]) -
     }
     install(&partial, &db_path)?;
     tracing::info!("interrupted restore finished");
-    let store = Store::open_with(
+    // The backup the copy came from is not known, and may be the oldest:
+    // this open prunes nothing (#50).
+    let store = Store::open_protecting(
         &db_path,
         &data_dir.join(BACKUP_DIR_NAME),
         now_ms,
         migrations,
+        Protect::Everything,
     )?;
     Ok(Restored { store, replaced })
 }
@@ -267,7 +270,7 @@ fn restore_with(
         &data_dir.join(BACKUP_DIR_NAME),
         now_ms,
         migrations,
-        Some(backup),
+        Protect::Backup(backup),
     )?;
     Ok(Restored { store, replaced })
 }

@@ -6,6 +6,15 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **Hardening, round 2** (ADR 0050): the attack tests of ADR 0025 now cover everything the core gained since: searches, tags, settings, the log's undos and resets, statistics, and backup retention and restore. What they found is fixed:
+  - **The deck list and deck page stay fast with a long history.** A card reviewed thousands of times (from an import, or years of study) made the daily counts slow down with the square of its reviews: 7 s for one card of 8,000 reviews in a debug build. It now takes 17 ms.
+  - **Searching for something pasted no longer freezes.** The same word typed thousands of times, or one long word of hyphenated pieces, took up to 10 s on 5,000 cards. Repeated words (and words that start another word of the search) are now looked up once, which finds the same cards, and only the first 1 KiB of a search (about 150 words) is read.
+  - **A card with thousands of tags saves quickly.** Setting 5,000 tags took 0.6 s and grew faster than the count; it now grows in step with it.
+  - A damaged settings value is quoted only in part in its error message.
+- **Restore edge cases** (#50): with a stray `-wal` file next to a restore that did not finish, the start page now offers **Finish Restore** instead of saying the database is missing. Finishing a restore no longer deletes any old backup, so the one it came from stays. And backups made while the computer's clock ran ahead are kept like others (the newest of each day, for up to 14 such days) instead of all but one being deleted once the clock is put right.
+- `rappel-core`: `MAX_QUERY_BYTES`, how much of a search query is read.
+
 ### Changed
 - Internal: the tests' time bounds hold on a busy machine (#67, ADR 0049). They measure the CPU time of the thread that did the work instead of the wall clock, and when a time is over its bound they compare it with a reference workload run at once on the same thread, so a machine slowed by load is measured at its own speed. A hang is caught by a separate, generous wall-clock timeout. The bounds themselves are unchanged and still fail the regressions they are there for. With three busy loops per CPU, `cargo test` used to fail 7 to 11 tests per run; it now passes.
 - Internal clean-up (SPEC §4.10): every page is pushed through one helper that never stacks a second page of the same kind (#20), the deck page and All Cards make their rows with one factory, breakpoints are followed through one helper, and shared texts, time constants and test helpers replace local copies. The window state is written in one step and is never readable by others, not even briefly. A deck reopened at startup puts the keyboard focus on its first card on purpose instead of by chance. Screen readers hear the full names of the All Cards selection buttons ("Move selected cards to a deck", …) at every width; on a phone they had no name. Their Suspend tooltip now says "Suspend", like the others.

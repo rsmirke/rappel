@@ -259,14 +259,13 @@ fn pre_migration_backup_survives_future_dated_backups() {
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
     assert_eq!(v, 1, "the pre-migration backup is still there");
-    // The fresh backup, and the newest of the future-dated ones.
-    assert_eq!(
-        e.backups(),
-        [
-            "rappel-20261015-123456.sqlite3",
-            "rappel-20300115-120000.sqlite3"
-        ]
-    );
+    // The fresh backup, and the newest of each of the 14 latest days of
+    // the future-dated ones (#50; before, only the newest of them).
+    let mut expected: Vec<String> = (2..=15)
+        .map(|day| format!("rappel-203001{day:02}-120000.sqlite3"))
+        .collect();
+    expected.insert(0, "rappel-20261015-123456.sqlite3".into());
+    assert_eq!(e.backups(), expected);
 }
 
 #[test]

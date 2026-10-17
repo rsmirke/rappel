@@ -158,6 +158,59 @@ fn a_bad_stored_value_is_an_error_not_a_default() {
     }
 }
 
+/// Hostile values a damaged or hand-edited database may hold (ADR 0050):
+/// each is refused with an error that quotes only the start of the value.
+#[test]
+fn hostile_stored_values_are_refused_and_never_quoted_whole() {
+    let store = Store::in_memory();
+    let huge = "9".repeat(1 << 20);
+    for (key, value) in [
+        ("desired_retention", "inf"),
+        ("desired_retention", "-inf"),
+        ("desired_retention", "1e39"),
+        ("desired_retention", "-0"),
+        ("desired_retention", " 0.9"),
+        ("desired_retention", "0.9\0"),
+        ("desired_retention", ""),
+        ("max_new_per_day", "4294967296"),
+        ("max_new_per_day", "0x10"),
+        ("max_new_per_day", "٣"),
+        ("max_reviews_per_day", huge.as_str()),
+        ("day_start_hour", "256"),
+        ("day_start_hour", "-0"),
+    ] {
+        let err = bad_stored(&store, key, value);
+        let Error::InvalidColumn {
+            column,
+            value: shown,
+        } = &err
+        else {
+            panic!("{key} = {value:?}: {err}");
+        };
+        assert_eq!(*column, "settings.value");
+        assert!(
+            shown.chars().count() <= 65,
+            "{key}: {} characters",
+            shown.len()
+        );
+    }
+    // A number where text belongs: the STRICT table stores it as text, so
+    // it reads like the text a write makes.
+    store.conn.execute("DELETE FROM settings", []).unwrap();
+    store
+        .conn
+        .execute("INSERT INTO settings VALUES ('day_start_hour', 5)", [])
+        .unwrap();
+    assert_eq!(store.settings().unwrap().day_start_hour, 5);
+    // A blob is refused by the table itself.
+    assert!(
+        store
+            .conn
+            .execute("INSERT INTO settings VALUES ('max_new_per_day', x'00')", [])
+            .is_err()
+    );
+}
+
 #[test]
 fn an_unknown_key_is_ignored() {
     let store = Store::in_memory();

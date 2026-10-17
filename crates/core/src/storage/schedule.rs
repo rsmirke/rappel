@@ -283,11 +283,21 @@ pub(crate) fn insert_event(conn: &Connection, event: &ReviewEvent) -> Result<()>
     Ok(())
 }
 
+/// How much of a bad value [`invalid`] keeps, in characters. A settings
+/// value is free text in the database, which a damaged or hand-edited file
+/// may make as large as SQLite allows; the error is logged and may be
+/// shown, so it keeps only the start (ADR 0050).
+const SHOWN_VALUE_CHARS: usize = 64;
+
+/// [`Error::InvalidColumn`] for `value` read from `column`, its text cut to
+/// [`SHOWN_VALUE_CHARS`] characters, with "…" where it was cut.
 pub(super) fn invalid(column: &'static str, value: &dyn std::fmt::Display) -> Error {
-    Error::InvalidColumn {
-        column,
-        value: value.to_string(),
+    let mut value = value.to_string();
+    if let Some((cut, _)) = value.char_indices().nth(SHOWN_VALUE_CHARS) {
+        value.truncate(cut);
+        value.push('…');
     }
+    Error::InvalidColumn { column, value }
 }
 
 /// A `REAL` written from an `f32` back to `f32`.
@@ -300,4 +310,32 @@ pub(super) fn to_f32(v: f64) -> f32 {
     )]
     let v = v as f32;
     v
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn shown(value: &str) -> String {
+        match invalid("settings.value", &value) {
+            Error::InvalidColumn { value, .. } => value,
+            other => panic!("{other}"),
+        }
+    }
+
+    #[test]
+    fn a_bad_value_is_quoted_only_in_part() {
+        // Up to 64 characters: whole.
+        assert_eq!(shown(""), "");
+        let limit = "x".repeat(SHOWN_VALUE_CHARS);
+        assert_eq!(shown(&limit), limit);
+        // Longer: the first 64 and "…".
+        assert_eq!(shown(&format!("{limit}y")), format!("{limit}…"));
+        assert_eq!(shown(&"9".repeat(1 << 20)), "9".repeat(64) + "…");
+        // Counted in characters and cut between them, not inside one.
+        let wide = "ж".repeat(SHOWN_VALUE_CHARS);
+        assert_eq!(shown(&wide), wide);
+        assert_eq!(shown(&"ж".repeat(100)), wide.clone() + "…");
+        assert_eq!(shown(&"😀".repeat(65)), "😀".repeat(64) + "…");
+    }
 }
