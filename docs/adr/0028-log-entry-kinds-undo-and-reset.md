@@ -3,6 +3,7 @@
 - Status: Accepted
 - Date: 2026-10-17
 - Amends: ADR 0005 (`review_events` columns), ADR 0006 (what `rebuild_state` replays), ADR 0008 (dating new entries), ADR 0014 (what the daily limits count), SPEC §3 (`kind` next to `undoes`)
+- Amended by: ADR 0032 (what the statistics count: activity and memory are counted differently)
 - Closes: #11; the core part of SPEC §4.5 (undo last grade) and of #38 (reset progress)
 
 ## Context

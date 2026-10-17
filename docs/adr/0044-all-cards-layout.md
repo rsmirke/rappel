@@ -3,6 +3,7 @@
 - Status: Accepted
 - Date: 2026-10-17
 - Amends: ADR 0036 (the search field's key capture, the filter bar, the rows, the selection-mode header, the empty states)
+- Amended by: ADR 0048 (the selection buttons are named by their own accessible labels)
 - Refers to: ADR 0040 (shell), ADR 0042 (card rows and tag pills), `docs/briefs/phase-1-finish.md` ("Browser", "Tags", "Design rules"), GNOME HIG "Selection mode"
 
 ## Context

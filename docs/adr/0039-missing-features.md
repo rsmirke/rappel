@@ -3,6 +3,7 @@
 - Status: Accepted
 - Date: 2026-10-17
 - Amends: ADR 0002 (the libadwaita floor)
+- Amended by: ADR 0046 (the shortcuts test covers every key table), ADR 0048 (the window state is written in one step with mode 0600)
 - Refers to: SPEC §4.8 (phase 1, missing features), ADR 0004 (data directories), ADR 0021 and 0023 (the KaTeX fonts), ADR 0027 (settings), #53
 
 ## Context

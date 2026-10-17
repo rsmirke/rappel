@@ -4,7 +4,7 @@
 - Date: 2026-10-17
 - Amends: ADR 0006 (the stored desired retention is used), ADR 0008 (the store no longer owns a scheduler), ADR 0014 (the daily limits and the day start come from the settings), ADR 0017 (settings are not in format version 1; they join with version 2)
 - Closes: SPEC §4.8, the preferences part
-- Amended by: ADR 0017 (format version 2 carries the stored settings; an import applies them only into a database without decks)
+- Amended by: ADR 0017 (format version 2 carries the stored settings; an import applies them only into a database without decks), ADR 0046 (Preferences)
 
 ## Context
 
