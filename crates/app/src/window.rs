@@ -13,6 +13,7 @@ use crate::pages::{BrowserPage, DeckPage, DecksPage, Recovered};
 use crate::startup::{Problem, data_folder_line, too_new_text};
 use crate::state::AppState;
 use crate::transfer;
+use crate::ui::nav;
 use crate::ui::toast::{persistent_toast, warning_message};
 use crate::window_state;
 
@@ -345,15 +346,16 @@ impl RappelWindow {
         } else {
             return;
         };
-        match BrowserPage::new(state.clone(), deck_id.as_deref()) {
-            Ok(browser) => imp.navigation_view.push(&browser),
-            Err(err) => {
-                crate::ui::toast::show_error(
-                    self,
-                    "opening All Cards",
-                    &format!("The cards could not be read: {err}"),
-                );
-            }
+        // The visible page is not All Cards (see above); the helper keeps
+        // the rule in one place.
+        if let Err(err) = nav::push_unless_on_top(&imp.navigation_view, || {
+            BrowserPage::new(state.clone(), deck_id.as_deref())
+        }) {
+            crate::ui::toast::show_error(
+                self,
+                "opening All Cards",
+                &format!("The cards could not be read: {err}"),
+            );
         }
     }
 
@@ -494,6 +496,68 @@ fn recovered_message(how: Recovered, replaced: Option<&Path>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A window opened as at startup on a data directory whose saved state
+    /// reopens a deck of `cards` cards; not shown. Returns the window, its
+    /// deck page and the directory, which must outlive them.
+    fn reopened_with(cards: usize) -> (RappelWindow, DeckPage, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path().join("data");
+        let state = AppState::open(data_dir.clone()).unwrap();
+        let deck = state.create_deck("Deck").unwrap();
+        for i in 0..cards {
+            state
+                .add_card_with_tags(&deck.id, &format!("front {i}"), "back", &[])
+                .unwrap();
+        }
+        window_state::save(
+            &data_dir,
+            &window_state::WindowState {
+                deck_id: Some(deck.id),
+                ..window_state::WindowState::default()
+            },
+        );
+        let window: RappelWindow = glib::Object::new();
+        window.show_main(state);
+        let page = window
+            .imp()
+            .navigation_view
+            .visible_page()
+            .and_downcast::<DeckPage>()
+            .expect("the saved deck is reopened");
+        (window, page, tmp)
+    }
+
+    /// The window's focus widget (it need not be shown for that).
+    fn focus_of(window: &RappelWindow) -> gtk::Widget {
+        gtk::prelude::RootExt::focus(window).expect("the window has a focus widget")
+    }
+
+    #[test]
+    fn a_deck_reopened_at_startup_has_the_focus_on_its_first_card() {
+        crate::testing::with_widgets(|| {
+            let (window, page, _tmp) = reopened_with(3);
+            let focus = focus_of(&window);
+            assert!(focus.is_ancestor(&page), "not Back or the deck list");
+            let list = focus
+                .ancestor(gtk::ListView::static_type())
+                .expect("a card of the list has the focus");
+            assert!(list.is_ancestor(&page));
+            window.destroy();
+        });
+    }
+
+    #[test]
+    fn an_empty_deck_reopened_at_startup_has_the_focus_on_add_card() {
+        crate::testing::with_widgets(|| {
+            let (window, page, _tmp) = reopened_with(0);
+            let focus = focus_of(&window);
+            assert!(focus.is_ancestor(&page));
+            let button = focus.downcast::<gtk::Button>().expect("a button");
+            assert_eq!(button.action_name().as_deref(), Some("deck.new-card"));
+            window.destroy();
+        });
+    }
 
     #[test]
     fn recovery_toasts_say_what_happened_and_where_the_old_file_is() {

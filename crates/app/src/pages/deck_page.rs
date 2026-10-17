@@ -23,7 +23,7 @@ use crate::dialogs::card_editor::{CardEditor, Saved};
 use crate::dialogs::card_info;
 use crate::pages::{ReviewPage, StatsPage};
 use crate::state::AppState;
-use crate::ui::focus::index_after_removal;
+use crate::ui::focus::{self, ShownFocus, index_after_removal};
 use crate::ui::text::due_new_line;
 use crate::ui::toast::{info_toast, log_failure, show_error, show_toast_from, undo_toast};
 use crate::ui::undo::{self, UndoFailure};
@@ -117,7 +117,10 @@ mod imp {
             self.parent_constructed();
             let page = self.obj();
             // Back from studying: what is left to study changed.
-            page.connect_shown(super::DeckPage::update_study);
+            page.connect_shown(|page| {
+                page.update_study();
+                page.focus_when_shown();
+            });
             page.connect_compact_notify(super::DeckPage::update_study_bar);
             // AdwBreakpoint emits `apply` and `unapply` as its condition
             // starts and stops matching, the first time too when the page
@@ -249,10 +252,6 @@ impl DeckPage {
         let Some(view) = nav::navigation_view(self) else {
             return;
         };
-        // A double click or key repeat must not push two sessions.
-        if view.visible_page().is_some_and(|p| p.is::<ReviewPage>()) {
-            return;
-        }
         // Cards saved from the session's editor update this list too.
         let on_saved = glib::clone!(
             #[weak(rename_to = deck_page)]
@@ -261,12 +260,13 @@ impl DeckPage {
                 deck_page.show_saved(saved);
             }
         );
-        match ReviewPage::new(state.clone(), deck.clone(), on_saved) {
-            Ok(page) => {
-                self.action_set_enabled("deck.study", false);
-                view.push(&page);
-            }
-            Err(err) => self.error_toast(&format!("The session could not start: {err}")),
+        let pushed = nav::push_unless_on_top(&view, || {
+            let page = ReviewPage::new(state.clone(), deck.clone(), on_saved)?;
+            self.action_set_enabled("deck.study", false);
+            Ok::<_, rappel_core::Error>(page)
+        });
+        if let Err(err) = pushed {
+            self.error_toast(&format!("The session could not start: {err}"));
         }
     }
 
@@ -279,13 +279,8 @@ impl DeckPage {
         let Some(view) = nav::navigation_view(self) else {
             return;
         };
-        // Key repeat must not stack a second page.
-        if view.visible_page().is_some_and(|p| p.is::<StatsPage>()) {
-            return;
-        }
-        match StatsPage::new(state, Some(deck)) {
-            Ok(page) => view.push(&page),
-            Err(err) => self.error_toast(&format!("The statistics could not be read: {err}")),
+        if let Err(err) = nav::push_unless_on_top(&view, || StatsPage::new(state, Some(deck))) {
+            self.error_toast(&format!("The statistics could not be read: {err}"));
         }
     }
 
@@ -386,12 +381,7 @@ impl DeckPage {
             return;
         }
         store.remove(position);
-        match index_after_removal(position, store.n_items()) {
-            Some(next) => self.focus(next),
-            None => {
-                imp.empty_add_button.grab_focus();
-            }
-        }
+        self.focus_or_empty_state(index_after_removal(position, store.n_items()));
 
         // Undo must work after going back to the deck list too, when this
         // page may be gone: the closure keeps the state, not the page.
@@ -540,6 +530,48 @@ impl DeckPage {
                 store.splice(0, store.n_items(), &items);
             }
             Err(err) => self.error_toast(&format!("The cards could not be read: {err}")),
+        }
+    }
+
+    /// Focuses the first card (or Add Card) unless the focus is already
+    /// on this page (see [`focus::when_shown`]). On a push the focus is
+    /// set here, in `shown`, never before: a grab before or during the push
+    /// is lost (`ui::nav`). At startup the page is pushed without animation
+    /// before the window is shown, and `shown` is emitted during that push:
+    /// with animations off `switch_page` skips the transition, whose `done`
+    /// handler emits it (`adw_animation_skip`, `transition_done_cb`,
+    /// libadwaita 1.8 and 1.9). The window then keeps this focus widget
+    /// (`gtk_window_show` moves the focus only when it has none,
+    /// gtk/gtkwindow.c, GTK 4.22).
+    fn focus_when_shown(&self) {
+        let inside = self
+            .root()
+            .and_then(|root| root.focus())
+            .is_some_and(|focus| focus.is_ancestor(self));
+        let rows = self.imp().cards.get().map_or(0, gio::ListStore::n_items);
+        match focus::when_shown(inside, rows) {
+            ShownFocus::Keep => {}
+            ShownFocus::FirstRow => {
+                // `scroll_to` with FOCUS only moves the list's focus item
+                // while the focus is outside it; the grab then focuses that
+                // item's row, making it if needed (`gtk_list_base_scroll_to`,
+                // `gtk_list_base_grab_focus`, gtk/gtklistbase.c, GTK 4.22).
+                let list = &self.imp().card_list;
+                list.scroll_to(0, gtk::ListScrollFlags::FOCUS, None);
+                list.grab_focus();
+            }
+            ShownFocus::EmptyState => self.focus_or_empty_state(None),
+        }
+    }
+
+    /// Focuses the card at `position`, or with `None` the empty state's
+    /// Add Card button.
+    fn focus_or_empty_state(&self, position: Option<u32>) {
+        match position {
+            Some(position) => self.focus(position),
+            None => {
+                self.imp().empty_add_button.grab_focus();
+            }
         }
     }
 
