@@ -4,7 +4,6 @@
 
 use std::cell::Cell;
 use std::ops::Sub;
-use std::rc::Rc;
 
 use gtk::glib;
 use gtk::prelude::*;
@@ -27,116 +26,116 @@ where
 /// after mapping (`gtk_window_show`, gtk/gtkwindow.c). A selectable label
 /// then selects all of its text, when the `gtk-label-select-on-focus`
 /// setting is on (the default): `gtk_label_grab_focus` (gtk/gtklabel.c, GTK
-/// 4.20) chains up to the parent's `grab_focus`, which moves the focus and
-/// notifies `has-focus`, and only then calls `gtk_label_select_region (self,
-/// 0, -1)`. So the selection is dropped in an idle, after that.
+/// 4.20) chains up to the parent's `grab_focus` and then calls
+/// `gtk_label_select_region (self, 0, -1)`. All of that happens inside
+/// `present()`, before the main loop runs again.
 ///
-/// Armed from the label's first map until the main loop is idle again:
-/// only a focus that comes with the page being shown counts. On the recovery
-/// page that first focus goes to a Restore button, and a later Tab to the
-/// label selects it as GTK does.
+/// So an idle queued at the label's first map drops the selection if the
+/// label is then the window's focus widget. `is_focus` is the focus within
+/// the window; `has-focus` would wait for the compositor to activate the
+/// window, which comes later (`gtk_widget_has_focus` docs). Only that first
+/// focus counts: on the recovery page it goes to a Restore button, and a
+/// later Tab to the label selects it as GTK does.
 pub fn unselect_on_first_focus(label: &gtk::Label) {
-    let armed = Rc::new(Cell::new(false));
+    after_first_map(label, |_| {});
+}
+
+/// [`unselect_on_first_focus`], calling `done` from the idle with whether
+/// the label had the focus (and so was unselected), for the tests.
+fn after_first_map(label: &gtk::Label, done: impl Fn(bool) + 'static) {
     let seen = Cell::new(false);
-    label.connect_map(glib::clone!(
-        #[strong]
-        armed,
-        move |_| arm_on_first_map(&seen, &armed)
-    ));
-    label.connect_has_focus_notify(move |label| {
-        if label.has_focus() {
-            focused(label, &armed);
+    let done = std::rc::Rc::new(done);
+    label.connect_map(move |label| {
+        if seen.replace(true) {
+            return;
         }
-    });
-}
-
-/// On the first map only: arms `armed` until the main loop is idle again.
-fn arm_on_first_map(seen: &Cell<bool>, armed: &Rc<Cell<bool>>) {
-    if seen.replace(true) {
-        return;
-    }
-    armed.set(true);
-    glib::idle_add_local_once(glib::clone!(
-        #[strong]
-        armed,
-        move || armed.set(false)
-    ));
-}
-
-/// `label` got the focus: while armed (once), its selection is dropped in
-/// an idle, after `gtk_label_grab_focus` has made it. Says whether it will
-/// be.
-fn focused(label: &gtk::Label, armed: &Cell<bool>) -> bool {
-    let drop = armed.replace(false);
-    if drop {
+        let done = done.clone();
         glib::idle_add_local_once(glib::clone!(
             #[weak]
             label,
-            move || label.select_region(0, 0)
+            move || {
+                let focused = label.is_focus();
+                if focused {
+                    label.select_region(0, 0);
+                }
+                done(focused);
+            }
         ));
-    }
-    drop
+    });
 }
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
-    /// Runs the main loop until it has nothing left to do: the idles have
-    /// run.
-    fn settle() {
-        let context = glib::MainContext::default();
-        while context.iteration(false) {}
-    }
-
-    /// A selectable label with all of its text selected, as
-    /// `gtk_label_grab_focus` leaves it. (The focus itself is not used: in a
-    /// test under Xvfb the window is never active, so `has-focus` never
-    /// changes; the handlers are driven directly instead.)
-    fn selected_label() -> gtk::Label {
+    /// A presented window with a selectable label and, if `button_first`,
+    /// a button before it, and what the first-map idle reported.
+    fn shown(button_first: bool) -> (gtk::Window, gtk::Label, std::rc::Rc<Cell<Option<bool>>>) {
         let label = gtk::Label::new(Some("Data folder: /home/someone/.local/share/rappel"));
         label.set_selectable(true);
-        label.select_region(0, -1);
-        assert!(label.selection_bounds().is_some());
-        label
+        let report = std::rc::Rc::new(Cell::new(None));
+        after_first_map(
+            &label,
+            glib::clone!(
+                #[strong]
+                report,
+                move |focused| report.set(Some(focused))
+            ),
+        );
+        let content = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        if button_first {
+            content.append(&gtk::Button::with_label("Restore"));
+        }
+        content.append(&label);
+        let window = gtk::Window::new();
+        window.set_child(Some(&content));
+        window.present();
+        assert!(crate::testing::settle_until(
+            || report.get().is_some(),
+            Duration::from_secs(5)
+        ));
+        (window, label, report)
     }
 
-    /// Whether the selection survives the main loop is not asserted where
-    /// it should: a selectable label with a selection owns the PRIMARY
-    /// selection and loses its selection when another label takes it, which
-    /// tests running alongside may do. What the code decides is asserted
-    /// instead (`focused` says whether it drops the selection).
+    /// The selection itself cannot be watched across the main loop under
+    /// Xvfb: a label's selection claims the PRIMARY selection, which a test
+    /// cannot get without an input event's timestamp, so GTK clears it at
+    /// the next iteration anyway. The test checks what the code decides
+    /// instead: the idle runs after the window's first focus, and finds the
+    /// label focused only when it is the first focusable widget.
     #[test]
-    fn only_the_first_focus_while_the_page_is_shown_drops_the_selection() {
+    fn the_first_focus_given_by_the_window_is_the_one_unselected() {
         crate::testing::with_gtk(|| {
-            let label = selected_label();
+            let (window, label, report) = shown(false);
+            assert_eq!(
+                report.get(),
+                Some(true),
+                "the window focused the label as it was shown"
+            );
+            assert!(label.is_focus());
+            // Selected by GTK at once, so the idle had something to drop.
+            GtkWindowExt::set_focus(&window, None::<&gtk::Widget>);
+            assert!(label.grab_focus());
+            assert!(
+                label.selection_bounds().is_some(),
+                "a later focus selects, as GTK does"
+            );
+            // Mapped again: not checked again.
+            report.set(None);
+            label.unmap();
+            label.map();
+            crate::testing::settle_until(|| false, Duration::from_millis(20));
+            assert_eq!(report.get(), None);
+            window.destroy();
 
-            // Armed at the first map, then focused: dropped, after GTK's own
-            // selection (in an idle, not at once).
-            let armed = Rc::new(Cell::new(false));
-            let seen = Cell::new(false);
-            arm_on_first_map(&seen, &armed);
-            assert!(armed.get());
-            assert!(focused(&label, &armed));
-            assert!(label.selection_bounds().is_some(), "not at once");
-            settle();
-            assert_eq!(label.selection_bounds(), None);
-
-            // A second focus keeps GTK's selection.
-            assert!(!focused(&label, &armed));
-
-            // The page was shown and its first focus went elsewhere (the
-            // recovery page's Restore buttons): the arming ended when the
-            // main loop was idle, and a later focus keeps the selection.
-            let armed = Rc::new(Cell::new(false));
-            let seen = Cell::new(false);
-            arm_on_first_map(&seen, &armed);
-            settle();
-            assert!(!armed.get());
-            assert!(!focused(&label, &armed));
-            // Mapped again (the page shown again): not armed again.
-            arm_on_first_map(&seen, &armed);
-            assert!(!armed.get());
+            // The first focus goes elsewhere, as on the recovery page with
+            // backups: nothing is unselected.
+            let (window, label, report) = shown(true);
+            assert_eq!(report.get(), Some(false));
+            assert!(!label.is_focus());
+            window.destroy();
         });
     }
 
