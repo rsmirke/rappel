@@ -1236,9 +1236,13 @@ mod tests {
             let (_tmp, state, page, ids) = page_of(3);
             let _window = in_window(&page);
             let first = current(&page).unwrap();
-            // Just shown: the key does nothing. Set here, not when the
-            // window was made, so a slow machine cannot let 300 ms pass in
-            // between (ADR 0049).
+            assert!(
+                page.imp().shown_at.get().is_some(),
+                "showing a card starts the settle time"
+            );
+            // Just shown: the key does nothing. Set again here, not only
+            // when the window was made, so a slow machine cannot let 300 ms
+            // pass in between (ADR 0049).
             page.imp().shown_at.set(Some(Instant::now()));
             page.key(Key::Suspend);
             assert_eq!(current(&page).as_deref(), Some(first.as_str()));
