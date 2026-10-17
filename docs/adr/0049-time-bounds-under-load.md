@@ -51,9 +51,20 @@ Waits that are not bounds stay wall clock, because they wait for GTK or a timer 
 |---|---|---|---|
 | `phase-1` (wall clock) | 11 failed | 7 failed | 8 failed |
 | CPU time only | 1 failed (`deck_reads…`, 198 + 23 ms of CPU against 150) | 0 | 0 |
-| This ADR | RESULTS | | |
+| This ADR | 0 failed | 0 failed | 0 failed |
 
-And unloaded, every time bound still fails the regression it is there for (checked in a scratch copy, not in the repository): REGRESSIONS.
+Unloaded, every run passes too. Under that load the reference took 3.0 to 6.8 times as long as unloaded, and it had to be measured once per run: every other time was within its bound in plain CPU time. Without load, the gate takes no longer than before.
+
+The bounds still fail the regressions they are there for. Checked in a scratch copy, not in the repository, with this ADR's helpers:
+
+| Regression | Test | Result |
+|---|---|---|
+| The `review_events_card_reviewed` index dropped | `deck_reads_are_fast…` | 4.29 s of CPU against 150 ms (3.83 s at a slowdown of 1.12). **Under the same load as above: 9.58 s of CPU, 3.81 s at a slowdown of 2.51**, the same figure as unloaded |
+| The same | `bulk_writes…` | `undo_entries` 25.7 s against 9 s |
+| `position_in` made quadratic | `finding_the_last_of_5000_cards_is_fast` | 3.08 s against 20 ms |
+| `position_in` doing ten times the work per card, still linear | the same | 23 ms against 20 ms: a regression of the size the bound was set for fails |
+| `breaks::Runs` no longer capping `last` | `a_cluster_built_from_many_pieces_costs_little` | 3.48 s against 500 ms |
+| The import's regular-file check removed (a FIFO is opened) | `only_regular_files_are_imported` | "planning a special file hung: no result after 50s" |
 
 ## Consequences
 
