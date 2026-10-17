@@ -773,6 +773,8 @@ impl TagEntry {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     fn strings(list: &[&str]) -> Vec<String> {
@@ -903,6 +905,90 @@ mod tests {
             entry.after_leave(true, Some(other.upcast()));
             assert_eq!(entry.pill_names(), ["a", "geo"]);
             assert_eq!(entry.typed(), "");
+        });
+    }
+
+    #[test]
+    fn a_huge_pasted_list_makes_at_most_the_limit_of_pills_quickly() {
+        crate::testing::with_widgets(|| {
+            let entry = TagEntry::default();
+            let names: Vec<String> = (0..20_000).map(|i| format!("tag {i}")).collect();
+            let pasted = format!("{},", names.join(","));
+            let (paste, ()) = crate::testing::cpu_time_of(|| entry.type_text(&pasted));
+            assert_eq!(entry.pill_names().len(), field::MAX_TAGS_PER_CARD);
+            assert_eq!(
+                entry.imp().pills.remove_buttons().len(),
+                field::MAX_TAGS_PER_CARD
+            );
+            // The rest waits in the text, with the error under the field.
+            assert!(entry.typed().starts_with("tag 100,tag 101,"));
+            assert_eq!(
+                entry.shown_error().as_deref(),
+                Some("A card can have at most 100 tags")
+            );
+            // A key typed after it.
+            let (key, ()) = crate::testing::cpu_time_of(|| entry.type_keys("x"));
+            assert_eq!(entry.pill_names().len(), field::MAX_TAGS_PER_CARD);
+            crate::testing::print_timing("tag entry: paste 20,000 names", paste);
+            crate::testing::print_timing("tag entry: a key after them", key);
+            crate::testing::assert_cpu_within(paste, Duration::from_secs(1), "paste");
+            crate::testing::assert_cpu_within(key, Duration::from_millis(500), "key");
+        });
+    }
+
+    #[test]
+    fn a_card_with_thousands_of_imported_tags_opens_in_time() {
+        crate::testing::with_widgets(|| {
+            let entry = TagEntry::default();
+            let names: Vec<String> = (0..5_000).map(|i| format!("tag {i}")).collect();
+            let (load, ()) = crate::testing::cpu_time_of(|| entry.set_tags(&names));
+            // Laid out at a dialog's width, as when the editor opens.
+            let (measure, (_, height, _, _)) =
+                crate::testing::cpu_time_of(|| entry.measure(gtk::Orientation::Vertical, 600));
+            assert!(height > 1_000, "every pill is laid out: {height} px");
+            crate::testing::print_timing("tag entry: measure 5,000 tags", measure);
+            assert_eq!(entry.pill_names().len(), 5_000);
+            assert_eq!(entry.check().names.len(), 5_000);
+            assert_eq!(entry.check().error, None);
+            crate::testing::print_timing("tag entry: 5,000 tags", load);
+            crate::testing::assert_cpu_within(load, Duration::from_secs(2), "5,000 tags");
+            crate::testing::assert_cpu_within(measure, Duration::from_secs(4), "measure");
+        });
+    }
+
+    #[test]
+    fn hostile_names_are_plain_single_lines() {
+        crate::testing::with_widgets(|| {
+            let entry = TagEntry::default();
+            let names = strings(&[
+                "two\nlines",
+                "tab\there",
+                "line\u{2028}separator",
+                "<b>bold</b> &amp; <span size='99999'>",
+                "\u{202e}reversed\u{202c}",
+                "zero\u{200b}width",
+            ]);
+            entry.set_tags(&names);
+            let labels = entry.imp().pills.pill_widgets();
+            let shown: Vec<String> = labels.iter().map(|l| l.label().to_string()).collect();
+            assert_eq!(
+                shown,
+                [
+                    "two lines",
+                    "tab here",
+                    "line separator",
+                    "<b>bold</b> &amp; <span size='99999'>",
+                    "\u{202e}reversed\u{202c}",
+                    "zero\u{200b}width",
+                ]
+            );
+            for label in &labels {
+                assert!(!label.uses_markup());
+                assert!(label.is_single_line_mode());
+                assert_eq!(label.ellipsize(), gtk::pango::EllipsizeMode::End);
+            }
+            // Saved as typed: only the pills are drawn on one line.
+            assert_eq!(entry.check().names, names);
         });
     }
 

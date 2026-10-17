@@ -93,14 +93,18 @@ impl TagSuggestions {
         self.imp().on_chosen.replace(Some(Callback::new(f)));
     }
 
-    /// Replaces the rows with `names`, none highlighted.
+    /// Replaces the rows with `names`, none highlighted. Each is shown on
+    /// one line (`ui::text::one_line`): an imported name can hold a line
+    /// break or a tab.
     pub fn set_names(&self, names: &[&str]) {
         let list = &self.imp().list;
         list.remove_all();
         for name in names {
+            let name = crate::ui::text::one_line(name);
             let label = gtk::Label::builder()
-                .label(*name)
+                .label(&name)
                 .use_markup(false)
+                .single_line_mode(true)
                 .xalign(0.0)
                 .ellipsize(gtk::pango::EllipsizeMode::End)
                 .build();
@@ -108,7 +112,7 @@ impl TagSuggestions {
                 .child(&label)
                 .focusable(false)
                 .build();
-            row.update_property(&[gtk::accessible::Property::Label(name)]);
+            row.update_property(&[gtk::accessible::Property::Label(&name)]);
             list.append(&row);
         }
     }
@@ -120,5 +124,29 @@ impl TagSuggestions {
             Some(row) => list.select_row(Some(&row)),
             None => list.unselect_all(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn suggestions_are_plain_single_lines() {
+        crate::testing::with_widgets(|| {
+            let popover = TagSuggestions::default();
+            popover.set_names(&["two\nlines", "<b>x</b> &amp;", "tab\there"]);
+            let list = &popover.imp().list;
+            let labels: Vec<gtk::Label> = (0..3)
+                .filter_map(|i| list.row_at_index(i))
+                .filter_map(|row| row.child().and_downcast::<gtk::Label>())
+                .collect();
+            let texts: Vec<String> = labels.iter().map(|l| l.label().to_string()).collect();
+            assert_eq!(texts, ["two lines", "<b>x</b> &amp;", "tab here"]);
+            for label in &labels {
+                assert!(!label.uses_markup());
+                assert!(label.is_single_line_mode());
+            }
+        });
     }
 }
