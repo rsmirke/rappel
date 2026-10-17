@@ -505,9 +505,8 @@ mod tests {
     /// reopens a deck of `cards` cards; not shown. Returns the window, its
     /// deck page and the directory, which must outlive them.
     fn reopened_with(cards: usize) -> (RappelWindow, DeckPage, tempfile::TempDir) {
-        let tmp = tempfile::tempdir().unwrap();
-        let data_dir = tmp.path().join("data");
-        let state = AppState::open(data_dir.clone()).unwrap();
+        let (tmp, state) = crate::testing::temporary_state();
+        let data_dir = state.data_dir().to_path_buf();
         let deck = state.create_deck("Deck").unwrap();
         for i in 0..cards {
             state

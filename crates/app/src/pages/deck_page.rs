@@ -901,8 +901,7 @@ mod tests {
 
     /// A page over a deck of `n` cards that are all due.
     fn page_of(n: usize) -> (tempfile::TempDir, AppState, DeckPage, Vec<String>) {
-        let tmp = tempfile::tempdir().unwrap();
-        let state = AppState::open(tmp.path().join("data")).unwrap();
+        let (tmp, state) = crate::testing::temporary_state();
         let deck = state.create_deck("Deck").unwrap();
         let now = rappel_core::time::now_ms();
         let day = 24 * 60 * 60 * 1000;

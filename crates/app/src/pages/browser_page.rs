@@ -1263,8 +1263,7 @@ mod tests {
     /// A state with decks "Maths" (algebra cards) and "Art" (one card).
     /// Returns the ids of the Maths cards.
     fn state_with_cards() -> (tempfile::TempDir, AppState, Vec<String>, String) {
-        let tmp = tempfile::tempdir().unwrap();
-        let state = AppState::open(tmp.path().join("data")).unwrap();
+        let (tmp, state) = crate::testing::temporary_state();
         let maths = state.create_deck("Maths").unwrap();
         let art = state.create_deck("Art").unwrap();
         let ids = ["alpha equation", "beta matrix", "gamma vector"]
@@ -1460,8 +1459,7 @@ mod tests {
     #[test]
     fn an_empty_collection_says_so() {
         crate::testing::with_widgets(|| {
-            let tmp = tempfile::tempdir().unwrap();
-            let state = AppState::open(tmp.path().join("data")).unwrap();
+            let (_tmp, state) = crate::testing::temporary_state();
             let page = page_over(&state, None);
             let imp = page.imp();
             assert_eq!(
@@ -1482,8 +1480,7 @@ mod tests {
     #[test]
     fn opened_from_an_empty_deck_it_says_no_cards_or_no_results() {
         crate::testing::with_widgets(|| {
-            let tmp = tempfile::tempdir().unwrap();
-            let state = AppState::open(tmp.path().join("data")).unwrap();
+            let (_tmp, state) = crate::testing::temporary_state();
             let empty = state.create_deck("Empty").unwrap();
             // No card anywhere: "No Cards Yet" at once, even filtered.
             let page = page_over(&state, Some(&empty.id));
@@ -1652,8 +1649,7 @@ mod tests {
     #[test]
     fn five_thousand_cards_stay_fast_and_virtual() {
         crate::testing::with_widgets(|| {
-            let tmp = tempfile::tempdir().unwrap();
-            let state = AppState::open(tmp.path().join("data")).unwrap();
+            let (_tmp, state) = crate::testing::temporary_state();
             let deck = state.create_deck("Scratch").unwrap();
             for i in 0..5_000 {
                 state

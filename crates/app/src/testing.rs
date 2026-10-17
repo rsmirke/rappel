@@ -96,6 +96,15 @@ pub fn with_widgets<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -
     })
 }
 
+/// A new database in a temporary directory, for tests that need the
+/// store; the directory goes when the returned guard drops.
+pub fn temporary_state() -> (tempfile::TempDir, crate::state::AppState) {
+    let tmp = tempfile::tempdir().expect("a temporary directory");
+    let state =
+        crate::state::AppState::open(tmp.path().join("data")).expect("a new database opens");
+    (tmp, state)
+}
+
 /// Runs the default main context until `done` holds or `timeout` has
 /// passed, and says whether `done` held. For waiting on GTK (a widget being
 /// mapped), not for timing: the timeout only stops a test that would hang.

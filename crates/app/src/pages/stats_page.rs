@@ -176,12 +176,6 @@ mod tests {
 
     use super::*;
 
-    fn state() -> (tempfile::TempDir, AppState) {
-        let tmp = tempfile::tempdir().unwrap();
-        let state = AppState::open(tmp.path().join("data")).unwrap();
-        (tmp, state)
-    }
-
     /// A deck of two cards, each passed twice ten days ago and
     /// failed once yesterday.
     fn studied(state: &AppState) -> Deck {
@@ -217,7 +211,7 @@ mod tests {
     #[test]
     fn nothing_studied_shows_the_empty_state() {
         crate::testing::with_widgets(|| {
-            let (_tmp, state) = state();
+            let (_tmp, state) = crate::testing::temporary_state();
             let page = StatsPage::new(&state, None).unwrap();
             assert_eq!(shown(&page).as_deref(), Some("empty"));
             assert_eq!(
@@ -245,7 +239,7 @@ mod tests {
     #[test]
     fn studied_cards_fill_the_headline_and_the_charts() {
         crate::testing::with_widgets(|| {
-            let (_tmp, state) = state();
+            let (_tmp, state) = crate::testing::temporary_state();
             let deck = studied(&state);
             let page = StatsPage::new(&state, Some(&deck)).unwrap();
             let imp = page.imp();
@@ -267,7 +261,7 @@ mod tests {
     #[test]
     fn a_chart_without_data_says_so_instead() {
         crate::testing::with_widgets(|| {
-            let (_tmp, state) = state();
+            let (_tmp, state) = crate::testing::temporary_state();
             let deck = state.create_deck("Deck").unwrap();
             let id = state
                 .add_card_with_tags(&deck.id, "front", "back", &[])
@@ -292,7 +286,7 @@ mod tests {
     #[test]
     fn a_deleted_deck_has_no_page() {
         crate::testing::with_widgets(|| {
-            let (_tmp, state) = state();
+            let (_tmp, state) = crate::testing::temporary_state();
             let deck = studied(&state);
             state.delete_deck(&deck.id).unwrap();
             assert!(matches!(

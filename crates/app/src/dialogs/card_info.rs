@@ -219,16 +219,10 @@ mod tests {
         titles
     }
 
-    fn state() -> (tempfile::TempDir, AppState) {
-        let tmp = tempfile::tempdir().unwrap();
-        let state = AppState::open(tmp.path().join("data")).unwrap();
-        (tmp, state)
-    }
-
     #[test]
     fn the_history_shows_resets_as_markers_newest_first() {
         crate::testing::with_widgets(|| {
-            let (_tmp, state) = state();
+            let (_tmp, state) = crate::testing::temporary_state();
             let deck = state.create_deck("Deck").unwrap();
             let id = state
                 .add_card_with_tags(&deck.id, "front", "back", &[])
@@ -257,7 +251,7 @@ mod tests {
     #[test]
     fn a_card_never_studied_says_so() {
         crate::testing::with_widgets(|| {
-            let (_tmp, state) = state();
+            let (_tmp, state) = crate::testing::temporary_state();
             let deck = state.create_deck("Deck").unwrap();
             let id = state
                 .add_card_with_tags(&deck.id, "front", "back", &[])
@@ -275,7 +269,7 @@ mod tests {
     #[test]
     fn a_missing_card_is_not_built() {
         crate::testing::with_widgets(|| {
-            let (_tmp, state) = state();
+            let (_tmp, state) = crate::testing::temporary_state();
             assert!(matches!(
                 build(&state, "no-such-card", rappel_core::time::now_ms()),
                 Err(Failure::Read(rappel_core::Error::CardNotFound(_)))

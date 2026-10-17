@@ -1177,8 +1177,7 @@ mod tests {
     fn page_with(
         sides: &[(String, String)],
     ) -> (tempfile::TempDir, AppState, ReviewPage, Vec<String>) {
-        let tmp = tempfile::tempdir().unwrap();
-        let state = AppState::open(tmp.path().join("data")).unwrap();
+        let (tmp, state) = crate::testing::temporary_state();
         let deck = state.create_deck("Deck").unwrap();
         let now = rappel_core::time::now_ms();
         let day = 24 * 60 * 60 * 1000;

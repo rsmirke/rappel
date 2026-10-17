@@ -880,8 +880,7 @@ mod tests {
         CardEditor,
         Rc<std::cell::RefCell<Vec<Saved>>>,
     ) {
-        let tmp = tempfile::tempdir().unwrap();
-        let state = AppState::open(tmp.path().join("data")).unwrap();
+        let (tmp, state) = crate::testing::temporary_state();
         let deck = state.create_deck("Deck").unwrap();
         let card = existing.map(|(front, tags)| {
             let names: Vec<String> = tags.iter().map(|t| (*t).to_owned()).collect();
