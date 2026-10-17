@@ -384,16 +384,21 @@ fn restore_question(when: &str) -> (&'static str, String) {
     )
 }
 
-/// What the page adds to its explanation when there is no backup.
+/// What the page adds to its explanation when there is no backup. Where
+/// the user may be tempted to fix the folder by hand, it warns against
+/// copying database files into it: a copy over `rappel.sqlite3` with an
+/// old `-wal` beside it replays that WAL into the copy (ADR 0007, 0016).
 fn no_backups_text(reason: Option<RecoveryReason>) -> &'static str {
     if offers_start_fresh(reason) {
         "No backups were found, so there is nothing to restore. You can start with an empty \
-         database instead: the current files stay in the data folder, nothing is deleted."
+         database instead: the current files stay in the data folder, nothing is deleted. \
+         Don’t copy database files into the data folder yourself: that can damage them."
     } else if offers_finish_restore(reason) {
         "No backups were found, but the waiting copy can be installed."
     } else {
         "No backups were found, so there is nothing to restore. Leave the files in the data \
-         folder as they are, so they can still be recovered."
+         folder as they are, so they can still be recovered. Don’t copy database files into \
+         the data folder yourself: that can damage them."
     }
 }
 
@@ -485,6 +490,19 @@ mod tests {
         assert!(no_backups_text(None).contains("Leave the files"));
         for reason in [None, Some(RecoveryReason::NotRappel)] {
             assert!(no_backups_text(reason).starts_with("No backups were found"));
+        }
+        // The one on-screen warning about a real way to lose data.
+        for reason in [
+            None,
+            Some(RecoveryReason::Damaged),
+            Some(RecoveryReason::MissingFile),
+        ] {
+            assert!(
+                no_backups_text(reason).ends_with(
+                    "Don’t copy database files into the data folder yourself: that can damage them."
+                ),
+                "{reason:?}"
+            );
         }
     }
 

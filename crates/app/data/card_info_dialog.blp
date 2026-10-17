@@ -30,9 +30,14 @@ Adw.Dialog card_info_dialog {
           orientation: vertical;
           spacing: 24;
 
+          // At most three lines: a long front (a formula's source) ends
+          // with "…" (GtkLabel `lines` needs `ellipsize`).
           Gtk.Label front_label {
             use-markup: false;
             wrap: true;
+            wrap-mode: word_char;
+            lines: 3;
+            ellipsize: end;
             xalign: 0;
 
             styles [
