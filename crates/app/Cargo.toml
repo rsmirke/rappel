@@ -25,8 +25,5 @@ unicode-segmentation.workspace = true
 proptest.workspace = true
 tempfile.workspace = true
 
-[build-dependencies]
-glib-build-tools.workspace = true
-
 [lints]
 workspace = true
