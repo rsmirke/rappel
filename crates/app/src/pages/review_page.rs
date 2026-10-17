@@ -86,6 +86,8 @@ mod imp {
         #[template_child]
         pub buttons: TemplateChild<adw::ViewStack>,
         #[template_child]
+        pub short_breakpoint: TemplateChild<adw::Breakpoint>,
+        #[template_child]
         pub summary_page: TemplateChild<adw::StatusPage>,
         #[template_child]
         pub summary_figures: TemplateChild<gtk::Box>,
@@ -168,6 +170,7 @@ mod imp {
             let page = self.obj();
             page.setup_keys();
             page.setup_reveal_animation();
+            page.setup_short_summary();
             // A grab before the push does nothing, and the navigation view
             // then focuses the first widget: the Back button, which would
             // take Space and Enter. So park the focus once on screen.
@@ -510,6 +513,29 @@ impl ReviewPage {
         let animation = adw::TimedAnimation::new(&*imp.card_area, 0.0, 1.0, REVEAL_MS, target);
         animation.set_easing(adw::Easing::EaseOutCubic);
         init_once(&imp.reveal_animation, animation);
+    }
+
+    /// Makes the summary `compact` (libadwaita's style class for a status
+    /// page in a small space: less spacing) and drops its icon while the
+    /// short-window breakpoint applies, so its figures and Back to Deck fit
+    /// at 360 × 294. `apply` and `unapply` come when the breakpoint starts
+    /// and stops matching (`AdwBreakpoint` docs).
+    fn setup_short_summary(&self) {
+        let imp = self.imp();
+        let summary = imp.summary_page.downgrade();
+        imp.short_breakpoint.connect_apply(move |_| {
+            if let Some(summary) = summary.upgrade() {
+                summary.add_css_class("compact");
+                summary.set_icon_name(None);
+            }
+        });
+        let summary = imp.summary_page.downgrade();
+        imp.short_breakpoint.connect_unapply(move |_| {
+            if let Some(summary) = summary.upgrade() {
+                summary.remove_css_class("compact");
+                summary.set_icon_name(Some(SUMMARY_ICON));
+            }
+        });
     }
 
     /// Fades the back in, from its first step: `play` restarts the
@@ -1030,6 +1056,10 @@ fn reveal_step(progress: f64) -> (f64, i32) {
     (progress, margin)
 }
 
+/// The summary's icon, a check mark. Keep it equal to `summary_page` in
+/// `review_page.blp`.
+const SUMMARY_ICON: &str = "object-select-symbolic";
+
 /// The summary page's text when no card was answered (all of them were
 /// suspended or deleted during the session).
 const NOTHING_REVIEWED: &str = "No cards were reviewed";
@@ -1539,6 +1569,12 @@ mod tests {
         assert_eq!(time.value, "3 s");
         // Every card suspended or deleted: nothing to sum up.
         assert_eq!(summary_tiles(&Summary::default()), None);
+    }
+
+    #[test]
+    fn the_summary_icon_matches_the_blueprint() {
+        let blueprint = include_str!("../../data/review_page.blp");
+        assert!(blueprint.contains(&format!("icon-name: \"{SUMMARY_ICON}\";")));
     }
 
     #[test]

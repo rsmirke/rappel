@@ -23,8 +23,14 @@ template $RappelReviewPage: Adw.NavigationPage {
     }
 
     // A short window (a phone held sideways) keeps the room for the card:
-    // the key hints go and the bar's margins shrink.
-    Adw.Breakpoint {
+    // the key hints go and the bar's margins shrink. The summary is then
+    // `compact` (less spacing) without its icon, so its figures and Back to
+    // Deck fit at 360 × 294; a setter can neither add a style class nor
+    // unset the icon, so the page does both on `apply` and undoes them on
+    // `unapply`. When
+    // both breakpoints match, AdwBreakpointBin applies only the last one
+    // (AdwBreakpointBin docs), so the figures stay side by side here.
+    Adw.Breakpoint short_breakpoint {
       condition ("max-height: 400sp")
 
       setters {
@@ -33,6 +39,7 @@ template $RappelReviewPage: Adw.NavigationPage {
         pass_hint.visible: false;
         bottom_bar.margin-top: 6;
         bottom_bar.margin-bottom: 6;
+        summary_box.spacing: 24;
       }
     }
 
@@ -154,10 +161,12 @@ template $RappelReviewPage: Adw.NavigationPage {
           name: "summary";
 
           child: Adw.StatusPage summary_page {
+            // Also in the page (`SUMMARY_ICON`), which takes it off on
+            // short windows.
             icon-name: "object-select-symbolic";
             title: _("Session Complete");
 
-            child: Gtk.Box {
+            child: Gtk.Box summary_box {
               orientation: vertical;
               spacing: 36;
 
