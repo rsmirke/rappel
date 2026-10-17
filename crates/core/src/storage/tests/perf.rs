@@ -280,10 +280,13 @@ fn hostile_searches_at_five_thousand_cards_are_fast() {
         ("a 1 MiB word", "c".repeat(1 << 20), 0),
         ("100,000 quotes", "\"".repeat(100_000), 0),
         ("20,000 hyphens", "card-".repeat(20_000), 0),
+        // Every word is "card" once what comes before its first letter is
+        // left out. U+10FFFF is private use to FTS5, which joined it to
+        // "card" and found nothing; left out, the word requires less.
         (
             "NUL and odd Unicode",
             "card\0\u{301}\u{200b}\u{202e}\u{fffd}\u{10ffff}".repeat(1_000),
-            0,
+            CARDS,
         ),
     ];
     for (what, text, expected) in cases {

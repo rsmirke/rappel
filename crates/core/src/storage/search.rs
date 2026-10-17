@@ -84,21 +84,36 @@ pub(crate) fn fts_query(text: &str) -> Option<String> {
         if budget == 0 {
             break;
         }
+        // What comes before a word's first letter or digit (`---abc`,
+        // accents on their own) holds no token, so it is left out before
+        // anything is cut: padding never uses up the budget. Characters
+        // Rust calls neither letter nor digit that FTS5 reads as one
+        // (private use) only make the word require less.
+        let raw = raw.trim_start_matches(|c: char| !c.is_alphanumeric());
+        if raw.is_empty() {
+            continue;
+        }
         // Never folds much more than the budget can keep, even of a huge
         // word: four times the budget of its start. Folding leaves a
         // character at least a quarter of its bytes, except an accent on
         // its own, which folds to nothing; a word cut short by that only
         // requires less, so it still finds at least what the whole would.
-        let mut word = search_key(cut_to(raw, budget.saturating_mul(4)));
+        let folded = search_key(cut_to(raw, budget.saturating_mul(4)));
+        // Folding can remove a leading mark and uncover punctuation.
+        let word = folded.trim_start_matches(|c: char| !c.is_alphanumeric());
         // A word without a letter or digit (`**`, `-`) has no token to match.
         // FTS5 may read a lone symbol Rust calls alphanumeric (ⓐ) as no
         // token at all and ignore that word; harmless.
-        if !word.chars().any(char::is_alphanumeric) {
+        if word.is_empty() {
             continue;
         }
-        word.truncate(cut_to(&word, budget).len());
+        let word = cut_to(word, budget);
+        if word.is_empty() {
+            // Not even its first character fits: the budget is spent.
+            break;
+        }
         budget -= word.len();
-        words.push(word);
+        words.push(word.to_owned());
     }
     let words = without_implied(&mut words);
     if words.is_empty() {
@@ -114,12 +129,15 @@ pub(crate) fn fts_query(text: &str) -> Option<String> {
     }
 }
 
-/// How much of what was typed is searched, in UTF-8 bytes of the folded
-/// words: far more than any search needs (about 150 words). FTS5 reads the matches of every
-/// token of a phrase, so its work grows with the number of tokens in the
-/// query times the cards that have them: one pasted word of 20,000 tokens
-/// joined by hyphens (`card-card-…`) took 10 s of CPU on 5,000 cards in a
-/// debug build (ADR 0050).
+/// How much of the query is searched, in UTF-8 bytes of its folded words
+/// from their first letter or digit on: far more than any search needs
+/// (about 150 words). Separators and padding do not count, so this is no
+/// limit on what may be typed; cutting the entry at this many bytes would
+/// hide words behind padding. FTS5 reads the matches of every token of a
+/// phrase, so its work grows with the number of tokens in the query times
+/// the cards that have them: one pasted word of 20,000 tokens joined by
+/// hyphens (`card-card-…`) took 10 s of CPU on 5,000 cards in a debug
+/// build (ADR 0050).
 pub const MAX_QUERY_BYTES: usize = 1024;
 
 /// The start of `text`, at most `max` bytes, cut between two characters.

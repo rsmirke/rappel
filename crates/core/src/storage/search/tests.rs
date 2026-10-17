@@ -568,9 +568,52 @@ fn only_the_start_of_a_long_query_is_searched() {
         let padded = format!("{}alpha", gap.repeat(MAX_QUERY_BYTES + 10));
         assert_eq!(fronts(&store, &query(&padded)), ["alpha beta"], "{gap:?}");
     }
+    // Nor does what comes before a word's first letter or digit, however
+    // long: dashes, or accents on their own.
+    for padded in [
+        format!("{}alpha", "-".repeat(1_100)),
+        format!("{}alpha", "-".repeat(5_000)),
+        format!("{}alpha", "\u{301}".repeat(3_000)),
+        format!("{}alpha", "-\u{301}*".repeat(2_000)),
+    ] {
+        assert_eq!(fts_query(&padded), Some("\"alpha\"*".to_owned()));
+        assert_eq!(fronts(&store, &query(&padded)), ["alpha beta"]);
+    }
     // The cut falls between two characters: ж is two bytes.
     assert_eq!(cut_to("жжж", 5), "жж");
     assert_eq!(cut_to("жжж", 6), "жжж");
     let multibyte = format!("{}жжж", "alpha ".repeat(204));
     assert_eq!(fts_query(&multibyte), Some("\"alpha\"* \"жж\"*".to_owned()));
+}
+
+/// Padding that holds no token: spaces, punctuation, NUL, accents alone.
+fn padding() -> impl Strategy<Value = String> {
+    let piece = prop::sample::select(vec![" ", "-", "*", "\"", "\0", "\u{301}", "\t", "(", ":"]);
+    (prop::collection::vec(piece, 1..8), 0usize..1_500)
+        .prop_map(|(pieces, times)| pieces.concat().repeat(times))
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+
+    /// However much padding comes first, a query finds at least the cards
+    /// its words alone find: padding never uses up the budget, and a cut
+    /// only ever requires less (ADR 0050).
+    #[test]
+    fn padding_never_hides_a_word(
+        cards in prop::collection::vec((side_text(), side_text()), 1..6),
+        pad in padding(),
+        word in "[ab1é]{1,4}",
+    ) {
+        let (mut store, deck) = store_with_deck();
+        for (front, back) in &cards {
+            store.add_card_at(&deck, front, back, T0).unwrap();
+        }
+        let ids = |text: &str| -> std::collections::BTreeSet<String> {
+            store.browse(&query(text), NOW).unwrap().into_iter().map(|r| r.card.id).collect()
+        };
+        let alone = ids(&word);
+        let padded = ids(&format!("{pad}{word}"));
+        prop_assert!(alone.is_subset(&padded), "padding {} bytes", pad.len());
+    }
 }
