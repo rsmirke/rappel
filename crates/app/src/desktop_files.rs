@@ -219,7 +219,16 @@ fn the_metainfo_is_valid_in_english_and_french() {
             &["validate", "--no-net", "--pedantic", "--explain"],
             &path,
         );
-        let unexpected: Vec<String> = appstream_issues(&output)
+        let issues = appstream_issues(&output);
+        // The remark Rappel accepts is always there: seeing it proves the
+        // output is still read right, so no other issue can slip past.
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue == ACCEPTED_APPSTREAM_ISSUES[0]),
+            "appstreamcli's output no longer reads as expected:\n{output}"
+        );
+        let unexpected: Vec<String> = issues
             .into_iter()
             .filter(|issue| !ACCEPTED_APPSTREAM_ISSUES.contains(&issue.as_str()))
             .collect();
@@ -260,8 +269,12 @@ fn metainfo_releases(src: &str) -> Vec<(String, String, Option<String>)> {
     src.split("<release ")
         .skip(1)
         .map(|rest| {
-            let tag = &rest[..rest.find('>').expect("a closed <release> tag")];
-            let value = |name| extract::attribute(tag, name).map(str::to_owned);
+            // The start tag's text as `attribute` reads it: the name first.
+            let tag = format!(
+                "release {}",
+                &rest[..rest.find('>').expect("a closed <release> tag")]
+            );
+            let value = |name| extract::attribute(&tag, name).map(str::to_owned);
             (
                 value("version").expect("a release has a version"),
                 value("date").expect("a release has a date"),
@@ -445,6 +458,8 @@ fn the_icons_are_plain_svg_named_after_the_app() {
             "http",
             "<foreignObject",
             "<style",
+            "<!DOCTYPE",
+            "<!ENTITY",
         ] {
             assert!(
                 !bare.contains(banned),

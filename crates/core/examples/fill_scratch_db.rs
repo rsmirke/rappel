@@ -27,12 +27,11 @@
 //! one with a remote image, which is shown as text; the same files every
 //! run. With `--unused-media`, it adds three media files that no card
 //! names (three PNGs), for Clean Up Media in Preferences (ADR 0057).
-//! With `--demo`, it adds four decks that look like a real collection, for
+//! With `--demo`, it adds six decks that look like a real collection, for
 //! the store screenshots (ADR 0060): world capitals, French words,
 //! chemical elements, art history, calculus with formulas and flags drawn
-//! as images, with tags and a month of
-//! review history, so some cards are due and the statistics have days to
-//! show. `fill_scratch_db -- <dir> 0 --demo` adds only those.
+//! as images, with tags and a month of review history, so some cards are
+//! due and the statistics have days to show. `fill_scratch_db -- <dir> 0 --demo` adds only those.
 //! The directory
 //! must be absolute and is never one of the
 //! app's own data directories, release or debug: this is for throwaway

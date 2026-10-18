@@ -977,6 +977,8 @@ pub struct MetainfoUnit {
     pub end: usize,
     /// The white space before its start tag on its line.
     pub indent: String,
+    /// The `<!-- Translators: … -->` comment just above it, if any (no
+    /// other start tag in between).
     pub comment: Option<String>,
 }
 
@@ -1007,23 +1009,54 @@ fn metainfo_translated(path: &[String]) -> bool {
     )
 }
 
-/// The value of attribute `name` in a start tag's text (after its name).
+/// The value of attribute `name` in a start tag's text (the element's
+/// name, then its attributes). The tag is read one attribute at a time,
+/// so a name inside another attribute's value is not taken for one; a
+/// value must be quoted with `"` or `'`. `None` if the attribute is not
+/// there or the tag is not well formed.
 pub fn attribute<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
-    let mut rest = tag;
-    while let Some(at) = rest.find(name) {
-        let before = rest[..at].chars().last();
-        let after = rest[at + name.len()..].trim_start();
-        if before.is_none_or(char::is_whitespace)
-            && let Some(value) = after.strip_prefix('=')
-        {
-            let value = value.trim_start();
-            let quote = value.chars().next()?;
-            let body = &value[1..];
-            return body.find(quote).map(|end| &body[..end]);
+    let mut rest = tag.trim_start();
+    // The element's name.
+    rest = &rest[rest.find(char::is_whitespace).unwrap_or(rest.len())..];
+    loop {
+        rest = rest.trim_start();
+        if rest.is_empty() {
+            return None;
         }
-        rest = &rest[at + name.len()..];
+        let key_end = rest.find(|c: char| c == '=' || c.is_whitespace())?;
+        let key = &rest[..key_end];
+        rest = rest[key_end..].trim_start().strip_prefix('=')?.trim_start();
+        let quote = rest.chars().next().filter(|c| *c == '"' || *c == '\'')?;
+        let body = &rest[1..];
+        let end = body.find(quote)?;
+        if key == name {
+            return Some(&body[..end]);
+        }
+        rest = &body[end + 1..];
     }
-    None
+}
+
+/// Whether `AppStream`'s ITS rules honour `translate="no"` on the element
+/// at `path` (`metainfo.its`: the name, the developer's name, the name
+/// suffix, a keyword, a release's description and an agreement's section
+/// name or description). Elsewhere `xgettext` ignores it, so it is refused.
+fn metainfo_translate_honoured(path: &[String]) -> bool {
+    let names: Vec<&str> = path.iter().map(String::as_str).collect();
+    matches!(
+        names.as_slice(),
+        [
+            "component",
+            "name" | "developer_name" | "name_variant_suffix"
+        ] | ["component", "developer", "name"]
+            | ["component", "keywords", "keyword"]
+            | ["component", "releases", "release", "description"]
+            | [
+                "component",
+                "agreement",
+                "agreement_section",
+                "name" | "description"
+            ]
+    )
 }
 
 /// The translated elements of a metainfo file, in order. A minimal XML
@@ -1044,9 +1077,10 @@ pub fn metainfo_units(src: &str) -> Result<Vec<MetainfoUnit>, String> {
     let mut i = 0;
     while let Some(open) = src[i..].find('<').map(|at| i + at) {
         let rest = &src[open..];
-        if rest.starts_with("<!--") {
-            let end = rest
+        if let Some(inside) = rest.strip_prefix("<!--") {
+            let end = inside
                 .find("-->")
+                .map(|at| at + 4)
                 .ok_or_else(|| format!("line {}: unclosed comment", line_of(open)))?;
             let text = rest[4..end]
                 .split_whitespace()
@@ -1095,13 +1129,21 @@ pub fn metainfo_units(src: &str) -> Result<Vec<MetainfoUnit>, String> {
                 line_of(open)
             ));
         }
-        let off =
-            stack.last().is_some_and(|(_, off)| *off) || attribute(tag, "translate") == Some("no");
-        if empty {
-            continue;
-        }
         let mut path: Vec<String> = stack.iter().map(|(name, _)| name.clone()).collect();
         path.push(name.clone());
+        let translate = attribute(tag, "translate");
+        if translate.is_some() && !(translate == Some("no") && metainfo_translate_honoured(&path)) {
+            return Err(format!(
+                "line {}: <{name}> has translate={translate:?}; only translate=\"no\" on the \
+                 elements AppStream's ITS rules name has an effect",
+                line_of(open)
+            ));
+        }
+        let off = stack.last().is_some_and(|(_, off)| *off) || translate.is_some();
+        if empty {
+            pending = None;
+            continue;
+        }
         if !off && metainfo_translated(&path) {
             let end_tag = format!("</{name}>");
             let body_end = src[i..]
@@ -1141,6 +1183,8 @@ pub fn metainfo_units(src: &str) -> Result<Vec<MetainfoUnit>, String> {
             i = body_end + end_tag.len();
             continue;
         }
+        // A comment for translators goes with the next element only.
+        pending = None;
         stack.push((name, off));
     }
     if let Some((name, _)) = stack.last() {

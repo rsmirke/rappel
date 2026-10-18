@@ -87,7 +87,7 @@
     </release>
     <release version="0.2.0~alpha.3" date="2026-10-17" type="development">
       <description translate="no">
-        <p>Undo your last answers while studying, and reset a card's progress. Tags, Preferences for the daily limits and the desired retention, a Markdown editor with a live preview, and formulas drawn as in LaTeX.</p>
+        <p>Undo your last answers while studying, and reset a card's progress. Preferences for the daily limits and the desired retention, a Markdown editor with a live preview, and formulas drawn as in LaTeX.</p>
       </description>
     </release>
     <release version="0.2.0~alpha.1" date="2026-10-16" type="development">

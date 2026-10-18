@@ -969,6 +969,70 @@ fn the_desktop_drafts_are_read_as_xgettext_reads_them() {
 }
 
 #[test]
+fn metainfo_edge_cases_are_errors_or_read_right() {
+    // Comments too short to close where they open: an error, not a panic.
+    for bad in [
+        "<component><!--></component>",
+        "<component><!---></component>",
+    ] {
+        let scan = extract::scan_metainfo("x", bad);
+        assert_eq!(scan.errors.len(), 1, "{bad}");
+        assert!(
+            scan.errors[0].contains("unclosed comment"),
+            "{:?}",
+            scan.errors
+        );
+    }
+    // An empty comment is fine.
+    assert!(extract::metainfo_units("<component><!----><name>A</name></component>").is_ok());
+    // translate="no" only where the ITS rules honour it.
+    for bad in [
+        "<component><summary translate=\"no\">A</summary></component>",
+        "<component><description translate=\"no\"><p>A</p></description></component>",
+        "<component><name translate=\"yes\">A</name></component>",
+    ] {
+        let scan = extract::scan_metainfo("x", bad);
+        assert_eq!(scan.errors.len(), 1, "{bad}");
+        assert!(scan.errors[0].contains("translate="), "{:?}", scan.errors);
+    }
+    let units = extract::metainfo_units(
+        "<component><name translate=\"no\">A</name><keywords><keyword translate='no'>k</keyword></keywords></component>",
+    )
+    .expect("it reads");
+    assert!(units.is_empty());
+    // A comment for translators does not jump over another element.
+    let units = extract::metainfo_units(
+        "<component>\n<!-- Translators: for the summary -->\n<developer id=\"x\"><name translate=\"no\">B</name></developer>\n<summary>S</summary>\n</component>",
+    )
+    .expect("it reads");
+    assert_eq!(units.len(), 1);
+    assert_eq!(units[0].comment, None);
+}
+
+#[test]
+fn attributes_are_read_one_at_a_time() {
+    use extract::attribute;
+    assert_eq!(
+        attribute(r#"release version="1" date="2026""#, "date"),
+        Some("2026")
+    );
+    assert_eq!(attribute("p translate='no'", "translate"), Some("no"));
+    assert_eq!(attribute(r#"a  title = "x" "#, "title"), Some("x"));
+    // A name inside another attribute's value is not an attribute.
+    assert_eq!(
+        attribute(r#"a title="translate=no" lang="fr""#, "translate"),
+        None
+    );
+    assert_eq!(attribute(r#"a title=" date='1'""#, "date"), None);
+    // Unquoted or badly quoted values, ASCII or not: none, never a panic.
+    assert_eq!(attribute("a date=2026", "date"), None);
+    assert_eq!(attribute("a date=été", "date"), None);
+    assert_eq!(attribute("a date=\"2026", "date"), None);
+    assert_eq!(attribute("a date", "date"), None);
+    assert_eq!(attribute("a", "date"), None);
+}
+
+#[test]
 fn keyword_lists_keep_their_semicolons() {
     assert!(is_keyword_list("cards;study;"));
     assert!(!is_keyword_list("cards;study"));
