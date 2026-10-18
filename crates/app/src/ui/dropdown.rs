@@ -10,6 +10,16 @@ use gtk::prelude::*;
 pub fn set_labels(dropdown: &gtk::DropDown, labels: &[String]) {
     let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
     dropdown.set_model(Some(&gtk::StringList::new(&refs)));
+    if dropdown.expression().is_none() {
+        set_expression(dropdown);
+    }
+}
+
+/// Searches the popup by each entry's string. Setting an expression puts
+/// GTK's own factories back on the drop-down and its popup (seen with GTK
+/// 4.24; `the_factories_survive_new_labels_and_the_popup_stays_narrow`),
+/// so it is set once, before [`shrinkable`]'s factories.
+fn set_expression(dropdown: &gtk::DropDown) {
     dropdown.set_expression(Some(gtk::PropertyExpression::new(
         gtk::StringObject::static_type(),
         None::<gtk::Expression>,
@@ -27,6 +37,9 @@ pub fn set_labels(dropdown: &gtk::DropDown, labels: &[String]) {
 /// entries must be `GtkStringObject`s (a `GtkStringList`, as [`set_labels`]
 /// makes). Plain text, never markup.
 pub fn shrinkable(dropdown: &gtk::DropDown) {
+    if dropdown.expression().is_none() {
+        set_expression(dropdown);
+    }
     dropdown.set_factory(Some(&button_factory()));
     dropdown.set_list_factory(Some(&popup_factory(dropdown)));
 }
@@ -42,21 +55,39 @@ fn string_label() -> gtk::Label {
 
 /// The widest an entry of the popup gets, in characters, before it wraps.
 /// Deck names can be 1 KiB and tag names 256 bytes: unwrapped, the popup
-/// would be wider than any window.
-const POPUP_CHARS: i32 = 40;
+/// would be wider than any window. Thirty characters and the popup's
+/// padding fit a 360 px window.
+const POPUP_CHARS: i32 = 30;
 
-/// A popup entry: whole, on as many lines as it needs past
-/// [`POPUP_CHARS`], breaking between words or, in a word longer than the
-/// line, between characters.
+/// A popup entry: whole. One of at most [`POPUP_CHARS`] characters stays
+/// on one line, so the popup is as wide as it; a longer one wraps at about
+/// that width, between words or, in a longer word, between characters
+/// ([`set_popup_text`]).
 fn popup_label() -> gtk::Label {
     gtk::Label::builder()
         .xalign(0.0)
         .use_markup(false)
-        .wrap(true)
         .wrap_mode(gtk::pango::WrapMode::WordChar)
         .max_width_chars(POPUP_CHARS)
         .hexpand(true)
         .build()
+}
+
+/// Whether a popup entry of `text` wraps: past [`POPUP_CHARS`] characters.
+fn wraps_in_popup(text: &str) -> bool {
+    text.chars().count() > usize::try_from(POPUP_CHARS).unwrap_or(usize::MAX)
+}
+
+/// Shows `text` in a [`popup_label`]. The popup is as wide as its widest
+/// entry's minimum width (GTK's own entries never wrap, so their minimum is
+/// their whole width): a short entry does not wrap, and a long one wraps
+/// with a minimum of [`POPUP_CHARS`] characters, so it neither widens the
+/// popup past that nor makes it as narrow as its longest word.
+fn set_popup_text(label: &gtk::Label, text: &str) {
+    let wraps = wraps_in_popup(text);
+    label.set_wrap(wraps);
+    label.set_width_chars(if wraps { POPUP_CHARS } else { -1 });
+    label.set_label(text);
 }
 
 fn bind_label(item: &gtk::ListItem, label: &gtk::Label) {
@@ -156,8 +187,9 @@ fn popup_factory(dropdown: &gtk::DropDown) -> gtk::SignalListItemFactory {
             .child()
             .and_then(|row| row.first_child())
             .and_downcast::<gtk::Label>()
+            && let Some(string) = item.item().and_downcast::<gtk::StringObject>()
         {
-            bind_label(item, &label);
+            set_popup_text(&label, &string.string());
         }
     });
     factory
@@ -193,22 +225,94 @@ mod tests {
     }
 
     /// A long name wraps in the popup instead of widening it: a 1 KiB
-    /// deck name is no wider than 41 characters.
+    /// deck name is no wider than 31 characters, and asks for 30 at least.
+    /// A short one stays on one line.
     #[test]
     fn a_long_entry_wraps_in_the_popup() {
         crate::testing::with_widgets(|| {
-            let width = |text: &str| {
+            let widths = |text: &str| {
                 let label = popup_label();
-                label.set_label(text);
-                label.measure(gtk::Orientation::Horizontal, -1).1
+                set_popup_text(&label, text);
+                let (min, natural, _, _) = label.measure(gtk::Orientation::Horizontal, -1);
+                (min, natural, label.wraps())
             };
-            let long = width(&"wide ".repeat(205));
-            let one_word = width(&"W".repeat(1_024));
-            let limit = width(&"w".repeat(41));
-            assert!(long <= limit, "{long} > {limit}");
-            assert!(one_word <= width(&"W".repeat(41)), "{one_word}");
+            let (_, limit, _) = widths(&"w".repeat(31));
+            let (min, natural, wraps) = widths(&"wide ".repeat(205));
+            assert!(wraps && natural <= limit, "{natural} > {limit}");
+            assert!(min > limit / 2, "{min}: the popup would be too narrow");
+            let (_, natural, wraps) = widths(&"W".repeat(1_024));
+            assert!(wraps && natural <= widths(&"W".repeat(31)).1, "{natural}");
+            let (min, natural, wraps) = widths("Markdown (one per construct)");
+            assert!(
+                !wraps && min == natural,
+                "a short name stays whole on one line"
+            );
+            assert!(!wraps_in_popup(&"é".repeat(30)) && wraps_in_popup(&"é".repeat(31)));
             assert!(!popup_label().uses_markup());
         });
+    }
+
+    /// The factories of [`shrinkable`] are still those of the drop-down
+    /// and of its own popup after new labels, and a long entry wraps in
+    /// that popup: it is no wider than about 30 characters.
+    #[test]
+    fn the_factories_survive_new_labels_and_the_popup_stays_narrow() {
+        crate::testing::with_widgets(|| {
+            let dropdown = gtk::DropDown::builder().enable_search(true).build();
+            shrinkable(&dropdown);
+            let (button, popup) = (dropdown.factory(), dropdown.list_factory());
+            assert!(button.is_some() && popup.is_some());
+            for _ in 0..2 {
+                set_labels(
+                    &dropdown,
+                    &["All".to_owned(), "wide ".repeat(205), "short".to_owned()],
+                );
+                assert_eq!(dropdown.factory(), button);
+                assert_eq!(dropdown.list_factory(), popup);
+            }
+            let window = gtk::Window::builder()
+                .default_width(600)
+                .default_height(500)
+                .child(&dropdown)
+                .build();
+            window.present();
+            dropdown.activate();
+            let popover = || descendant::<gtk::Popover>(dropdown.upcast_ref());
+            assert!(crate::testing::settle_until(
+                || popover().is_some_and(|p| p.is_mapped()),
+                std::time::Duration::from_secs(5)
+            ));
+            let list = descendant::<gtk::ListView>(dropdown.upcast_ref())
+                .expect("the popup lists the entries");
+            assert_eq!(list.factory(), popup);
+            // The rows' natural width: the label, its check mark and the
+            // row's padding (the popover is at least as wide as the
+            // drop-down's button besides). Unwrapped, it was 2,100 px.
+            let width = list.measure(gtk::Orientation::Horizontal, -1).1;
+            let label = popup_label();
+            label.set_label(&"W".repeat(31));
+            let limit = label.measure(gtk::Orientation::Horizontal, -1).1;
+            assert!(
+                width < limit + 100,
+                "the rows are {width} px wide, {limit} px for 31 W"
+            );
+            window.destroy();
+        });
+    }
+
+    /// The first `T` under `widget`, depth first.
+    fn descendant<T: IsA<gtk::Widget>>(widget: &gtk::Widget) -> Option<T> {
+        if let Some(found) = widget.downcast_ref::<T>() {
+            return Some(found.clone());
+        }
+        let mut child = widget.first_child();
+        while let Some(c) = child {
+            if let Some(found) = descendant::<T>(&c) {
+                return Some(found);
+            }
+            child = c.next_sibling();
+        }
+        None
     }
 
     /// Thousands of tags fill the filter at once.

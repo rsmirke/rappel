@@ -17,7 +17,6 @@ use rappel_core::storage::{BackupInfo, Restored};
 use crate::startup::{RecoveryReason, data_folder_line};
 use crate::state::AppState;
 use crate::ui::callback::Callback;
-use crate::ui::toast::{persistent_toast, show_toast_from};
 use crate::ui::{dialog, worker};
 use crate::widgets::BackupRow;
 
@@ -63,6 +62,10 @@ mod imp {
         pub reason: Cell<Option<RecoveryReason>>,
         pub data_dir: RefCell<Option<PathBuf>>,
         pub on_restored: RefCell<Option<Callback<OnRestored>>>,
+        /// The last failure's toast: replaced by the next one, and
+        /// dismissed once a database is open, so it does not stay over
+        /// the toast that says what was done.
+        pub errors: crate::ui::toast::ErrorSlot,
     }
 
     #[glib::object_subclass]
@@ -211,9 +214,9 @@ impl RecoveryPage {
 
     /// Restores on a worker thread: it copies and checks a whole database.
     ///
-    /// The page logs its errors itself, in full, at warning and error level
-    /// instead of through `ui::toast::show_error` (which keeps the details
-    /// at debug level): it runs before any database is open, and the paths
+    /// The page logs its errors itself, in full, at warning and error level,
+    /// not only through its `ErrorSlot` (which keeps the details at debug
+    /// level): it runs before any database is open, and the paths
     /// and SQLite messages are what make the data folder fixable. These
     /// errors never hold card or deck text: a restore and Start Fresh only
     /// copy, check and move files (ADR 0025, row 13).
@@ -237,6 +240,7 @@ impl RecoveryPage {
             Ok(Ok(restored)) => {
                 // Clone the callback out so no borrow is held while it runs.
                 let handler = imp.on_restored.borrow().as_ref().map(Callback::get);
+                imp.errors.clear();
                 if let Some(handler) = handler {
                     handler(dir, restored, Recovered::Backup);
                 }
@@ -260,7 +264,7 @@ impl RecoveryPage {
             }
         };
         self.reload();
-        show_toast_from(self, persistent_toast(&message));
+        imp.errors.show(self, "recovering the database", &message);
     }
 }
 
@@ -291,6 +295,7 @@ impl RecoveryPage {
         let message = match result {
             Ok(Ok(restored)) => {
                 let handler = imp.on_restored.borrow().as_ref().map(Callback::get);
+                imp.errors.clear();
                 if let Some(handler) = handler {
                     handler(dir, restored, Recovered::Finished);
                 }
@@ -309,7 +314,7 @@ impl RecoveryPage {
             }
         };
         self.reload();
-        show_toast_from(self, persistent_toast(&message));
+        imp.errors.show(self, "recovering the database", &message);
     }
 
     fn confirm_start_fresh(&self) {
@@ -346,6 +351,7 @@ impl RecoveryPage {
         let message = match result {
             Ok(Ok(fresh)) => {
                 let handler = imp.on_restored.borrow().as_ref().map(Callback::get);
+                imp.errors.clear();
                 if let Some(handler) = handler {
                     handler(dir, fresh, Recovered::Fresh);
                 }
@@ -373,7 +379,7 @@ impl RecoveryPage {
             }
         };
         self.reload();
-        show_toast_from(self, persistent_toast(&message));
+        imp.errors.show(self, "recovering the database", &message);
     }
 }
 
