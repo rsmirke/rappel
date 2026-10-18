@@ -376,8 +376,6 @@ msgid "_Add Card"
 msgstr ""
 
 #: crates/app/data/deck_page.blp
-#: crates/app/data/preferences_dialog.blp
-#: crates/app/data/review_page.blp
 msgid "Study"
 msgstr ""
 
@@ -484,6 +482,11 @@ msgid "Preferences"
 msgstr ""
 
 #: crates/app/data/preferences_dialog.blp
+msgctxt "preferences group"
+msgid "Study"
+msgstr ""
+
+#: crates/app/data/preferences_dialog.blp
 msgid "Limits count for each deck separately"
 msgstr ""
 
@@ -585,6 +588,11 @@ msgstr ""
 
 #: crates/app/data/retention_dialog.blp
 msgid "Percent of cards you expect to remember when they come due"
+msgstr ""
+
+#: crates/app/data/review_page.blp
+msgctxt "page title"
+msgid "Study"
 msgstr ""
 
 #: crates/app/data/review_page.blp

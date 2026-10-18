@@ -256,7 +256,7 @@ msgstr "Mémoire"
 
 #: crates/app/data/card_info_dialog.blp
 msgid "Counted since the card was last reset"
-msgstr "Comptées depuis la dernière réinitialisation de la carte"
+msgstr "Chiffres comptés depuis la dernière réinitialisation de la carte"
 
 #: crates/app/data/card_info_dialog.blp
 msgid "Status"
@@ -378,8 +378,6 @@ msgid "_Add Card"
 msgstr "_Ajouter une carte"
 
 #: crates/app/data/deck_page.blp
-#: crates/app/data/preferences_dialog.blp
-#: crates/app/data/review_page.blp
 msgid "Study"
 msgstr "Étudier"
 
@@ -486,6 +484,11 @@ msgid "Preferences"
 msgstr "Préférences"
 
 #: crates/app/data/preferences_dialog.blp
+msgctxt "preferences group"
+msgid "Study"
+msgstr "Étude"
+
+#: crates/app/data/preferences_dialog.blp
 msgid "Limits count for each deck separately"
 msgstr "Les limites valent pour chaque paquet séparément"
 
@@ -588,6 +591,11 @@ msgstr "C_hanger"
 #: crates/app/data/retention_dialog.blp
 msgid "Percent of cards you expect to remember when they come due"
 msgstr "Pourcentage de cartes que vous comptez retenir quand elles reviennent"
+
+#: crates/app/data/review_page.blp
+msgctxt "page title"
+msgid "Study"
+msgstr "Étude"
 
 #: crates/app/data/review_page.blp
 msgid "Undo Last Answer (Ctrl+Z)"

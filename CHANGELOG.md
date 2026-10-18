@@ -23,6 +23,8 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 - **Reset Progress is greyed out for a card that is already new** (no review since it was created or last reset, or only reviews that were undone), in the card menu of the deck page and of All Cards. A reset of such a card used to add a log entry that changed nothing. In selection mode, **Reset Progress** is offered while at least one chosen card has progress, and leaves the new ones alone. If a menu is stale and the core refuses, the page says "This card has no progress to reset" and updates the row.
 
 ### Changed
+- Numbers are grouped everywhere ("1,000 years", "in 1,000 years"); a few places printed them without a separator.
+- Development: `scripts/screenshot.py` has `--decoration-layout` (e.g. `:close`, as GNOME and phones show window buttons).
 - **Card Information lists the card's tags** in full (ADR 0058), so the names a row shortens or counts in "+N" can be read on a touch screen.
 - **Statistics' empty state** offers Back to Decks / Back to Deck as a plain button: going back is not the page's suggested action.
 - Development: `scripts/screenshot.py` has a `resize:W,H` step, to see a screen with a phone's on-screen keyboard up.
@@ -31,6 +33,8 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 - `rappel-core`: `Store::reset_card` refuses a new card with `Error::CardAlreadyNew`, and nothing is written; `Store::reset_cards` skips new cards and returns only the entries it wrote.
 
 ### Added
+- **Rappel speaks French** (ADR 0059). With a French system language, every text of Rappel is in French, with French plurals, numbers ("5 210", "91 %") and dates. The translation still has to be proofread. Rappel's own error details (the part after "Details") stay in English, and GTK's and libadwaita's own texts need the system's French language pack.
+- Translators: Rappel uses gettext (`po/`); see README.md for how to add a language or update one.
 - **Clean Up Media in Preferences** (ADR 0057). The new **Storage** group says how many media files no card uses and how much space they take ("12 unused files, 4.3 MB"); **Clean Up…** asks first, then moves them to a trash folder in Rappel's data folder (`media-trash`), with Undo in the notice. A file counts as used while any card names it, including deleted cards (so Undo of a deletion always has its images). Files stay in the trash for at least 30 days and are then deleted when Rappel starts, except those a backup still uses; restoring a backup, importing a file, or saving a card that names a trashed file brings it back. This is the only time Rappel deletes one of your files.
 - `rappel-core`: `Store::unused_media`, `Store::clean_up_media` / `undo_clean_up` (`CleanedUp`), `Store::tidy_media_trash` (`TrashTidied`), `media::PURGE_AFTER_DAYS`, `Error::ClockWrong`. `Store::open`, `restore_backup`, `finish_restore`, `apply_import` and every card write bring back the trashed media files they use; `add_media` names its file and records it under the database's write lock.
 - Development: `fill_scratch_db --unused-media` adds three media files no card names.
