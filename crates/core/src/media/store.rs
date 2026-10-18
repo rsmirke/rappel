@@ -228,7 +228,7 @@ pub(crate) enum CopyFailure {
 /// kind's limit, hashed as it goes. An audio file is also kept in memory
 /// (at most 20 MB) and must be plain audio of its kind over its whole
 /// length ([`check_structure`], ADR 0056), else it is refused as
-/// [`MediaProblem::Malformed`] (what was written to `out` is then the
+/// [`MediaProblem::Malformed`] or [`MediaProblem::NotPlainAudio`] (what was written to `out` is then the
 /// caller's to drop).
 pub(crate) fn copy_capped(
     reader: &mut impl Read,
@@ -270,8 +270,12 @@ pub(crate) fn copy_capped(
     if let Some(whole) = whole
         && let Err(why) = check_structure(kind, &whole)
     {
-        tracing::debug!("an audio file is refused: {}", why.0);
-        return Err(CopyFailure::Refused(MediaProblem::Malformed));
+        tracing::debug!("an audio file is refused: {}", why.why);
+        return Err(CopyFailure::Refused(if why.extra {
+            MediaProblem::NotPlainAudio
+        } else {
+            MediaProblem::Malformed
+        }));
     }
     Ok(Ingested {
         media: MediaRef::new(hasher.finalize().into(), kind),

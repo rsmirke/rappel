@@ -172,6 +172,12 @@ pub fn add_failed_text(err: &AddMediaError, accept: Accept) -> String {
         AddMediaError::Store(Error::MediaRefused(MediaProblem::NotAudio)) => {
             not_of_its_kind(Accept::Audio).to_owned()
         }
+        AddMediaError::Store(Error::MediaRefused(MediaProblem::Malformed)) => {
+            "This audio file is damaged".to_owned()
+        }
+        AddMediaError::Store(Error::MediaRefused(MediaProblem::NotPlainAudio)) => {
+            "This audio file holds more than plain audio, so Rappel does not take it".to_owned()
+        }
         AddMediaError::Store(Error::MediaRefused(MediaProblem::Empty)) => {
             "This file is empty".to_owned()
         }
@@ -328,6 +334,14 @@ mod tests {
         assert_eq!(
             add_failed_text(&AddMediaError::TooLarge, Accept::Image),
             "This image is larger than 10 MB"
+        );
+        assert_eq!(
+            refused(MediaProblem::Malformed, Accept::Audio),
+            "This audio file is damaged"
+        );
+        assert_eq!(
+            refused(MediaProblem::NotPlainAudio, Accept::Any),
+            "This audio file holds more than plain audio, so Rappel does not take it"
         );
         assert_eq!(could_not_add(Accept::Image), "The image could not be added");
         assert_eq!(

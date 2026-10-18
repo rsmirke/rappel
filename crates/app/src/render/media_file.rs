@@ -72,7 +72,7 @@ pub fn read_media_file(path: &Path, media: MediaRef) -> Result<Vec<u8>, Unreadab
         return Err(Unreadable::Refused);
     }
     if let Err(why) = check_structure(kind, &bytes) {
-        tracing::debug!("a media file is refused: {}", why.0);
+        tracing::debug!("a media file is refused: {}", why.why);
         return Err(Unreadable::Refused);
     }
     Ok(bytes)

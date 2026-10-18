@@ -46,12 +46,16 @@ pub enum MediaProblem {
     /// audio is accepted ([`crate::storage::Store::add_audio`]).
     #[error("the file is not an Ogg, MP3, M4A or WAV audio file")]
     NotAudio,
-    /// An audio file whose first bytes are of its kind but whose whole is
-    /// not plain audio of that kind ([`check_structure`]): damaged, or
-    /// something else (a playlist, a second stream, a reference to another
-    /// file) behind an audio signature (ADR 0056).
-    #[error("the audio file is damaged or holds more than plain audio")]
+    /// An audio file whose first bytes are of its kind but which is
+    /// damaged ([`check_structure`]): cut, out of bounds, a bad checksum,
+    /// or junk where its audio should be (ADR 0056).
+    #[error("the audio file is damaged")]
     Malformed,
+    /// A whole audio file that holds more than plain audio of its kind
+    /// ([`check_structure`]): another stream, a reference to another
+    /// file, a box or a format audio files do not have (ADR 0056).
+    #[error("the audio file holds more than plain audio")]
+    NotPlainAudio,
     /// Larger than its kind allows.
     #[error("the file is larger than {limit} bytes")]
     TooLarge {

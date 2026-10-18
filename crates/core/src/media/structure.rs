@@ -9,8 +9,8 @@
 //!
 //! - **MP3**: `ID3v2` tags (their declared sizes), then MPEG audio layer III
 //!   frames, each header valid and each frame whole, back to back to the
-//!   end, which may hold an `ID3v1` tag. Nothing else (an APE tag is
-//!   refused).
+//!   end, which may hold an APE tag whose items fill exactly its declared
+//!   size, and an `ID3v1` tag. Nothing else.
 //! - **Ogg**: pages back to back to the end, each with its CRC, all of one
 //!   logical stream (one serial number, the first page the only one that
 //!   begins a stream, page numbers in order, nothing after the last page),
@@ -26,8 +26,9 @@
 //!   movie, redirect or compressed movie (`cmov`, which qtdemux
 //!   decompresses and parses), no fragments, no other kind of track; every
 //!   data reference self-contained (`url ` or `urn ` with flag 1), every
-//!   sample description an audio one (`mp4a`, `alac`, `Opus`), every
-//!   track's handler `soun`. `GstPlay` follows a redirect, so for M4A
+//!   sample description an audio one (`mp4a`, `alac`, `Opus`; an `esds`
+//!   of an audio object type, without a URL), every track's handler
+//!   `soun`; `udta` holds any box but the refused ones, not walked. `GstPlay` follows a redirect, so for M4A
 //!   "never a URI" rests on this check.
 //!
 //! Images are not checked here: their decoder runs in glycin's sandbox
@@ -38,12 +39,25 @@ use super::MediaKind;
 
 /// Why an audio file is refused: what was wrong, for the logs and tests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Malformed(pub &'static str);
+pub struct Malformed {
+    /// What was found.
+    pub why: &'static str,
+    /// Whether the file is whole but holds more than plain audio (another
+    /// stream, a reference, a box or a format audio files do not have),
+    /// rather than damaged (cut, out of bounds, bad checksums, junk).
+    pub extra: bool,
+}
 
 type Check = Result<(), Malformed>;
 
+/// Damage: cut, out of bounds, a bad checksum, junk where audio should be.
 fn bad(why: &'static str) -> Check {
-    Err(Malformed(why))
+    Err(Malformed { why, extra: false })
+}
+
+/// A whole file that holds more than plain audio of its kind.
+fn extra(why: &'static str) -> Check {
+    Err(Malformed { why, extra: true })
 }
 
 /// Whether `bytes`, the whole file, is plain audio of `kind` (see the
@@ -147,8 +161,11 @@ fn mp3(b: &[u8]) -> Check {
     if end - pos >= 128 && b.get(end - 128..end - 125) == Some(b"TAG") {
         end -= 128;
     }
-    // No APE tag: its items are not checked here, so it is refused (it is
-    // not a frame).
+    // An APE tag (ReplayGain from MP3Gain, for one): its items must fill
+    // exactly the size its footer declares; no item is acted on.
+    if end - pos >= 32 && b.get(end - 32..end - 24) == Some(b"APETAGEX") {
+        end = ape_start(b, pos, end)?;
+    }
     if pos >= end {
         return bad("no MP3 frame");
     }
@@ -165,6 +182,63 @@ fn mp3(b: &[u8]) -> Check {
         pos += len;
     }
     Ok(())
+}
+
+/// Where the APE tag whose 32-byte footer ends `b[..end]` begins (its
+/// header included), checked: its items (a value size, flags, a key of 2
+/// to 255 printable ASCII characters ended by a NUL, the value) fill
+/// exactly the size the footer declares, as many as it says; a header,
+/// if the flags announce one, is there; all of it after `floor`.
+fn ape_start(b: &[u8], floor: usize, end: usize) -> Result<usize, Malformed> {
+    let damaged = Malformed {
+        why: "an APE tag whose items do not fill it",
+        extra: false,
+    };
+    let (Some(size), Some(count), Some(flags)) = (
+        u32_le(b, end - 20),
+        u32_le(b, end - 16),
+        u32_le(b, end - 12),
+    ) else {
+        return Err(damaged);
+    };
+    let size = to_usize(u64::from(size)).ok_or(damaged)?;
+    if size < 32 || size > end - floor {
+        return Err(damaged);
+    }
+    let start = end - size;
+    let items_end = end - 32;
+    let mut p = start;
+    let mut seen = 0_u32;
+    while p < items_end {
+        let value = u32_le(b, p)
+            .and_then(|n| to_usize(u64::from(n)))
+            .ok_or(damaged)?;
+        let key_start = p + 8;
+        let key_len = b
+            .get(key_start..items_end)
+            .and_then(|rest| rest.iter().take(256).position(|&c| c == 0))
+            .ok_or(damaged)?;
+        let key = &b[key_start..key_start + key_len];
+        if !(2..=255).contains(&key_len) || !key.iter().all(|c| (0x20..=0x7E).contains(c)) {
+            return Err(damaged);
+        }
+        let value_start = key_start + key_len + 1;
+        p = value_start.checked_add(value).ok_or(damaged)?;
+        if p > items_end {
+            return Err(damaged);
+        }
+        seen = seen.saturating_add(1);
+    }
+    if seen != count {
+        return Err(damaged);
+    }
+    if flags & 0x8000_0000 == 0 {
+        return Ok(start);
+    }
+    if start - floor < 32 || b.get(start - 32..start - 24) != Some(b"APETAGEX") {
+        return Err(damaged);
+    }
+    Ok(start - 32)
 }
 
 // ---------------------------------------------------------------- Ogg
@@ -208,7 +282,12 @@ fn ogg(b: &[u8]) -> Check {
     let mut ended = false;
     while pos < b.len() {
         if ended {
-            return bad("bytes after the last Ogg page");
+            // Another stream chained after the last page, or junk.
+            return if b.get(pos..pos + 4) == Some(b"OggS") {
+                extra("a second Ogg stream")
+            } else {
+                bad("bytes after the last Ogg page")
+            };
         }
         let Some(h) = b.get(pos..pos + 27) else {
             return bad("a cut Ogg page header");
@@ -243,13 +322,13 @@ fn ogg(b: &[u8]) -> Check {
                 }
                 let first = &page[27 + segments..];
                 if !(first.starts_with(b"OpusHead") || first.starts_with(b"\x01vorbis")) {
-                    return bad("an Ogg stream that is not Opus or Vorbis");
+                    return extra("an Ogg stream that is not Opus or Vorbis");
                 }
                 serial = Some(page_serial);
             }
             Some(s) => {
                 if begins || s != page_serial {
-                    return bad("a second Ogg stream");
+                    return extra("a second Ogg stream");
                 }
             }
         }
@@ -286,11 +365,11 @@ fn wav_format(fmt: &[u8]) -> Check {
     let tag = if tag == 0xFFFE {
         // WAVE_FORMAT_EXTENSIBLE: the real tag is the sub-format's first
         // two bytes, with the rest of a known GUID.
-        let (Some(extra), Some(sub)) = (u16_le(fmt, 16), u16_le(fmt, 24)) else {
+        let (Some(extension), Some(sub)) = (u16_le(fmt, 16), u16_le(fmt, 24)) else {
             return bad("a cut extensible WAV format");
         };
-        if extra < 22 || fmt.get(26..40) != Some(&SUBTYPE_TAIL[..]) {
-            return bad("an extensible WAV format of an unknown kind");
+        if extension < 22 || fmt.get(26..40) != Some(&SUBTYPE_TAIL[..]) {
+            return extra("an extensible WAV format of an unknown kind");
         }
         sub
     } else {
@@ -299,7 +378,7 @@ fn wav_format(fmt: &[u8]) -> Check {
     let bits_ok = match tag {
         1 => matches!(bits, 8 | 16 | 24 | 32),
         3 => matches!(bits, 32 | 64),
-        _ => return bad("a WAV that is not PCM or float"),
+        _ => return extra("a WAV that is not PCM or float"),
     };
     if !bits_ok || channels == 0 || rate == 0 {
         return bad("a WAV format with bad values");
@@ -370,15 +449,30 @@ const REFUSED: [&[u8; 4]; 11] = [
     b"cmvd",
 ];
 
-/// The boxes an audio file may have inside a box of type `parent`, as
-/// real encoders write them (FDK AAC with `mp4mux`, Apple's and ffmpeg's
-/// M4A, iTunes tags); `None` for a box whose inside is not walked. Any
-/// other box there refuses the file: a fragmented movie (`moov/mvex`,
-/// `moof`), track references, compressed movies, unknown boxes.
-fn allowed_inside(parent: [u8; 4]) -> Option<&'static [&'static [u8; 4]]> {
-    Some(match &parent {
-        b"file" => &[b"ftyp", b"moov", b"mdat", b"free", b"skip", b"wide"],
-        b"moov" => &[b"mvhd", b"trak", b"udta", b"iods", b"free", b"skip"],
+/// What may be inside a box of a given type.
+enum Inside {
+    /// Only these boxes, each walked by its own rule.
+    Only(&'static [&'static [u8; 4]]),
+    /// Any box but the [`REFUSED`] ones, none walked into: `udta`, whose
+    /// tags qtdemux reads by their known names only (it looks for
+    /// redirects and compressed movies only directly in `moov`).
+    AnyLeaf,
+}
+
+/// What may be inside a box of type `parent`, as real encoders write it
+/// (FDK AAC with `mp4mux`, ffmpeg, `GPAC`, Apple's tools, `iTunes` tags);
+/// `None` for a box whose inside is not walked (a leaf: `mdat`, `ilst`,
+/// `stts`, …). Any other box in an `Only` list refuses the file: a
+/// fragmented movie (`moov/mvex`, `moof`), track references (so no
+/// chapter track), compressed movies, unknown boxes.
+fn allowed_inside(parent: [u8; 4]) -> Option<Inside> {
+    Some(Inside::Only(match &parent {
+        b"file" => &[
+            b"ftyp", b"moov", b"mdat", b"free", b"skip", b"wide", b"uuid", b"pdin",
+        ],
+        b"moov" => &[
+            b"mvhd", b"trak", b"udta", b"meta", b"iods", b"uuid", b"free", b"skip",
+        ],
         b"trak" => &[b"tkhd", b"edts", b"mdia", b"udta", b"free", b"skip"],
         b"edts" => &[b"elst"],
         b"mdia" => &[b"mdhd", b"hdlr", b"minf", b"free", b"skip"],
@@ -389,37 +483,57 @@ fn allowed_inside(parent: [u8; 4]) -> Option<&'static [&'static [u8; 4]]> {
             b"stsd", b"stts", b"stsc", b"stsz", b"stz2", b"stco", b"co64", b"stss", b"sgpd",
             b"sbgp", b"free", b"skip",
         ],
-        b"udta" => &[b"meta", b"free", b"skip"],
-        // iTunes tags: the handler and the item list (not walked: tags).
-        b"meta" => &[b"hdlr", b"ilst", b"free", b"skip"],
+        b"udta" => return Some(Inside::AnyLeaf),
+        // `moov/meta` (GPAC): the handler, the tags (not walked), the keys.
+        b"meta" => &[b"hdlr", b"ilst", b"keys", b"free", b"skip"],
         _ => return None,
-    })
+    }))
 }
 
 /// The sample descriptions an audio track may have, and the boxes inside
 /// one.
 const SAMPLE_ENTRIES: [&[u8; 4]; 3] = [b"mp4a", b"alac", b"Opus"];
-const SAMPLE_ENTRY_BOXES: [&[u8; 4]; 6] = [b"esds", b"alac", b"dOps", b"btrt", b"chan", b"free"];
+const SAMPLE_ENTRY_BOXES: [&[u8; 4]; 7] = [
+    b"esds", b"alac", b"dOps", b"btrt", b"chan", b"free", b"wave",
+];
+
+/// Inside a `QuickTime` `wave` box (a version 1 or 2 sound description's
+/// codec data): the original format, a small `mp4a` atom, the elementary
+/// stream descriptor, the channel layout, and the terminator.
+const WAVE_BOXES: [&[u8; 4]; 5] = [b"frma", b"mp4a", b"esds", b"chan", &[0; 4]];
+
+/// The MPEG-4 object types of audio an `esds` may name: MPEG-4 audio
+/// (AAC and kin), MPEG-2 AAC (main, LC, SSR) and MPEG-1 audio.
+const AUDIO_OBJECT_TYPES: [u8; 5] = [0x40, 0x66, 0x67, 0x68, 0x6B];
 
 /// One box of `b` at `pos` within `end`: its type, and where its body
 /// starts and ends.
 fn next_box(b: &[u8], pos: usize, end: usize) -> Result<([u8; 4], usize, usize), Malformed> {
     let (Some(size), Some(kind)) = (u32_be(b, pos), b.get(pos + 4..pos + 8)) else {
-        return Err(Malformed("a cut box header"));
+        return Err(Malformed {
+            why: "a cut box header",
+            extra: false,
+        });
     };
     let kind = [kind[0], kind[1], kind[2], kind[3]];
     let (header, total) = match size {
         0 => (8, end - pos),
         1 => {
             let Some(large) = u64_be(b, pos + 8).and_then(to_usize) else {
-                return Err(Malformed("a cut large box header"));
+                return Err(Malformed {
+                    why: "a cut large box header",
+                    extra: false,
+                });
             };
             (16, large)
         }
         n => (8, to_usize(u64::from(n)).unwrap_or(usize::MAX)),
     };
     if total < header || pos.checked_add(total).is_none_or(|e| e > end) {
-        return Err(Malformed("a box outside its parent"));
+        return Err(Malformed {
+            why: "a box outside its parent",
+            extra: false,
+        });
     }
     Ok((kind, pos + header, pos + total))
 }
@@ -430,23 +544,33 @@ fn walk_boxes(b: &[u8], start: usize, end: usize, depth: usize, parent: [u8; 4])
     if depth > MAX_BOX_DEPTH {
         return bad("boxes nested too deep");
     }
-    let Some(allowed) = allowed_inside(parent) else {
-        return Ok(());
+    let allowed = match allowed_inside(parent) {
+        None => return Ok(()),
+        Some(Inside::AnyLeaf) => {
+            return each_box(b, start, end, |kind| {
+                if REFUSED.contains(&&kind) {
+                    extra("a reference movie, redirect or compressed movie box")
+                } else {
+                    Ok(())
+                }
+            });
+        }
+        Some(Inside::Only(allowed)) => allowed,
     };
     let mut pos = start;
     let mut handler = false;
     while pos < end {
         let (kind, body, next) = next_box(b, pos, end)?;
         if REFUSED.contains(&&kind) {
-            return bad("a reference movie, redirect or compressed movie box");
+            return extra("a reference movie, redirect or compressed movie box");
         }
         if !allowed.contains(&&kind) {
-            return bad("a box an audio file does not have there");
+            return extra("a box an audio file does not have there");
         }
         match &kind {
             b"hdlr" if &parent == b"mdia" => {
                 if b.get(body + 8..body + 12) != Some(b"soun") {
-                    return bad("a track that is not sound");
+                    return extra("a track that is not sound");
                 }
                 handler = true;
             }
@@ -464,6 +588,17 @@ fn walk_boxes(b: &[u8], start: usize, end: usize, depth: usize, parent: [u8; 4])
     Ok(())
 }
 
+/// Calls `check` with the type of each box of `b[start..end]`.
+fn each_box(b: &[u8], start: usize, end: usize, mut check: impl FnMut([u8; 4]) -> Check) -> Check {
+    let mut pos = start;
+    while pos < end {
+        let (kind, _, next) = next_box(b, pos, end)?;
+        check(kind)?;
+        pos = next;
+    }
+    Ok(())
+}
+
 /// A data reference box: every entry a self-contained `url ` or `urn `.
 fn dref(b: &[u8], body: usize, end: usize) -> Check {
     let Some(count) = u32_be(b, body + 4) else {
@@ -475,7 +610,7 @@ fn dref(b: &[u8], body: usize, end: usize) -> Check {
         let (kind, entry, next) = next_box(b, pos, end)?;
         let flags = u32_be(b, entry).unwrap_or(0) & 0x00FF_FFFF;
         if !matches!(&kind, b"url " | b"urn ") || flags & 1 == 0 {
-            return bad("a data reference to another file");
+            return extra("a data reference to another file");
         }
         seen = seen.saturating_add(1);
         pos = next;
@@ -498,23 +633,32 @@ fn stsd(b: &[u8], body: usize, end: usize) -> Check {
     while pos < end {
         let (kind, entry, next) = next_box(b, pos, end)?;
         if !SAMPLE_ENTRIES.contains(&&kind) {
-            return bad("a sample description that is not audio");
+            return extra("a sample description that is not audio");
         }
         // 6 reserved bytes and a data reference index, then the sound
-        // description: version 0 has 20 bytes of fields, version 1 36.
+        // description (QuickTime File Format): version 0 has 20 bytes of
+        // fields, version 1 36, version 2 56 (its size of the structure,
+        // header included, then 72).
         let fields = match b.get(entry + 8..entry + 10) {
             Some([0, 0]) => 28,
             Some([0, 1]) => 44,
-            _ => return bad("a sound description of an unknown version"),
+            Some([0, 2]) if u32_be(b, entry + 20) == Some(72) => 64,
+            _ => return extra("a sound description of an unknown version"),
         };
         let mut inner = entry + fields;
         if inner > next {
             return bad("a cut sound description");
         }
         while inner < next {
-            let (child, _, after) = next_box(b, inner, next)?;
+            let (child, body, after) = next_box(b, inner, next)?;
             if !SAMPLE_ENTRY_BOXES.contains(&&child) {
-                return bad("a box an audio sample description does not have");
+                return extra("a box an audio sample description does not have");
+            }
+            match &child {
+                b"esds" => esds(b, body, after)?,
+                b"wave" if fields > 28 => wave(b, body, after)?,
+                b"wave" => return extra("a QuickTime wave box in a version 0 description"),
+                _ => {}
             }
             inner = after;
         }
@@ -527,13 +671,86 @@ fn stsd(b: &[u8], body: usize, end: usize) -> Check {
     Ok(())
 }
 
+/// A `QuickTime` `wave` box: only [`WAVE_BOXES`], its `esds` checked.
+fn wave(b: &[u8], body: usize, end: usize) -> Check {
+    let mut pos = body;
+    while pos < end {
+        let (kind, inner, next) = next_box(b, pos, end)?;
+        if !WAVE_BOXES.contains(&&kind) {
+            return extra("a box a QuickTime wave box does not have");
+        }
+        if &kind == b"esds" {
+            esds(b, inner, next)?;
+        }
+        pos = next;
+    }
+    Ok(())
+}
+
+/// The length of an MPEG-4 descriptor at `pos` (1 to 4 bytes, 7 bits
+/// each, the top bit saying more follow) and where its body starts.
+fn descriptor_len(b: &[u8], mut pos: usize) -> Option<(usize, usize)> {
+    let mut len = 0_usize;
+    for _ in 0..4 {
+        let byte = *b.get(pos)?;
+        pos += 1;
+        len = (len << 7) | usize::from(byte & 0x7F);
+        if byte & 0x80 == 0 {
+            return Some((len, pos));
+        }
+    }
+    None
+}
+
+/// An elementary stream descriptor box: an `ES_Descriptor` without a URL
+/// (which would name the stream elsewhere), whose decoder configuration
+/// names an audio object type ([`AUDIO_OBJECT_TYPES`]).
+fn esds(b: &[u8], body: usize, end: usize) -> Check {
+    let field = b.get(..end).unwrap_or_default();
+    // Version and flags, then the ES_Descriptor (tag 3).
+    let mut pos = body + 4;
+    if field.get(pos) != Some(&3) {
+        return bad("an elementary stream descriptor without its descriptor");
+    }
+    let Some((_, start)) = descriptor_len(field, pos + 1) else {
+        return bad("a cut elementary stream descriptor");
+    };
+    // ES_ID, then flags: stream dependence (2 more bytes), URL (a length
+    // and the URL), OCR stream (2 more bytes).
+    let Some(&flags) = field.get(start + 2) else {
+        return bad("a cut elementary stream descriptor");
+    };
+    if flags & 0x40 != 0 {
+        return extra("an elementary stream named by a URL");
+    }
+    pos = start + 3;
+    if flags & 0x80 != 0 {
+        pos += 2;
+    }
+    if flags & 0x20 != 0 {
+        pos += 2;
+    }
+    // The decoder configuration (tag 4), its first byte the object type.
+    if field.get(pos) != Some(&4) {
+        return bad("an elementary stream without its decoder configuration");
+    }
+    let Some((_, config)) = descriptor_len(field, pos + 1) else {
+        return bad("a cut decoder configuration");
+    };
+    match field.get(config) {
+        Some(object) if AUDIO_OBJECT_TYPES.contains(object) => Ok(()),
+        Some(_) => extra("an elementary stream that is not audio"),
+        None => bad("a cut decoder configuration"),
+    }
+}
+
 fn m4a(b: &[u8]) -> Check {
     let (first, _, _) = next_box(b, 0, b.len())?;
     if &first != b"ftyp" {
         return bad("an M4A that does not begin with ftyp");
     }
     if MediaKind::detect(b) != Some(MediaKind::M4a) {
-        return bad("an MP4 without an audio brand");
+        return extra("an MP4 without an audio brand");
     }
     let (mut moov, mut mdat) = (0, 0);
     let mut pos = 0;
