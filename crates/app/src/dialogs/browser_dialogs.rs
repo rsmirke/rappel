@@ -19,19 +19,10 @@ pub fn tags_to_add(check: &TagsCheck) -> Option<&[String]> {
     (check.error.is_none() && !check.names.is_empty()).then_some(check.names.as_slice())
 }
 
-/// A builder over this file. Both dialogs are in it, and the builder makes
-/// every object of the file, so the `RappelTagEntry` type of Add Tags must
-/// be registered first even for the choice dialog: `GtkBuilder` fails on an
-/// unknown type name ("Invalid object type").
-fn builder() -> gtk::Builder {
-    TagEntry::ensure_type();
-    dialog::builder(FILE)
-}
-
 /// The choice dialog and its dropdown; `Err` with the first missing
 /// object's id, after logging every missing one.
 pub(crate) fn choose_layout() -> Result<(adw::AlertDialog, gtk::DropDown), &'static str> {
-    let builder = builder();
+    let builder = dialog::builder(FILE);
     let (dialog, dropdown) = (
         dialog::object(&builder, FILE, "choose_dialog"),
         dialog::object(&builder, FILE, "choice_dropdown"),
@@ -42,7 +33,7 @@ pub(crate) fn choose_layout() -> Result<(adw::AlertDialog, gtk::DropDown), &'sta
 /// The Add Tags dialog and its tag entry; `Err` with the first missing
 /// object's id, after logging every missing one.
 pub(crate) fn add_tags_layout() -> Result<(adw::AlertDialog, TagEntry), &'static str> {
-    let builder = builder();
+    let builder = dialog::builder(FILE);
     let (dialog, entry) = (
         dialog::object(&builder, FILE, "add_tags_dialog"),
         dialog::object(&builder, FILE, "add_tags_entry"),

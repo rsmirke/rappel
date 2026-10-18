@@ -149,8 +149,8 @@ mod imp {
             rows::install_id_action(klass, "browser.select-card", super::BrowserPage::press);
             // The action bar.
             klass.install_action("browser.move", None, |page, _, _| page.move_selected());
-            klass.install_action("browser.add-tag", None, |page, _, _| {
-                page.add_tag();
+            klass.install_action("browser.add-tags", None, |page, _, _| {
+                page.add_tags();
             });
             klass.install_action("browser.remove-tag", None, |page, _, _| page.remove_tag());
             klass.install_action("browser.suspend-selected", None, |page, _, _| {
@@ -262,10 +262,12 @@ fn perform(
                 }));
             }
             // Only the tags that went on some card are named.
+            let linked: std::collections::HashSet<&str> =
+                added.links.iter().map(|(_, id)| id.as_str()).collect();
             let put: Vec<String> = added
                 .tags
                 .iter()
-                .filter(|t| added.links.iter().any(|(_, id)| *id == t.id))
+                .filter(|t| linked.contains(t.id.as_str()))
                 .map(|t| t.name.clone())
                 .collect();
             let links = added.links;
@@ -901,7 +903,7 @@ impl BrowserPage {
         imp.selection_title.set_title(&text::selection_title(n));
         for action in [
             "browser.move",
-            "browser.add-tag",
+            "browser.add-tags",
             "browser.remove-tag",
             "browser.suspend-selected",
             "browser.reset-selected",
@@ -1080,7 +1082,7 @@ impl BrowserPage {
     /// suggestion (the tag filter's list, read again on every change), and
     /// puts them on the chosen cards (ADR 0051). Returns the dialog (tests
     /// answer it).
-    fn add_tag(&self) -> Option<adw::AlertDialog> {
+    fn add_tags(&self) -> Option<adw::AlertDialog> {
         let ids = self.chosen_ids();
         if ids.is_empty() {
             return None;
@@ -1668,7 +1670,7 @@ mod tests {
             page.toggle(&ids[0]);
             page.toggle(&ids[1]);
 
-            let dialog = page.add_tag().unwrap();
+            let dialog = page.add_tags().unwrap();
             assert_eq!(
                 dialog.body(),
                 "Choose the tags to put on 2 cards. Press Enter or type a comma after each one."
@@ -1716,7 +1718,7 @@ mod tests {
             // Cancel adds nothing.
             page.choose_mode(true);
             page.toggle(&ids[2]);
-            let dialog = page.add_tag().unwrap();
+            let dialog = page.add_tags().unwrap();
             let entry = dialog
                 .extra_child()
                 .and_downcast::<crate::widgets::TagEntry>()

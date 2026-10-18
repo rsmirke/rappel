@@ -153,46 +153,6 @@ impl Store {
         Ok(back)
     }
 
-    /// Gives the cards `ids` the tag named `name` (found by name key or
-    /// created). Returns the tag and the ids that did not have it. Tags
-    /// are not part of a card's content, so `updated_at` stays (ADR 0029).
-    /// No limit on a card's tags: [`Self::add_tags_to_cards`] has one.
-    ///
-    /// # Errors
-    /// [`Error::CardNotFound`] if an id is not a live card; the errors of
-    /// [`check_tag_name`]; SQLite errors.
-    pub fn add_tag_to_cards(&mut self, ids: &[String], name: &str) -> Result<(Tag, Vec<String>)> {
-        self.add_tag_to_cards_at(ids, name, now_ms())
-    }
-
-    /// [`Self::add_tag_to_cards`] at time `now` (UTC milliseconds).
-    pub(super) fn add_tag_to_cards_at(
-        &mut self,
-        ids: &[String],
-        name: &str,
-        now: i64,
-    ) -> Result<(Tag, Vec<String>)> {
-        let name = check_tag_name(name)?;
-        let ids = unique(ids);
-        let tx = self
-            .conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        ensure_live_cards(&tx, &ids)?;
-        let tag = find_or_create_tag(&tx, &mut self.ids, name, now)?;
-        let mut changed = Vec::new();
-        let mut link = tx.prepare(
-            "INSERT INTO card_tags (card_id, tag_id) VALUES (?1, ?2) ON CONFLICT DO NOTHING",
-        )?;
-        for id in &ids {
-            if link.execute(params![id, tag.id])? == 1 {
-                changed.push(id.clone());
-            }
-        }
-        drop(link);
-        tx.commit()?;
-        Ok((tag, changed))
-    }
-
     /// Gives the cards `ids` the tags named `names` (each found by name key
     /// or created; names with the same key are one tag), in one
     /// transaction (ADR 0051). A card gets the tags it lacks only if that
@@ -302,35 +262,6 @@ impl Store {
         drop(unlink);
         tx.commit()?;
         Ok(changed)
-    }
-
-    /// Undoes [`Self::add_tag_to_cards`]: takes tag `tag_id` off those of
-    /// `card_ids` that are still live; the others are left out, not an
-    /// error. Returns how many had it.
-    ///
-    /// # Errors
-    /// [`Error::TagNotFound`], SQLite errors.
-    pub fn release_tag_from_cards(&mut self, card_ids: &[String], tag_id: &str) -> Result<usize> {
-        let tx = self
-            .conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        if tx
-            .query_row("SELECT 1 FROM tags WHERE id = ?1", [tag_id], |_| Ok(()))
-            .optional()?
-            .is_none()
-        {
-            return Err(Error::TagNotFound(tag_id.to_owned()));
-        }
-        let mut released = 0;
-        for id in card_ids {
-            released += tx.execute(
-                "DELETE FROM card_tags WHERE card_id = ?1 AND tag_id = ?2
-                   AND EXISTS (SELECT 1 FROM cards WHERE id = ?1 AND deleted_at IS NULL)",
-                params![id, tag_id],
-            )?;
-        }
-        tx.commit()?;
-        Ok(released)
     }
 
     /// Undoes [`Self::add_tags_to_cards`]: removes the `links` (card id,

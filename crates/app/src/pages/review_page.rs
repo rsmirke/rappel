@@ -1132,6 +1132,11 @@ mod tests {
             );
             page.show_front(&"word ".repeat(9_000));
             assert!(imp.cut_note.is_visible());
+            // Only that a label is set: GTK has no public getter for its
+            // value (`gtk_test_accessible_check_property` is only in
+            // gtk4-sys, variadic and unsafe), so the text with the note is
+            // checked in `with_cut_note`'s tests and was read over AT-SPI
+            // (ADR 0051).
             assert!(gtk::test_accessible_has_property(
                 &*imp.card_area,
                 gtk::AccessibleProperty::Label

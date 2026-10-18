@@ -358,7 +358,9 @@ fn name_without_breaks(label: &gtk::Label) -> Option<String> {
 }
 
 /// `role` is construct-only, so it is set here: a heading is announced as
-/// one (with its level, set by the caller).
+/// one (with its level, set by the caller). Every `set_label` on such a
+/// label must be followed by [`name_without_breaks`]: GTK names the label
+/// again from each new text, breaks included.
 fn wrapping_label(centred: bool, role: Role) -> gtk::Label {
     let label = gtk::Label::builder()
         .accessible_role(role)
@@ -469,7 +471,13 @@ mod tests {
                     label.accessible_role(),
                     Role::Label | Role::Heading
                 ));
-                // Named without them (set again here, to read what is set).
+                // Named without them. GTK has no public getter for the value
+                // of an accessible property (`gtk_test_accessible_check_property`
+                // is only in gtk4-sys, variadic and unsafe), so this cannot
+                // read the name `render` set, and does not notice if a call
+                // to `name_without_breaks` is removed; it calls it again to
+                // check what it sets. The AT-SPI walk in ADR 0051 read the
+                // names in the running app.
                 let name = name_without_breaks(label).expect("the text has breaks");
                 assert!(!name.contains(breaks::BREAK));
                 assert!(name.contains(&run), "{name}");

@@ -347,9 +347,12 @@ fn bulk_writes_on_five_thousand_cards_are_fast() {
         store.unmove_cards(&m).unwrap()
     });
     assert_eq!(back, CARDS);
-    let (tagged, (bulk, _)) = fastest("add_tag_to_cards (5,000)", 1, || {
-        store.add_tag_to_cards_at(&ids, "bulk", T0).unwrap()
+    let one = vec!["bulk".to_owned()];
+    let (tagged, bulk) = fastest("add_tags_to_cards (1 tag, 5,000)", 1, || {
+        store.add_tags_to_cards_at(&ids, &one, 100, T0).unwrap()
     });
+    assert_eq!(bulk.cards.len(), CARDS);
+    let bulk = bulk.tags[0].clone();
     let (untagged, had) = fastest("remove_tag_from_cards (5,000)", 1, || {
         store.remove_tag_from_cards(&ids, &bulk.id).unwrap()
     });
@@ -358,8 +361,9 @@ fn bulk_writes_on_five_thousand_cards_are_fast() {
         store.restore_tag_on_cards(&had, &bulk.id).unwrap()
     });
     assert_eq!(n, CARDS);
-    let (released, n) = fastest("release_tag_from_cards (5,000)", 1, || {
-        store.release_tag_from_cards(&had, &bulk.id).unwrap()
+    let links: Vec<(String, String)> = had.iter().map(|id| (id.clone(), bulk.id.clone())).collect();
+    let (released, n) = fastest("release_tags (5,000 links)", 1, || {
+        store.release_tags(&links).unwrap()
     });
     assert_eq!(n, CARDS);
     let several: Vec<String> = ["bulk", "exam", "later"].map(String::from).to_vec();
@@ -628,8 +632,11 @@ const BROWSE_MS: u64 = 500;
 /// Each hostile search of `hostile_searches_at_five_thousand_cards_are_fast`
 /// (measured 63 ms at most, for 20,000 hyphens cut to 1 KiB).
 const HOSTILE_SEARCH_MS: u64 = 600;
-/// Each bulk write on 5,000 cards. The slowest is `undo_entries` (measured
-/// 0.9 s: it replays every card's log); the others take 25 to 420 ms.
+/// Each bulk write on 5,000 cards, Add Tags with one and with three tags and
+/// its Undo (`release_tags`) included. The slowest is `undo_entries`
+/// (measured 0.9 s: it replays every card's log); the others take 25 to
+/// 420 ms (`add_tags_to_cards` of three tags 85 ms, `release_tags` of their
+/// 15,000 links 64 ms, in a debug build).
 const BULK_MS: u64 = 9_000;
 /// Each read or write of the card with a 20,000-entry log other than the
 /// deck reads, which keep `STUDY_MS` (measured 36 ms; the others at most

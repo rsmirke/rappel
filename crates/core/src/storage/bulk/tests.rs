@@ -97,7 +97,7 @@ fn one_card_that_is_not_live_refuses_the_whole_write() {
         Err(Error::CardNotFound(_))
     ));
     assert!(matches!(
-        store.add_tag_to_cards_at(&bad, "x", T0),
+        store.add_tags_to_cards_at(&bad, &names(&["x"]), usize::MAX, T0),
         Err(Error::CardNotFound(_))
     ));
     assert!(matches!(
@@ -123,8 +123,15 @@ fn tags_are_added_and_removed_in_bulk_with_exact_reports() {
     let (mut store, _, _, ids) = setup();
     let first = store.add_tag_at(&ids[0], "Hard", T0).unwrap();
 
-    let (tag, changed) = store.add_tag_to_cards_at(&ids, " hard ", T0).unwrap();
-    assert_eq!(tag, first, "found by name key, not created again");
+    let added = store
+        .add_tags_to_cards_at(&ids, &names(&[" hard "]), usize::MAX, T0)
+        .unwrap();
+    let (tag, changed) = (added.tags[0].clone(), added.cards);
+    assert_eq!(
+        added.tags,
+        std::slice::from_ref(&first),
+        "found by name key, not created again"
+    );
     assert_eq!(changed, &ids[1..]);
     assert_eq!(store.tags().unwrap().len(), 1);
     assert_eq!(store.card(&ids[1]).unwrap().updated_at, T0);
@@ -154,7 +161,9 @@ fn bad_tag_names_and_unknown_tags_are_refused() {
     let (mut store, _, _, ids) = setup();
     for name in ["", "  ", "a,b"] {
         assert!(
-            store.add_tag_to_cards_at(&ids, name, T0).is_err(),
+            store
+                .add_tags_to_cards_at(&ids, &names(&[name]), usize::MAX, T0)
+                .is_err(),
             "{name:?}"
         );
     }
@@ -254,17 +263,25 @@ fn an_undo_of_a_move_does_not_undo_a_later_move() {
 fn the_undo_of_suspend_and_of_add_tag_skips_cards_deleted_since() {
     let (mut store, _, _, ids) = setup();
     store.set_suspended(&ids, true).unwrap();
-    let (tag, added) = store.add_tag_to_cards_at(&ids, "x", T0).unwrap();
+    let added = store
+        .add_tags_to_cards_at(&ids, &names(&["x"]), usize::MAX, T0)
+        .unwrap();
     store.delete_card_at(&ids[0], T0 + 1).unwrap();
 
     assert_eq!(store.restore_suspended(&ids, false).unwrap(), 2);
     assert!(!store.card(&ids[1]).unwrap().suspended);
-    assert_eq!(store.release_tag_from_cards(&added, &tag.id).unwrap(), 2);
+    assert_eq!(store.release_tags(&added.links).unwrap(), 2);
     assert_eq!(store.card_tags(&ids[1]).unwrap().len(), 0);
-    assert!(matches!(
-        store.release_tag_from_cards(&added, MISSING),
-        Err(Error::TagNotFound(_))
-    ));
+    // Releasing again, or a tag that is not there, changes nothing.
+    assert_eq!(store.release_tags(&added.links).unwrap(), 0);
+    let missing: Vec<(String, String)> = ids
+        .iter()
+        .map(|id| (id.clone(), MISSING.to_owned()))
+        .collect();
+    assert_eq!(store.release_tags(&missing).unwrap(), 0);
+    // The deleted card keeps its link: the Undo leaves deleted cards alone.
+    store.undelete_cards(&ids[..1]).unwrap();
+    assert_eq!(store.card_tags(&ids[0]).unwrap().len(), 1);
 }
 
 #[test]
@@ -387,4 +404,34 @@ fn a_bad_name_or_card_among_several_writes_nothing() {
     ));
     assert_eq!(store.tags().unwrap().len(), 0);
     assert_eq!(store.card_tags(&ids[0]).unwrap().len(), 0);
+}
+
+#[test]
+fn no_names_no_cards_or_a_limit_of_zero_write_nothing() {
+    let (mut store, _, _, ids) = setup();
+    // No names: nothing to add, and no card is "full".
+    assert_eq!(
+        store.add_tags_to_cards_at(&ids, &[], 100, T0).unwrap(),
+        TagsAdded::default()
+    );
+    // No cards: the names are checked, nothing is written.
+    assert_eq!(
+        store
+            .add_tags_to_cards_at(&[], &names(&["x"]), 100, T0)
+            .unwrap(),
+        TagsAdded::default()
+    );
+    assert!(
+        store
+            .add_tags_to_cards_at(&[], &names(&["a,b"]), 100, T0)
+            .is_err()
+    );
+    // A limit of zero: every card that lacks a tag is full.
+    let added = store
+        .add_tags_to_cards_at(&ids, &names(&["x"]), 0, T0)
+        .unwrap();
+    assert_eq!(added.full, ids);
+    assert_eq!(added.links.len(), 0);
+    assert_eq!(store.tags().unwrap().len(), 0, "no tag was created");
+    assert_eq!(store.release_tags(&[]).unwrap(), 0);
 }
