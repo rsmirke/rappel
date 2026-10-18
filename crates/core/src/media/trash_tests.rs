@@ -11,10 +11,17 @@ use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
+use super::recover_rows;
 use super::trash::{Disk, Mover, folder_day, folder_name, purgeable};
 use super::*;
 use crate::storage::{Store, create_backup, list_backups, restore_backup};
-use crate::test_support::{DAY_MS, T0, assert_cpu_within, fastest, png_bytes, wav_bytes};
+use crate::test_support::{DAY_MS, assert_cpu_within, fastest, png_bytes, wav_bytes};
+use crate::time::now_ms;
+
+/// "Now" in these tests: a minute past the real clock, so it is after
+/// every time the stores write with the real clock (a clean-up behind the
+/// database's newest time is refused). The same all through a test run.
+static NOW: std::sync::LazyLock<i64> = std::sync::LazyLock::new(|| now_ms() + 60_000);
 use crate::{Error, Result};
 
 /// A store in a new data directory.
@@ -194,11 +201,11 @@ fn unused_files_are_those_no_card_names() {
         }
     );
     let before = names(&media(&tmp));
-    let cleaned = clean_up_at(&mut store, T0).unwrap();
+    let cleaned = clean_up_at(&mut store, *NOW).unwrap();
     assert_eq!((cleaned.files, cleaned.bytes), (2, size(4) + size(5)));
     let mut moved = vec![unused_d.file_name(), orphan_e.file_name()];
     moved.sort();
-    assert_eq!(names(&day_folder(&tmp, T0)), moved);
+    assert_eq!(names(&day_folder(&tmp, *NOW)), moved);
     let mut left = before.clone();
     left.retain(|n| !moved.contains(n));
     assert_eq!(names(&media(&tmp)), left);
@@ -220,7 +227,7 @@ fn unused_files_are_those_no_card_names() {
     assert_eq!(row_hashes(&store), kept);
     assert_eq!(store.unused_media().unwrap(), UnusedMedia::default());
     // Nothing more to do.
-    let again = clean_up_at(&mut store, T0).unwrap();
+    let again = clean_up_at(&mut store, *NOW).unwrap();
     assert_eq!((again.files, again.bytes), (0, 0));
 }
 
@@ -235,7 +242,7 @@ fn rows_without_files_go_and_rows_beside_folders_stay() {
     fs::remove_file(media(&tmp).join(b.file_name())).unwrap();
     fs::create_dir(media(&tmp).join(b.file_name())).unwrap();
     assert_eq!(store.unused_media().unwrap(), UnusedMedia::default());
-    let cleaned = clean_up_at(&mut store, T0).unwrap();
+    let cleaned = clean_up_at(&mut store, *NOW).unwrap();
     assert_eq!(cleaned.files, 0);
     assert_eq!(row_hashes(&store), [b.hex()]);
     assert!(media(&tmp).join(b.file_name()).is_dir());
@@ -247,16 +254,16 @@ fn rows_without_files_go_and_rows_beside_folders_stay() {
 fn a_name_taken_in_the_trash_goes_to_another_folder() {
     let (tmp, mut store) = store();
     let a = store.add_media_bytes(&png_bytes(1)).unwrap();
-    clean_up_at(&mut store, T0).unwrap();
+    clean_up_at(&mut store, *NOW).unwrap();
     store.add_media_bytes(&png_bytes(1)).unwrap();
     // A link in the way of the next folder is skipped, never followed.
     let elsewhere = tmp.path().join("elsewhere");
     fs::create_dir(&elsewhere).unwrap();
-    symlink(&elsewhere, trash(&tmp).join(folder_name(T0, 2))).unwrap();
-    let cleaned = clean_up_at(&mut store, T0 + 1000).unwrap();
+    symlink(&elsewhere, trash(&tmp).join(folder_name(*NOW, 2))).unwrap();
+    let cleaned = clean_up_at(&mut store, *NOW + 1000).unwrap();
     assert_eq!(cleaned.files, 1);
-    let first = day_folder(&tmp, T0).join(a.file_name());
-    let third = trash(&tmp).join(folder_name(T0, 3)).join(a.file_name());
+    let first = day_folder(&tmp, *NOW).join(a.file_name());
+    let third = trash(&tmp).join(folder_name(*NOW, 3)).join(a.file_name());
     assert_eq!(fs::read(first).unwrap(), png_bytes(1));
     assert_eq!(fs::read(third).unwrap(), png_bytes(1));
     assert_eq!(names(&elsewhere), none());
@@ -272,12 +279,15 @@ fn a_linked_trash_or_a_wrong_clock_refuses_the_clean_up() {
     let elsewhere = tmp.path().join("elsewhere");
     fs::create_dir(&elsewhere).unwrap();
     symlink(&elsewhere, trash(&tmp)).unwrap();
-    assert!(matches!(clean_up_at(&mut store, T0), Err(Error::Io { .. })));
+    assert!(matches!(
+        clean_up_at(&mut store, *NOW),
+        Err(Error::Io { .. })
+    ));
     assert_eq!(names(&elsewhere), none());
     assert_eq!(names(&media(&tmp)), [a.file_name()]);
     assert_eq!(row_hashes(&store), [a.hex()]);
     fs::remove_file(trash(&tmp)).unwrap();
-    for now in [0, T0 - 400 * DAY_MS, i64::MAX] {
+    for now in [0, *NOW - 400 * DAY_MS, i64::MAX] {
         assert!(matches!(
             clean_up_at(&mut store, now),
             Err(Error::ClockWrong)
@@ -341,7 +351,7 @@ fn a_failed_move_puts_everything_back() {
     let rows_before = rows(&store);
     // The third move fails; the two moves back work.
     let mover = Failing::new(2, 2);
-    let err = store.clean_up_media_with(T0, &mover, &|| Ok(()));
+    let err = store.clean_up_media_with(*NOW, &mover, &|| Ok(()));
     assert!(matches!(err, Err(Error::Io { .. })), "{err:?}");
     assert_eq!(names(&media(&tmp)), files);
     assert_eq!(trashed(&tmp), none());
@@ -354,7 +364,7 @@ fn a_failed_move_puts_everything_back() {
 fn a_failure_before_the_commit_puts_everything_back() {
     let (tmp, mut store, files) = three_unused();
     let rows_before = rows(&store);
-    let err = store.clean_up_media_with(T0, &Disk, &|| Err(Error::NoMediaDir));
+    let err = store.clean_up_media_with(*NOW, &Disk, &|| Err(Error::NoMediaDir));
     assert!(matches!(err, Err(Error::NoMediaDir)));
     assert_eq!(names(&media(&tmp)), files);
     assert_eq!(trashed(&tmp), none());
@@ -369,7 +379,7 @@ fn files_that_cannot_go_back_return_at_the_next_open() {
     let rows_before = rows(&store);
     // Three moves succeed, then every rename (the moves back) fails.
     let mover = Failing::new(3, usize::MAX);
-    let err = store.clean_up_media_with(T0, &mover, &|| Err(Error::NoMediaDir));
+    let err = store.clean_up_media_with(*NOW, &mover, &|| Err(Error::NoMediaDir));
     assert!(err.is_err());
     assert_eq!(names(&media(&tmp)), none());
     assert_eq!(trashed(&tmp), files);
@@ -390,7 +400,7 @@ fn a_crash_before_the_commit_is_repaired_at_the_next_open() {
         let rows_before = rows(&store);
         drop(store);
         // What the crash left: the folder made, `moved` files renamed.
-        let folder = day_folder(&tmp, T0);
+        let folder = day_folder(&tmp, *NOW);
         fs::create_dir_all(&folder).unwrap();
         for name in &files[..moved] {
             fs::rename(media(&tmp).join(name), folder.join(name)).unwrap();
@@ -407,7 +417,7 @@ fn a_crash_before_the_commit_is_repaired_at_the_next_open() {
 #[test]
 fn a_crash_after_the_commit_leaves_the_trash_alone() {
     let (tmp, mut store, files) = three_unused();
-    clean_up_at(&mut store, T0).unwrap();
+    clean_up_at(&mut store, *NOW).unwrap();
     drop(store);
     let store = Store::open(&data(&tmp)).unwrap();
     assert_eq!(names(&media(&tmp)), none());
@@ -421,7 +431,7 @@ fn a_crash_after_the_commit_leaves_the_trash_alone() {
 fn undo_puts_back_what_is_still_free() {
     let (tmp, mut store, files) = three_unused();
     let rows_before = rows(&store);
-    let cleaned = clean_up_at(&mut store, T0).unwrap();
+    let cleaned = clean_up_at(&mut store, *NOW).unwrap();
     assert_eq!(cleaned.files, 3);
     assert_eq!(store.undo_clean_up(&cleaned).unwrap(), 3);
     assert_eq!(names(&media(&tmp)), files);
@@ -429,7 +439,7 @@ fn undo_puts_back_what_is_still_free() {
     assert_eq!(rows(&store), rows_before, "created_at kept");
 
     // Cleaned again; one file comes back by an add before the undo.
-    let cleaned = clean_up_at(&mut store, T0 + 1000).unwrap();
+    let cleaned = clean_up_at(&mut store, *NOW + 1000).unwrap();
     store.add_media_bytes(&png_bytes(1)).unwrap();
     let readded = rows(&store);
     assert_eq!(store.undo_clean_up(&cleaned).unwrap(), 2);
@@ -474,7 +484,7 @@ fn an_add_and_a_clean_up_take_turns() {
     let b = png_ref(2);
     fs::write(media(&tmp).join(b.file_name()), png_bytes(2)).unwrap();
     let cleaning = std::thread::spawn(move || {
-        let r = clean_up_at(&mut store, T0);
+        let r = clean_up_at(&mut store, *NOW);
         (store, r)
     });
     std::thread::sleep(std::time::Duration::from_millis(300));
@@ -510,7 +520,7 @@ fn a_card_write_brings_its_files_back() {
     let (tmp, mut store) = store();
     let a = store.add_media_bytes(&png_bytes(1)).unwrap();
     let w = store.add_media_bytes(&wav_bytes(2)).unwrap();
-    clean_up_at(&mut store, T0).unwrap();
+    clean_up_at(&mut store, *NOW).unwrap();
     assert_eq!(row_hashes(&store), none());
     let deck = store.create_deck("Deck").unwrap().id;
     let card = store.add_card(&deck, "plain", "").unwrap().id;
@@ -552,11 +562,11 @@ fn a_restore_brings_back_the_files_its_backup_uses() {
     let typed = png_ref(9);
     store.add_card(&deck, &image(&typed), "").unwrap();
     let backup_dir = data(&tmp).join("backups");
-    create_backup(&store.conn, &backup_dir, T0 - DAY_MS).unwrap();
+    create_backup(&store.conn, &backup_dir, *NOW - DAY_MS).unwrap();
     store.edit_card(&card, "no image", "").unwrap();
     store.delete_card(&card).unwrap();
     // Deleted, but its last text names nothing: unused.
-    clean_up_at(&mut store, T0).unwrap();
+    clean_up_at(&mut store, *NOW).unwrap();
     let rows_before = rows(&store);
     assert_eq!(names(&media(&tmp)), none());
     let other_day = trash(&tmp).join("2026-10-05");
@@ -586,7 +596,7 @@ fn a_restore_brings_back_the_files_its_backup_uses() {
 fn an_import_brings_back_the_files_its_cards_name() {
     let (tmp, mut store) = store();
     let a = store.add_media_bytes(&png_bytes(1)).unwrap();
-    clean_up_at(&mut store, T0).unwrap();
+    clean_up_at(&mut store, *NOW).unwrap();
     // Another collection whose card names `a` without having it.
     let (other_tmp, mut other) = self::store();
     let deck = other.create_deck("Other").unwrap().id;
@@ -610,18 +620,26 @@ fn trashed_at(now: i64, ns: &[u32]) -> (tempfile::TempDir, Store, Vec<MediaRef>)
     (tmp, store, refs)
 }
 
-/// Purged 31 days after the start of the folder's date, not a millisecond
-/// before; the folder goes when empty. A clock set back never purges.
+/// Purged 31 days after the start of the folder's date by the clock, and
+/// only once the database holds a write 30 days after it; not a
+/// millisecond before. The folder goes when empty. A clock set back never
+/// purges, nor one ahead only at a start (no write made then).
 #[test]
 fn the_purge_waits_thirty_days() {
-    let day = folder_day(&folder_name(T0, 1)).unwrap();
-    let (tmp, mut store, _) = trashed_at(T0, &[1, 2]);
+    let day = folder_day(&folder_name(*NOW, 1)).unwrap();
+    let (tmp, mut store, _) = trashed_at(*NOW, &[1, 2]);
     let at = day + 31 * DAY_MS;
-    for now in [T0, T0 - 365 * DAY_MS, at - 1] {
+    // The clock jumps a year ahead at a start, with no write since.
+    for now in [*NOW, *NOW - 365 * DAY_MS, at - 1, at, at + 365 * DAY_MS] {
         let tidied = store.tidy_media_trash_at(now).unwrap();
         assert_eq!(tidied, TrashTidied::default(), "{now}");
         assert_eq!(trashed(&tmp).len(), 2);
     }
+    // A write 30 days on, less a millisecond: still not.
+    record_time(&store, day + 30 * DAY_MS - 1);
+    assert_eq!(store.tidy_media_trash_at(at).unwrap().purged, 0);
+    record_time(&store, day + 30 * DAY_MS);
+    assert_eq!(store.tidy_media_trash_at(at - 1).unwrap().purged, 0);
     let tidied = store.tidy_media_trash_at(at).unwrap();
     assert_eq!((tidied.purged, tidied.kept, tidied.blocked), (2, 0, false));
     assert_eq!(tidied.purged_bytes, 2 * png_bytes(1).len() as u64);
@@ -632,14 +650,47 @@ fn the_purge_waits_thirty_days() {
 #[test]
 fn the_age_rule() {
     let day = folder_day("2026-10-18").unwrap();
-    assert!(!purgeable(day, day + 31 * DAY_MS - 1));
-    assert!(purgeable(day, day + 31 * DAY_MS));
-    assert!(!purgeable(day, day - DAY_MS), "a clock set back");
-    assert!(!purgeable(day, i64::MIN));
+    let used = Some(day + 30 * DAY_MS);
+    assert!(!purgeable(day, day + 31 * DAY_MS - 1, used));
+    assert!(purgeable(day, day + 31 * DAY_MS, used));
+    assert!(!purgeable(day, day - DAY_MS, used), "a clock set back");
+    assert!(!purgeable(day, i64::MIN, used));
+    assert!(purgeable(day, i64::MAX, used));
+    // No write a month after the clean-up: a clock ahead only now.
+    assert!(!purgeable(
+        day,
+        day + 400 * DAY_MS,
+        Some(day + 30 * DAY_MS - 1)
+    ));
+    assert!(!purgeable(day, day + 400 * DAY_MS, None));
     // A folder no real clean-up could date.
     let early = folder_day("2025-01-01").unwrap();
-    assert!(!purgeable(early, day + 365 * DAY_MS));
-    assert!(purgeable(day, i64::MAX));
+    assert!(!purgeable(early, day + 365 * DAY_MS, used));
+}
+
+/// A clean-up is refused while the clock is behind the newest trash
+/// folder's date or the newest time the database holds: its folder would
+/// look older than it is.
+#[test]
+fn a_clock_behind_the_data_refuses_the_clean_up() {
+    let (tmp, mut store) = store();
+    store.add_media_bytes(&png_bytes(1)).unwrap();
+    // Behind the database (the add's `created_at`).
+    assert!(matches!(
+        clean_up_at(&mut store, *NOW - 2 * 60_000),
+        Err(Error::ClockWrong)
+    ));
+    assert_eq!(trashed(&tmp), none());
+    // Behind a trash folder dated later.
+    let later = trash(&tmp).join(folder_name(*NOW + 3 * DAY_MS, 1));
+    fs::create_dir_all(&later).unwrap();
+    assert!(matches!(
+        clean_up_at(&mut store, *NOW),
+        Err(Error::ClockWrong)
+    ));
+    assert_eq!(names(&media(&tmp)), [png_ref(1).file_name()]);
+    fs::remove_dir(&later).unwrap();
+    assert_eq!(clean_up_at(&mut store, *NOW).unwrap().files, 1);
 }
 
 #[test]
@@ -667,9 +718,28 @@ fn folder_names_are_exact() {
     }
 }
 
-/// Clean-up at `T0`, then the folder's date so a purge may run.
+/// Clean-up at `*NOW`, then the folder's date so a purge may run.
 fn purge_time() -> i64 {
-    folder_day(&folder_name(T0, 1)).unwrap() + 31 * DAY_MS
+    folder_day(&folder_name(*NOW, 1)).unwrap() + 31 * DAY_MS
+}
+
+/// Records a write in the database at `at` (a row naming no file), as a
+/// month of use after the clean-up would.
+fn record_time(store: &Store, at: i64) {
+    store
+        .conn
+        .execute(
+            "INSERT OR REPLACE INTO media (hash, mime, bytes, created_at)
+             VALUES (?1, 'image/png', 1, ?2)",
+            rusqlite::params!["f".repeat(64), at],
+        )
+        .unwrap();
+}
+
+/// The purge at [`purge_time`], after a write a month after the clean-up.
+fn tidy_later(store: &mut Store) -> TrashTidied {
+    record_time(store, purge_time() - DAY_MS);
+    store.tidy_media_trash_at(purge_time()).unwrap()
 }
 
 /// A file a backup uses (by a row or a card side, also in a backup made
@@ -682,7 +752,7 @@ fn the_purge_keeps_what_a_backup_uses() {
     let card = store.add_card(&deck, "plain", "").unwrap().id;
     let backups = data(&tmp).join("backups");
     // A backup whose media row names `a`.
-    create_backup(&store.conn, &backups, T0 - 2 * DAY_MS).unwrap();
+    create_backup(&store.conn, &backups, *NOW - 2 * DAY_MS).unwrap();
     // `c` named only by a card of a backup, never a row.
     let c = png_ref(3);
     store.edit_card(&card, &image(&c), "").unwrap();
@@ -690,7 +760,7 @@ fn the_purge_keeps_what_a_backup_uses() {
         .conn
         .execute("DELETE FROM media WHERE hash = ?1", [a.hex()])
         .unwrap();
-    create_backup(&store.conn, &backups, T0 - DAY_MS).unwrap();
+    create_backup(&store.conn, &backups, *NOW - DAY_MS).unwrap();
     store.edit_card(&card, "plain", "").unwrap();
     // A backup of the oldest schema, cards only, naming `d`.
     let d = png_ref(4);
@@ -705,10 +775,10 @@ fn the_purge_keeps_what_a_backup_uses() {
     store.add_media_bytes(&png_bytes(1)).unwrap();
     // `b`, added since the last backup: no backup uses it.
     let b = store.add_media_bytes(&png_bytes(2)).unwrap();
-    let cleaned = clean_up_at(&mut store, T0).unwrap();
+    let cleaned = clean_up_at(&mut store, *NOW).unwrap();
     assert_eq!(cleaned.files, 4);
 
-    let tidied = store.tidy_media_trash_at(purge_time()).unwrap();
+    let tidied = tidy_later(&mut store);
     assert_eq!((tidied.purged, tidied.kept, tidied.blocked), (1, 3, false));
     let mut kept = vec![a.file_name(), c.file_name(), d.file_name()];
     kept.sort();
@@ -735,22 +805,22 @@ fn an_unreadable_backup_blocks_the_purge() {
         ),
     ];
     for (name, bytes) in blockers {
-        let (tmp, mut store, _) = trashed_at(T0, &[1]);
+        let (tmp, mut store, _) = trashed_at(*NOW, &[1]);
         let path = data(&tmp).join(name);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, bytes).unwrap();
-        let tidied = store.tidy_media_trash_at(purge_time()).unwrap();
+        let tidied = tidy_later(&mut store);
         assert!(tidied.blocked, "{name}");
         assert_eq!(tidied.purged, 0);
         assert_eq!(trashed(&tmp), [png_ref(1).file_name()], "{name}");
     }
-    let (tmp, mut store, _) = trashed_at(T0, &[1]);
+    let (tmp, mut store, _) = trashed_at(*NOW, &[1]);
     fs::write(
         data(&tmp).join("rappel.sqlite3.replaced-20261001-000000"),
         b"SQLite format 3\0damaged",
     )
     .unwrap();
-    let tidied = store.tidy_media_trash_at(purge_time()).unwrap();
+    let tidied = tidy_later(&mut store);
     assert_eq!((tidied.purged, tidied.blocked), (1, false));
 }
 
@@ -759,9 +829,9 @@ fn an_unreadable_backup_blocks_the_purge() {
 /// a card names it.
 #[test]
 fn the_purge_keeps_what_the_database_uses() {
-    let (tmp, mut store, refs) = trashed_at(T0, &[1]);
+    let (tmp, mut store, refs) = trashed_at(*NOW, &[1]);
     store.add_media_bytes(&png_bytes(1)).unwrap();
-    let tidied = store.tidy_media_trash_at(purge_time()).unwrap();
+    let tidied = tidy_later(&mut store);
     assert_eq!((tidied.recovered, tidied.purged, tidied.kept), (0, 0, 1));
     assert_eq!(trashed(&tmp), [refs[0].file_name()]);
 }
@@ -770,7 +840,7 @@ fn the_purge_keeps_what_the_database_uses() {
 /// never sees them.
 #[test]
 fn tidying_brings_back_what_cards_use_before_purging() {
-    let (tmp, mut store, refs) = trashed_at(T0, &[1, 2]);
+    let (tmp, mut store, refs) = trashed_at(*NOW, &[1, 2]);
     let deck = store.create_deck("Deck").unwrap().id;
     // A card naming refs[0], written without the store (another version,
     // or a database swapped by hand), so no write brought it back.
@@ -782,7 +852,7 @@ fn tidying_brings_back_what_cards_use_before_purging() {
             [image(&refs[0]), id],
         )
         .unwrap();
-    let tidied = store.tidy_media_trash_at(purge_time()).unwrap();
+    let tidied = tidy_later(&mut store);
     assert_eq!((tidied.recovered, tidied.purged), (1, 1));
     assert_eq!(names(&media(&tmp)), [refs[0].file_name()]);
     assert_eq!(trashed(&tmp), none());
@@ -792,8 +862,8 @@ fn tidying_brings_back_what_cards_use_before_purging() {
 /// removed, by a purge or by bringing files back.
 #[test]
 fn hostile_things_in_the_trash_are_left_alone() {
-    let (tmp, mut store, refs) = trashed_at(T0, &[1]);
-    let folder = day_folder(&tmp, T0);
+    let (tmp, mut store, refs) = trashed_at(*NOW, &[1]);
+    let folder = day_folder(&tmp, *NOW);
     let outside = tmp.path().join("outside");
     fs::create_dir(&outside).unwrap();
     let target = outside.join(png_ref(2).file_name());
@@ -811,7 +881,7 @@ fn hostile_things_in_the_trash_are_left_alone() {
     let deck = store.create_deck("Deck").unwrap().id;
     store.add_card(&deck, &image(&png_ref(2)), "").unwrap();
 
-    let tidied = store.tidy_media_trash_at(purge_time()).unwrap();
+    let tidied = tidy_later(&mut store);
     assert_eq!((tidied.purged, tidied.recovered), (1, 0));
     assert!(!folder.join(refs[0].file_name()).exists());
     assert_eq!(fs::read(&target).unwrap(), png_bytes(2));
@@ -857,4 +927,227 @@ fn counting_unused_media_at_twenty_thousand_cards_is_fast() {
     assert_eq!(unused.files, 100);
     assert_cpu_within(used, std::time::Duration::from_millis(500), "unused_media");
     drop(tmp);
+}
+
+/// `[x](media\:<hash>.png)` is a reference (`CommonMark` decodes `\:` in a
+/// link target): the file is used, and a card write naming it so brings
+/// it back from the trash.
+#[test]
+fn an_escaped_reference_counts_and_comes_back() {
+    let (tmp, mut store) = store();
+    let a = store.add_media_bytes(&png_bytes(1)).unwrap();
+    let escaped = format!("![x](media\\:{})", a.file_name());
+    assert!(crate::content::media_refs(&escaped).contains(&a));
+    let deck = store.create_deck("Deck").unwrap().id;
+    let card = store.add_card(&deck, &escaped, "").unwrap().id;
+    assert_eq!(store.unused_media().unwrap().files, 0);
+    store.edit_card(&card, "nothing", "").unwrap();
+    clean_up_at(&mut store, *NOW).unwrap();
+    assert_eq!(names(&media(&tmp)), none());
+    store.edit_card(&card, "front", &escaped).unwrap();
+    assert_eq!(names(&media(&tmp)), [a.file_name()]);
+    assert_eq!(row_hashes(&store), [a.hex()]);
+}
+
+/// A trash file whose content is not what its name says stays in the
+/// trash; an older intact copy of the name comes back instead.
+#[test]
+fn only_an_intact_copy_comes_back() {
+    let (tmp, mut store) = store();
+    let a = store.add_media_bytes(&png_bytes(1)).unwrap();
+    clean_up_at(&mut store, *NOW).unwrap();
+    // A newer folder holding a damaged copy under the same name.
+    let newer = trash(&tmp).join(folder_name(*NOW, 2));
+    fs::create_dir(&newer).unwrap();
+    fs::write(newer.join(a.file_name()), png_bytes(2)).unwrap();
+    let deck = store.create_deck("Deck").unwrap().id;
+    store.add_card(&deck, &image(&a), "").unwrap();
+    assert_eq!(
+        fs::read(media(&tmp).join(a.file_name())).unwrap(),
+        png_bytes(1)
+    );
+    assert_eq!(fs::read(newer.join(a.file_name())).unwrap(), png_bytes(2));
+
+    // Only a damaged copy: nothing comes back, and the row is not made.
+    let (tmp, mut store) = self::store();
+    let b = png_ref(3);
+    let folder = day_folder(&tmp, *NOW);
+    fs::create_dir_all(&folder).unwrap();
+    fs::write(folder.join(b.file_name()), png_bytes(4)).unwrap();
+    let deck = store.create_deck("Deck").unwrap().id;
+    store.add_card(&deck, &image(&b), "").unwrap();
+    assert_eq!(names(&media(&tmp)), none());
+    assert_eq!(row_hashes(&store), none());
+    assert_eq!(trashed(&tmp), [b.file_name()]);
+}
+
+/// A trash folder that cannot be read never refuses an import or a card
+/// write; it is only skipped.
+#[test]
+fn an_unreadable_trash_folder_never_refuses_an_import() {
+    use std::os::unix::fs::PermissionsExt;
+    let (tmp, mut store) = store();
+    store.add_media_bytes(&png_bytes(1)).unwrap();
+    clean_up_at(&mut store, *NOW).unwrap();
+    let folder = day_folder(&tmp, *NOW);
+    fs::set_permissions(&folder, fs::Permissions::from_mode(0o000)).unwrap();
+    if fs::read_dir(&folder).is_ok() {
+        // Running as root: permissions do not stop reading.
+        fs::set_permissions(&folder, fs::Permissions::from_mode(0o700)).unwrap();
+        return;
+    }
+    let (other_tmp, mut other) = self::store();
+    let deck = other.create_deck("Other").unwrap().id;
+    other.add_card(&deck, &image(&png_ref(1)), "").unwrap();
+    let file = other_tmp.path().join("other.rappel");
+    other.export_to(&file).unwrap();
+    let plan = store.plan_import(&file).unwrap();
+    let report = store.apply_import(&plan);
+    let deck = store.create_deck("Mine").unwrap().id;
+    let card = store.add_card(&deck, &image(&png_ref(1)), "");
+    fs::set_permissions(&folder, fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(report.unwrap().cards, 1);
+    assert!(card.is_ok());
+    // Readable again: the next start brings it back.
+    assert_eq!(store.tidy_media_trash_at(*NOW).unwrap().recovered, 1);
+}
+
+/// A database copy that is no database protects nothing, but one that
+/// exists and cannot be opened (no permission) blocks the purge.
+#[test]
+fn an_unopenable_database_copy_blocks_the_purge() {
+    use std::os::unix::fs::PermissionsExt;
+    let (tmp, mut store, _) = trashed_at(*NOW, &[1]);
+    let copy = data(&tmp).join("rappel.sqlite3.replaced-20261001-000000");
+    fs::copy(data(&tmp).join("rappel.sqlite3"), &copy).unwrap();
+    fs::set_permissions(&copy, fs::Permissions::from_mode(0o000)).unwrap();
+    if fs::File::open(&copy).is_ok() {
+        return; // Running as root.
+    }
+    let tidied = tidy_later(&mut store);
+    assert!(tidied.blocked);
+    assert_eq!(trashed(&tmp).len(), 1);
+    fs::set_permissions(&copy, fs::Permissions::from_mode(0o600)).unwrap();
+    // A file under such a name that is no database does not block.
+    fs::write(
+        data(&tmp).join("rappel.sqlite3.moving-aside"),
+        b"replaced-x",
+    )
+    .unwrap();
+    let tidied = tidy_later(&mut store);
+    assert_eq!((tidied.blocked, tidied.purged), (false, 1));
+}
+
+/// A backup made between the purge's unlocked and locked passes is read
+/// too: what it uses stays.
+#[test]
+fn a_backup_made_during_the_purge_protects_its_files() {
+    let (tmp, mut store) = store();
+    let a = store.add_media_bytes(&png_bytes(1)).unwrap();
+    let b = store.add_media_bytes(&png_bytes(2)).unwrap();
+    // A backup naming `b` already, so the unlocked pass has work to do.
+    create_backup(&store.conn, &data(&tmp).join("backups"), *NOW - DAY_MS).unwrap();
+    store
+        .conn
+        .execute("DELETE FROM media WHERE hash = ?1", [b.hex()])
+        .unwrap();
+    store.add_media_bytes(&png_bytes(2)).unwrap();
+    clean_up_at(&mut store, *NOW).unwrap();
+    // The backup the hook makes has `a`'s row (put back by hand).
+    let hook_db = tempfile::tempdir().unwrap();
+    let source = rusqlite::Connection::open(hook_db.path().join("x.sqlite3")).unwrap();
+    source
+        .execute_batch("CREATE TABLE cards (front_md TEXT NOT NULL, back_md TEXT NOT NULL)")
+        .unwrap();
+    source
+        .execute("INSERT INTO cards VALUES (?1, '')", [image(&a)])
+        .unwrap();
+    let backups = data(&tmp).join("backups");
+    record_time(&store, purge_time() - DAY_MS);
+    let tidied = store
+        .tidy_media_trash_with(purge_time(), &|| {
+            create_backup(&source, &backups, *NOW + 60_000).unwrap();
+        })
+        .unwrap();
+    assert_eq!((tidied.purged, tidied.kept), (0, 2));
+    let mut both = vec![a.file_name(), b.file_name()];
+    both.sort();
+    assert_eq!(trashed(&tmp), both);
+}
+
+/// Bringing back rows at open lists the trash and reads the rows once: with
+/// 5,000 files in the trash and none of them with a row (the usual case:
+/// they were cleaned up), it stays cheap (measured about 10 ms CPU in a debug
+/// build; bound 500 ms).
+#[test]
+fn bringing_back_rows_at_open_is_cheap() {
+    let (tmp, mut store) = store();
+    let folder = day_folder(&tmp, *NOW);
+    fs::create_dir_all(&folder).unwrap();
+    for n in 0..5_000 {
+        fs::write(folder.join(png_ref(n).file_name()), b"x").unwrap();
+    }
+    let (used, brought) = fastest("recover_rows with 5,000 trashed files", 3, || {
+        let tx = store.conn.transaction().unwrap();
+        let n = recover_rows(&tx, &media(&tmp), *NOW).unwrap();
+        tx.commit().unwrap();
+        n
+    });
+    assert_eq!(brought, 0);
+    assert_cpu_within(used, std::time::Duration::from_millis(500), "recover_rows");
+}
+
+mod prefilter {
+    use proptest::prelude::*;
+
+    use super::super::used::{Hashes, card_hashes, side_hashes};
+    use super::*;
+
+    /// Pieces that make references, near-references and escapes.
+    fn piece() -> impl Strategy<Value = String> {
+        let hash = png_ref(1).hex();
+        prop_oneof![
+            Just("media:".to_owned()),
+            Just("media\\:".to_owned()),
+            Just("&#109;edia:".to_owned()),
+            Just("&#x6D;".to_owned()),
+            Just("me&#100;ia:".to_owned()),
+            Just("![".to_owned()),
+            Just("[".to_owned()),
+            Just("](".to_owned()),
+            Just(")".to_owned()),
+            Just("`".to_owned()),
+            Just("\\".to_owned()),
+            Just(".png".to_owned()),
+            Just(".wav".to_owned()),
+            Just("\n".to_owned()),
+            Just(hash.clone()),
+            Just(hash.to_uppercase()),
+            "[a-z ]{0,6}",
+        ]
+    }
+
+    fn side() -> impl Strategy<Value = String> {
+        prop::collection::vec(piece(), 0..12).prop_map(|p| p.concat())
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
+        /// `card_hashes`, which parses only the sides the SQL prefilter
+        /// keeps, finds exactly what parsing every side finds.
+        #[test]
+        fn the_prefilter_never_hides_a_reference(cards in prop::collection::vec((side(), side()), 1..8)) {
+            let mut store = Store::in_memory();
+            let deck = store.create_deck("Deck").unwrap().id;
+            let mut expected = Hashes::new();
+            for (front, back) in &cards {
+                let front = if front.trim().is_empty() { "x" } else { front.as_str() };
+                store.add_card(&deck, front, back).unwrap();
+                side_hashes(front, &mut expected);
+                side_hashes(back, &mut expected);
+            }
+            prop_assert_eq!(card_hashes(&store.conn).unwrap(), expected);
+        }
+    }
 }

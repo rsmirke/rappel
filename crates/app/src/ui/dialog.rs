@@ -71,26 +71,45 @@ fn response_button(alert: &adw::AlertDialog, id: &str) -> Option<gtk::Button> {
 }
 
 /// Puts the keyboard focus of `alert` on its default response each time it
-/// is shown. libadwaita 1.10 focuses the default response in a large
-/// window, but in a small one (360 × 640, 640 × 360) the last response,
-/// which is the destructive one: Enter or Space would then delete or move
-/// files (seen in `focus_tests`, ADR 0057). The focus is set from an idle
-/// after `map`, once the dialog's own initial focus is in place
-/// (`adw_dialog_set_focus`).
+/// is shown.
+///
+/// Observed with libadwaita 1.10 (`ui::dialog::focus_tests`, ADR 0057; its
+/// C source is not on this system, only `/usr/include/libadwaita-1`, so
+/// where it picks the focus could not be read): in a large window an alert
+/// opens with its default response focused, but in a small one (360 × 640,
+/// 640 × 360) with its last response, the destructive one, so Enter or
+/// Space would answer it.
+///
+/// The focus is set in `map` (connected handlers run after the class
+/// handler: `GtkWidget::map` is `G_SIGNAL_RUN_FIRST`), and again from an
+/// idle at `G_PRIORITY_HIGH`, which runs before GDK's input events
+/// (`GDK_PRIORITY_EVENTS` is `G_PRIORITY_DEFAULT`), so a key already
+/// queued never reaches the destructive button, and after whatever the
+/// dialog does when it is shown.
 pub fn focus_default_when_shown(alert: &adw::AlertDialog) {
     alert.connect_map(|alert| {
+        focus_default(alert);
         let alert = alert.downgrade();
-        glib::idle_add_local_once(move || {
-            let Some(alert) = alert.upgrade() else {
-                return;
-            };
-            if let Some(id) = alert.default_response()
-                && let Some(button) = response_button(&alert, &id)
-            {
-                alert.set_focus(Some(&button));
+        glib::idle_add_local_full(glib::Priority::HIGH, move || {
+            if let Some(alert) = alert.upgrade() {
+                focus_default(&alert);
             }
+            glib::ControlFlow::Break
         });
     });
+}
+
+/// Focuses `alert`'s default response, warning if its button is not found.
+fn focus_default(alert: &adw::AlertDialog) {
+    let Some(id) = alert.default_response() else {
+        return;
+    };
+    match response_button(alert, &id) {
+        Some(button) => alert.set_focus(Some(&button)),
+        None => {
+            tracing::warn!(response = %id, "an alert's default response has no button to focus");
+        }
+    }
 }
 
 /// "Restore This Backup?" on the recovery page (its heading is set in code).

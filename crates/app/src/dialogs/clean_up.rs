@@ -55,13 +55,16 @@ pub fn question_text(unused: UnusedMedia) -> String {
 }
 
 /// The toast after a clean-up of `files` of `bytes`: "Moved 12 files
-/// (4.3 MB) to the trash".
-pub fn moved_text(files: usize, bytes: u64) -> String {
-    format!(
-        "Moved {} ({}) to the trash",
-        count(files, "file", "files"),
-        size_text(bytes)
-    )
+/// (4.3 MB) to the trash"; none when nothing moved (another window cleaned
+/// up meanwhile: the row's count says "No unused files").
+pub fn moved_text(files: usize, bytes: u64) -> Option<String> {
+    (files > 0).then(|| {
+        format!(
+            "Moved {} ({}) to the trash",
+            count(files, "file", "files"),
+            size_text(bytes)
+        )
+    })
 }
 
 /// Whether the row's button can start a clean-up: only with something to
@@ -82,8 +85,6 @@ struct Context {
     /// A count, a clean-up or an undo runs.
     busy: Rc<Cell<bool>>,
     errors: Rc<ErrorSlot>,
-    /// The last clean-up, for its Undo.
-    last: Rc<RefCell<Option<CleanedUp>>>,
 }
 
 impl Context {
@@ -124,7 +125,6 @@ pub fn connect(
         unused: Rc::default(),
         busy: Rc::default(),
         errors: errors.clone(),
-        last: Rc::default(),
     };
     button.connect_clicked(glib::clone!(
         #[strong]
@@ -203,21 +203,30 @@ async fn ask_and_clean_up(ctx: &Context) {
     ctx.busy.set(false);
     match result {
         Ok(Ok(cleaned)) => {
+            // Nothing moved: no toast; the count below says so.
+            let Some(text) = moved_text(cleaned.files, cleaned.bytes) else {
+                refresh(ctx).await;
+                return;
+            };
+            // Each toast's Undo puts back its own clean-up.
+            let cleaned = Rc::new(RefCell::new(Some(cleaned)));
             let toast = undo_toast(
-                &moved_text(cleaned.files, cleaned.bytes),
+                &text,
                 glib::clone!(
                     #[strong]
                     ctx,
                     move || {
+                        let Some(cleaned) = cleaned.take() else {
+                            return;
+                        };
                         glib::spawn_future_local(glib::clone!(
                             #[strong]
                             ctx,
-                            async move { undo(&ctx).await }
+                            async move { undo(&ctx, cleaned).await }
                         ));
                     }
                 ),
             );
-            ctx.last.replace(Some(cleaned));
             dialog.add_toast(toast);
         }
         Ok(Err(err)) => ctx.show_error(
@@ -232,9 +241,9 @@ async fn ask_and_clean_up(ctx: &Context) {
     refresh(ctx).await;
 }
 
-/// Puts back the last clean-up on a worker, then counts again.
-async fn undo(ctx: &Context) {
-    let (Some(dialog), Some(cleaned)) = (ctx.dialog.upgrade(), ctx.last.take()) else {
+/// Puts back `cleaned` on a worker, then counts again.
+async fn undo(ctx: &Context, cleaned: CleanedUp) {
+    let Some(dialog) = ctx.dialog.upgrade() else {
         return;
     };
     ctx.busy.set(true);
@@ -308,13 +317,14 @@ mod tests {
         );
         assert!(plain(question_text(unused(1_500, 500))).starts_with("1,500 media files"));
         assert_eq!(
-            plain(moved_text(12, 4_300_000)),
-            "Moved 12 files (4.3 MB) to the trash"
+            moved_text(12, 4_300_000).map(plain).as_deref(),
+            Some("Moved 12 files (4.3 MB) to the trash")
         );
         assert_eq!(
-            plain(moved_text(1, 2_000)),
-            "Moved 1 file (2.0 kB) to the trash"
+            moved_text(1, 2_000).map(plain).as_deref(),
+            Some("Moved 1 file (2.0 kB) to the trash")
         );
+        assert_eq!(moved_text(0, 0), None, "no toast for nothing");
     }
 
     /// The row counts on a worker when connected, then shows the count and

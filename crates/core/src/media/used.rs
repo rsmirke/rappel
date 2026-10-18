@@ -34,15 +34,23 @@ pub(crate) fn side_hashes(md: &str, out: &mut Hashes) {
     }
 }
 
+/// Whether the side `md` can name a media file at all: only with the
+/// letters `media` in it, or with an entity reference (`&#109;edia:`,
+/// which starts with `&`). `CommonMark` decodes entities and backslash
+/// escapes in a link target (`media\:` is `media:`), and a letter cannot
+/// be backslash-escaped. [`card_hashes`] asks SQLite the same question.
+pub(crate) fn may_name_media(md: &str) -> bool {
+    md.contains("media") || md.contains('&')
+}
+
 /// The hashes the card sides of the database at `conn` name: every card,
 /// live or deleted, in a live or deleted deck. Only the `cards` table is
 /// read, with the columns every schema version has (migration 0001), so
 /// this also reads an old backup.
 ///
-/// A side can only name a file with the letters `media` in it, or with an
-/// entity reference (`&#109;edia:`, which starts with `&`): `CommonMark`
-/// decodes entities and backslash escapes in a link target, and a letter
-/// cannot be backslash-escaped. Sides with neither are not parsed.
+/// Only cards with a side for which [`may_name_media`] holds are read (the
+/// same test, in SQL); a property test checks it finds what parsing every
+/// side finds.
 pub(crate) fn card_hashes(conn: &Connection) -> Result<Hashes> {
     let mut out = Hashes::new();
     let mut stmt = conn.prepare(

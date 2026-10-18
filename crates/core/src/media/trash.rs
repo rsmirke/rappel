@@ -24,9 +24,10 @@
 //! import, and at startup for card sides too ([`recover_all`]), and when a
 //! card is written for the files it names ([`recover_refs`]).
 //!
-//! **Purge**: a dated folder's files are deleted once 31 days have passed
-//! since the start of its date (so every file in it spent at least 30 days
-//! there), unless a backup, a copy of the database kept in the data folder,
+//! **Purge**: a dated folder's files are deleted once the clock is 31 days
+//! past the start of its date (so every file in it spent at least 30 days
+//! there) and the database records a write 30 days past it ([`purgeable`]),
+//! unless a backup, a copy of the database kept in the data folder,
 //! or the database itself uses them. A backup that cannot be read keeps
 //! everything. [`purge`] holds the only `remove_file` on user media in
 //! Rappel.
@@ -39,7 +40,8 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OpenFlags, Transaction, TransactionBehavior, params};
 
-use super::used::{Hashes, card_hashes, used_hashes};
+use super::store::{Ingested, has_content};
+use super::used::{Hashes, card_hashes, may_name_media, used_hashes};
 use super::{MediaKind, MediaRef, parse_hex, sync_folder};
 use crate::content::media_refs;
 use crate::error::{Error, Result};
@@ -405,6 +407,7 @@ impl Store {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        check_clock(&tx, &trash, now)?;
         let unused = unused_in(&tx, &media_dir)?;
         let mut moved: Vec<Moved> = Vec::new();
         let result = (|| {
@@ -441,31 +444,33 @@ impl Store {
             }
             before_commit()
         })();
-        let result = result.and_then(|()| tx.commit().map_err(Error::from));
-        match result {
-            Ok(()) => {
-                let cleaned = CleanedUp {
-                    files: moved.len(),
-                    bytes: moved.iter().map(|m| m.bytes).sum(),
-                    moved,
-                    rows: unused.rows,
-                };
-                if cleaned.files > 0 || !cleaned.rows.is_empty() {
-                    tracing::info!(
-                        files = cleaned.files,
-                        bytes = cleaned.bytes,
-                        rows = cleaned.rows.len(),
-                        "unused media moved to the trash"
-                    );
-                }
-                Ok(cleaned)
-            }
-            Err(err) => {
-                // The rows are back (rolled back); the files follow.
-                move_back(renamer, &media_dir, &moved);
-                Err(err)
-            }
+        // COMMIT by hand, so that if it fails the transaction (and the write
+        // lock) is still held while the files move back; dropping `tx`
+        // then rolls back (it does nothing once committed).
+        let result = result.and_then(|()| tx.execute_batch("COMMIT").map_err(Error::from));
+        if let Err(err) = result {
+            // The rows roll back when `tx` drops; the files go back first,
+            // under the lock, so nothing sees them in neither place.
+            move_back(renamer, &media_dir, &moved);
+            drop(tx);
+            return Err(err);
         }
+        drop(tx);
+        let cleaned = CleanedUp {
+            files: moved.len(),
+            bytes: moved.iter().map(|m| m.bytes).sum(),
+            moved,
+            rows: unused.rows,
+        };
+        if cleaned.files > 0 || !cleaned.rows.is_empty() {
+            tracing::info!(
+                files = cleaned.files,
+                bytes = cleaned.bytes,
+                rows = cleaned.rows.len(),
+                "unused media moved to the trash"
+            );
+        }
+        Ok(cleaned)
     }
 
     /// Puts back what [`Self::clean_up_media`] did, as far as it still can:
@@ -528,8 +533,18 @@ impl Store {
 
     /// [`Self::tidy_media_trash`] at `now`.
     pub(crate) fn tidy_media_trash_at(&mut self, now: i64) -> Result<TrashTidied> {
+        self.tidy_media_trash_with(now, &|| {})
+    }
+
+    /// [`Self::tidy_media_trash_at`] with a test's hook between the purge's
+    /// unlocked and locked passes.
+    pub(super) fn tidy_media_trash_with(
+        &mut self,
+        now: i64,
+        before_lock: &dyn Fn(),
+    ) -> Result<TrashTidied> {
         let recovered = self.recover_trashed_media_at(now)?;
-        let mut tidied = purge(self, now)?;
+        let mut tidied = purge(self, now, before_lock)?;
         tidied.recovered = recovered;
         Ok(tidied)
     }
@@ -549,6 +564,22 @@ impl Store {
         tx.commit()?;
         Ok(n)
     }
+}
+
+/// Refuses a clean-up whose clock is behind what Rappel recorded: the
+/// newest trash folder's date, or the newest time in the database
+/// ([`latest_time`]). Its folder would be dated earlier than the clean-up
+/// really was, and the purge would come early (ADR 0057).
+fn check_clock(conn: &Connection, trash: &Path, now: i64) -> Result<()> {
+    let today = now - now.rem_euclid(DAY_MS);
+    let newest_folder = trash_folders(trash)?.iter().filter_map(|f| f.day).max();
+    let behind_trash = newest_folder.is_some_and(|day| day > today);
+    let behind_data = latest_time(conn)?.is_some_and(|t| t > now);
+    if behind_trash || behind_data {
+        tracing::warn!("a clean-up is refused: the clock is behind the data's newest time");
+        return Err(Error::ClockWrong);
+    }
+    Ok(())
 }
 
 /// Makes the trash (mode `0700`) unless it is there. Something there that
@@ -621,10 +652,24 @@ fn move_back(renamer: &dyn Mover, media_dir: &Path, moved: &[Moved]) {
     }
 }
 
+/// What [`bring_back`] did with a trash file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Back {
+    /// It is in the media folder again.
+    Moved,
+    /// A file has its name in the media folder already: the trash copy
+    /// stays (a duplicate, which the purge keeps while the name is used).
+    NameTaken,
+    /// It is not the file its name says (another hash, empty, too large,
+    /// or audio that is not plain audio): it stays in the trash, logged,
+    /// and another copy may be tried.
+    NotItsContent,
+}
+
 /// Brings back `media` from the trash file `from` (of `bytes`) to the
-/// media folder, with a row if it has none. `false` if a file has its name
-/// in the media folder already (the trash copy then stays), or the trash
-/// file cannot be a media file of its kind (empty or too large).
+/// media folder, with a row if it has none, after checking that its content
+/// has the hash and kind of its name (read once, at most its kind's
+/// limit).
 fn bring_back(
     conn: &Connection,
     renamer: &dyn Mover,
@@ -633,13 +678,21 @@ fn bring_back(
     media: MediaRef,
     bytes: u64,
     now: i64,
-) -> Result<bool> {
-    if bytes == 0 || bytes > media.kind().max_bytes() {
-        return Ok(false);
-    }
+) -> Result<Back> {
     let target = media_dir.join(media.file_name());
     if found(&target)? != Found::Nothing {
-        return Ok(false);
+        return Ok(Back::NameTaken);
+    }
+    let expected = Ingested { media, bytes };
+    let intact = bytes > 0
+        && bytes <= media.kind().max_bytes()
+        && has_content(from, &expected).map_err(io_err(from))?;
+    if !intact {
+        tracing::warn!(
+            hash = %media.hex(),
+            "a file in the media trash is not what its name says; it stays there"
+        );
+        return Ok(Back::NotItsContent);
     }
     crate::data_dir::ensure_data_dir(media_dir)?;
     renamer.rename(from, &target).map_err(io_err(from))?;
@@ -654,11 +707,36 @@ fn bring_back(
         ],
     )?;
     tracing::info!(hash = %media.hex(), "media file brought back from the trash");
-    Ok(true)
+    Ok(Back::Moved)
+}
+
+/// The media files of a trash folder; one that cannot be read is skipped
+/// with a warning (it is tried again next time), so one bad folder never
+/// stops a restore, an import or a card write.
+fn readable_files(folder: &Path) -> Vec<(MediaRef, u64)> {
+    match media_files(folder) {
+        Ok(files) => files,
+        Err(err) => {
+            tracing::warn!("a media trash folder cannot be read: {err}");
+            Vec::new()
+        }
+    }
+}
+
+/// The trash's folders; a trash that cannot be read has none here, with a
+/// warning.
+fn readable_folders(trash: &Path) -> Vec<Folder> {
+    match trash_folders(trash) {
+        Ok(folders) => folders,
+        Err(err) => {
+            tracing::warn!("the media trash cannot be read: {err}");
+            Vec::new()
+        }
+    }
 }
 
 /// Brings back every file of the trash whose hash `wanted` accepts (the
-/// newest copy of each name). Inside the caller's write transaction.
+/// newest intact copy of each name). Inside the caller's write transaction.
 fn recover_where(
     conn: &Connection,
     media_dir: &Path,
@@ -668,21 +746,27 @@ fn recover_where(
     let Some(trash) = trash_of(media_dir) else {
         return Ok(0);
     };
-    let folders = trash_folders(&trash)?;
+    let folders = readable_folders(&trash);
     if folders.is_empty() {
         return Ok(0);
     }
     let mut done: HashSet<MediaRef> = HashSet::new();
     let mut n = 0;
     for folder in &folders {
-        for (media, bytes) in media_files(&folder.path)? {
+        for (media, bytes) in readable_files(&folder.path) {
             if done.contains(&media) || !wanted(&media)? {
                 continue;
             }
-            done.insert(media);
             let from = folder.path.join(media.file_name());
-            if bring_back(conn, &Disk, media_dir, &from, media, bytes, now)? {
-                n += 1;
+            match bring_back(conn, &Disk, media_dir, &from, media, bytes, now)? {
+                Back::Moved => {
+                    n += 1;
+                    done.insert(media);
+                }
+                Back::NameTaken => {
+                    done.insert(media);
+                }
+                Back::NotItsContent => {}
             }
         }
     }
@@ -694,17 +778,17 @@ fn recover_where(
 
 /// Brings back every file of the trash that has a row in the database at
 /// `conn`: a clean-up cut off between its moves and its commit, or a
-/// restored backup or import that has the row. Cheap: only the trash is
-/// listed, and a row looked up per file. Inside the caller's write
-/// transaction.
+/// restored backup or import that has the row. Cheap: the trash is listed
+/// and the rows' hashes read once (measured in
+/// `trash_tests::bringing_back_rows_at_open_is_cheap`). Inside the
+/// caller's write transaction.
 pub(crate) fn recover_rows(conn: &Connection, media_dir: &Path, now: i64) -> Result<usize> {
+    let mut rows: Option<Hashes> = None;
     let mut has_row = |media: &MediaRef| -> Result<bool> {
-        let n: i64 = conn.query_row(
-            "SELECT count(*) FROM media WHERE hash = ?1",
-            [media.hex()],
-            |r| r.get(0),
-        )?;
-        Ok(n > 0)
+        if rows.is_none() {
+            rows = Some(super::used::row_hashes(conn)?);
+        }
+        Ok(rows.as_ref().is_some_and(|r| r.contains(media.hash())))
     };
     recover_where(conn, media_dir, now, &mut has_row)
 }
@@ -726,8 +810,8 @@ pub(crate) fn recover_all(conn: &Connection, media_dir: &Path, now: i64) -> Resu
 /// Brings back the files the card sides `sides` name ([`media_refs`]) that
 /// are missing from the media folder and in the trash, as a card is
 /// written: an editor may hold a reference to a file a clean-up took while
-/// it was open. Only the names it refers to are looked up. Inside the
-/// caller's write transaction.
+/// it was open. Only the names it refers to are looked up, in the trash's
+/// folders listed once. Inside the caller's write transaction.
 pub(crate) fn recover_refs(
     conn: &Connection,
     media_dir: &Path,
@@ -736,8 +820,12 @@ pub(crate) fn recover_refs(
 ) -> Result<usize> {
     let mut refs: Vec<MediaRef> = Vec::new();
     for side in sides {
-        if side.contains(super::SCHEME) || side.contains('&') {
-            refs.extend(media_refs(side));
+        if may_name_media(side) {
+            for media in media_refs(side) {
+                if !refs.contains(&media) {
+                    refs.push(media);
+                }
+            }
         }
     }
     let mut missing = Vec::new();
@@ -752,15 +840,20 @@ pub(crate) fn recover_refs(
     let Some(trash) = trash_of(media_dir) else {
         return Ok(0);
     };
+    let folders = readable_folders(&trash);
     let mut n = 0;
     for media in missing {
-        for folder in trash_folders(&trash)? {
+        for folder in &folders {
             let from = folder.path.join(media.file_name());
             if let Found::File(bytes) = found(&from)? {
-                if bring_back(conn, &Disk, media_dir, &from, media, bytes, now)? {
-                    n += 1;
+                match bring_back(conn, &Disk, media_dir, &from, media, bytes, now)? {
+                    Back::Moved => {
+                        n += 1;
+                        break;
+                    }
+                    Back::NameTaken => break,
+                    Back::NotItsContent => {}
                 }
-                break;
             }
         }
     }
@@ -770,13 +863,36 @@ pub(crate) fn recover_refs(
     Ok(n)
 }
 
-/// Whether a trash folder of day `day` may be purged at `now`: 31 days
-/// after the start of its date, so every file in it spent 30 days there.
-/// A clock set back (before the folder's date) never purges; a folder
-/// dated before Rappel had a clean-up was made by a wrong clock and is
-/// never purged.
-pub(super) fn purgeable(day: i64, now: i64) -> bool {
-    day >= EARLIEST_MS && now >= day.saturating_add((PURGE_AFTER_DAYS + 1) * DAY_MS)
+/// The newest time the database at `conn` records: when a deck or card was
+/// made, edited or deleted, a log entry's time, a media file's
+/// `created_at`. `None` for an empty database.
+pub(super) fn latest_time(conn: &Connection) -> Result<Option<i64>> {
+    let latest: Option<i64> = conn.query_row(
+        "SELECT max(t) FROM (
+             SELECT max(created_at, updated_at, coalesce(deleted_at, 0)) AS t FROM decks
+             UNION ALL SELECT max(created_at, updated_at, coalesce(deleted_at, 0)) FROM cards
+             UNION ALL SELECT reviewed_at FROM review_events
+             UNION ALL SELECT created_at FROM media
+         )",
+        [],
+        |r| r.get(0),
+    )?;
+    Ok(latest)
+}
+
+/// Whether a trash folder of day `day` may be purged at `now`, the
+/// database's newest recorded time being `latest`: the clock 31 days past
+/// the start of the folder's date (so every file in it spent 30 days
+/// there by the clock), **and** the database holding a time at least 30
+/// days past that start (Rappel was used, and wrote, a month after the
+/// clean-up). So a clock set back never purges, and neither does a clock
+/// that is ahead only at a start: a write made while it is ahead is what
+/// it would take. A folder dated before Rappel had a clean-up was made by
+/// a wrong clock and is never purged.
+pub(super) fn purgeable(day: i64, now: i64, latest: Option<i64>) -> bool {
+    day >= EARLIEST_MS
+        && now >= day.saturating_add((PURGE_AFTER_DAYS + 1) * DAY_MS)
+        && latest.is_some_and(|t| t >= day.saturating_add(PURGE_AFTER_DAYS * DAY_MS))
 }
 
 /// A database copy the purge reads, by path, size and change time (a new
@@ -835,11 +951,10 @@ fn read_copies(
             Ok(meta) => meta,
             // Pruned or moved since it was listed: nothing to restore.
             Err(err) if err.kind() == io::ErrorKind::NotFound => continue,
-            Err(err) if required => {
+            Err(err) => {
                 tracing::warn!(path = %path.display(), "the trash is not purged: {err}");
                 return Err(Blocked);
             }
-            Err(_) => continue,
         };
         // Restore reads only regular files.
         if !meta.file_type().is_file() {
@@ -854,20 +969,42 @@ fn read_copies(
                 protected.extend(hashes);
                 read.insert(key);
             }
-            Err(err) if required => {
-                tracing::warn!(
-                    path = %path.display(),
-                    "the trash is not purged: a backup cannot be read: {err}"
-                );
-                return Err(Blocked);
-            }
-            Err(err) => {
+            // A copy that is no Rappel database at all (damaged, another
+            // file under the name, as `.moving-aside` is) protects nothing;
+            // any other failure (IO, busy, cannot open) might hide what it
+            // uses, so it blocks the purge like an unreadable backup.
+            Err(err) if !required && not_a_database(&err) => {
                 tracing::info!(path = %path.display(), "a database copy is not read: {err}");
                 read.insert(key);
+            }
+            Err(err) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    "the trash is not purged: a database copy cannot be read: {err}"
+                );
+                return Err(Blocked);
             }
         }
     }
     Ok(())
+}
+
+/// Whether `err`, from reading a database copy, says the file is not a
+/// Rappel database at all: not an SQLite file, damaged, or without a
+/// `cards` table.
+fn not_a_database(err: &Error) -> bool {
+    match err {
+        Error::Sqlite(rusqlite::Error::SqliteFailure(failure, message)) => {
+            matches!(
+                failure.code,
+                rusqlite::ErrorCode::NotADatabase | rusqlite::ErrorCode::DatabaseCorrupt
+            ) || (failure.code == rusqlite::ErrorCode::Unknown
+                && message
+                    .as_deref()
+                    .is_some_and(|m| m.starts_with("no such table")))
+        }
+        _ => false,
+    }
 }
 
 /// The hashes the database file at `path` uses, read without writing to
@@ -887,11 +1024,15 @@ type TrashFile = (MediaRef, u64, PathBuf);
 
 /// The files of the trash folders old enough to go ([`purgeable`]), and
 /// those folders.
-fn purge_candidates(trash: &Path, now: i64) -> Result<(Vec<PathBuf>, Vec<TrashFile>)> {
+fn purge_candidates(
+    trash: &Path,
+    now: i64,
+    latest: Option<i64>,
+) -> Result<(Vec<PathBuf>, Vec<TrashFile>)> {
     let mut folders = Vec::new();
     let mut files = Vec::new();
     for folder in trash_folders(trash)? {
-        if !folder.day.is_some_and(|day| purgeable(day, now)) {
+        if !folder.day.is_some_and(|day| purgeable(day, now, latest)) {
             continue;
         }
         for (media, bytes) in media_files(&folder.path)? {
@@ -911,7 +1052,7 @@ fn purge_candidates(trash: &Path, now: i64) -> Result<(Vec<PathBuf>, Vec<TrashFi
 /// meanwhile), backups made since are read too, the database's own use is
 /// read, and the files are deleted. The `fs::remove_file` here is the only
 /// deletion of a user's media file in Rappel (ADR 0057).
-fn purge(store: &mut Store, now: i64) -> Result<TrashTidied> {
+fn purge(store: &mut Store, now: i64, before_lock: &dyn Fn()) -> Result<TrashTidied> {
     let mut tidied = TrashTidied::default();
     let (Some(media_dir), Some(backup_dir)) = (store.media_dir.clone(), store.backup_dir.clone())
     else {
@@ -920,7 +1061,7 @@ fn purge(store: &mut Store, now: i64) -> Result<TrashTidied> {
     let (Some(trash), Some(data_dir)) = (trash_of(&media_dir), media_dir.parent()) else {
         return Err(Error::NoMediaDir);
     };
-    let (folders, files) = purge_candidates(&trash, now)?;
+    let (folders, files) = purge_candidates(&trash, now, latest_time(&store.conn)?)?;
     if folders.is_empty() {
         return Ok(tidied);
     }
@@ -930,11 +1071,12 @@ fn purge(store: &mut Store, now: i64) -> Result<TrashTidied> {
         tidied.blocked = true;
         return Ok(tidied);
     }
+    before_lock();
     let tx = store
         .conn
         .transaction_with_behavior(TransactionBehavior::Immediate)?;
     // Listed again under the lock: a file brought back meanwhile is gone.
-    let (folders, files) = purge_candidates(&trash, now)?;
+    let (folders, files) = purge_candidates(&trash, now, latest_time(&tx)?)?;
     if !files.is_empty() {
         if read_copies(data_dir, &backup_dir, &mut read, &mut protected).is_err() {
             tidied.blocked = true;

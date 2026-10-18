@@ -430,7 +430,7 @@ fn no_links(err: &io::Error) -> bool {
 
 /// Whether the file at `path` has exactly the content `expected` (its
 /// hash and kind), read once, at most its size plus one byte.
-fn has_content(path: &Path, expected: &Ingested) -> io::Result<bool> {
+pub(super) fn has_content(path: &Path, expected: &Ingested) -> io::Result<bool> {
     let file = File::open(path)?;
     let mut capped = file.take(expected.bytes.saturating_add(1));
     match copy_capped(&mut capped, &mut io::sink()) {
