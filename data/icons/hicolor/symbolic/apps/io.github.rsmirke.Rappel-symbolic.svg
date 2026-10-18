@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Rappel's symbolic icon: a PLACEHOLDER (ADR 0060). Two stacked cards.
+     GTK recolours symbolic icons, so the colour here does not show. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <path fill="#222222" d="M 3 1 C 1.9 1 1 1.9 1 3 L 1 9 C 1 10.1 1.9 11 3 11 L 3 9 L 3 3 L 11 3 C 11 1.9 10.1 1 9 1 Z M 7 5 C 5.9 5 5 5.9 5 7 L 5 13 C 5 14.1 5.9 15 7 15 L 13 15 C 14.1 15 15 14.1 15 13 L 15 7 C 15 5.9 14.1 5 13 5 Z M 7 7 L 13 7 L 13 13 L 7 13 Z"/>
+</svg>

@@ -1,6 +1,8 @@
 //! Rappel: a native GNOME flashcard app.
 
 mod clock;
+#[cfg(test)]
+mod desktop_files;
 mod dialogs;
 mod gst_env;
 mod i18n;

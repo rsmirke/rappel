@@ -12,6 +12,12 @@
 //! item under `#[cfg(test)]` is skipped. In Blueprint, `_("…")` and
 //! `C_("context", "…")`. A comment starting `Translators:` goes with the
 //! next message at most three lines below it.
+//!
+//! The desktop integration drafts (ADR 0060) are read as `xgettext` reads
+//! them: the translated keys of `data/*.desktop.in` and the elements
+//! `AppStream`'s ITS rules translate in `data/*.metainfo.xml.in`. Their
+//! merges (`merge_desktop`, `merge_metainfo`) do what `msgfmt` will do in
+//! packaging, so the tests can validate the translated files.
 
 use std::collections::HashMap;
 
@@ -846,6 +852,409 @@ pub fn scan_blueprint(file: &str, src: &str) -> Scan {
         i += 1;
     }
     scan
+}
+
+/// The keys of a `.desktop` file whose values are translated, as
+/// `xgettext` and `msgfmt --desktop` take them by default.
+pub const DESKTOP_KEYS: [&str; 4] = ["Name", "GenericName", "Comment", "Keywords"];
+
+/// A translated line of a `.desktop` file: (line from 1, key, value, the
+/// comment for translators above it).
+type DesktopEntry<'a> = (usize, &'a str, &'a str, Option<String>);
+
+/// The translated `key=value` lines of a `.desktop` file. A key already
+/// translated in the file (`Name[fr]=…`) is an error: translations live in
+/// `po/`, and packaging merges them (ADR 0060).
+fn desktop_entries(src: &str) -> Result<Vec<DesktopEntry<'_>>, String> {
+    let mut entries = Vec::new();
+    let mut pending: Option<Pending> = None;
+    for (at, line) in src.lines().enumerate() {
+        let number = at + 1;
+        if let Some(comment) = line.strip_prefix('#') {
+            let comment = comment.trim();
+            match &mut pending {
+                Some(waiting) if waiting.last_line + 1 == number => {
+                    waiting.text.push(' ');
+                    waiting.text.push_str(comment);
+                    waiting.last_line = number;
+                }
+                _ if comment.starts_with("Translators:") => {
+                    pending = Some(Pending {
+                        text: comment.to_owned(),
+                        last_line: number,
+                    });
+                }
+                _ => {}
+            }
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            pending = None;
+            continue;
+        };
+        let comment = pending
+            .take()
+            .filter(|waiting| waiting.last_line + 1 == number)
+            .map(|waiting| waiting.text);
+        let key = key.trim_end();
+        let base = key.split('[').next().unwrap_or(key);
+        if DESKTOP_KEYS.contains(&base) {
+            if base != key {
+                return Err(format!(
+                    "line {number}: {key} is a translation; translations belong in po/"
+                ));
+            }
+            if value.is_empty() {
+                return Err(format!("line {number}: {key} is empty"));
+            }
+            entries.push((number, key, value.trim_start(), comment));
+        }
+    }
+    Ok(entries)
+}
+
+/// Scans a `.desktop` file (`data/*.desktop.in`): the values of
+/// [`DESKTOP_KEYS`], each a message, with the `# Translators:` comment
+/// right above it. A `Keywords` list is one message, as `xgettext` makes
+/// it.
+pub fn scan_desktop(file: &str, src: &str) -> Scan {
+    let mut scan = Scan::default();
+    match desktop_entries(src) {
+        Ok(entries) => {
+            for (line, _, value, comment) in entries {
+                scan.messages.push(Message {
+                    context: None,
+                    id: value.to_owned(),
+                    plural: None,
+                    comment,
+                    file: file.to_owned(),
+                    line,
+                    toast: None,
+                });
+            }
+        }
+        Err(err) => scan.errors.push(format!("{file}: {err}")),
+    }
+    scan
+}
+
+/// The `.desktop` file `src` with the translations `lookup` gives after
+/// each translated key (`Comment[fr]=…`), as `msgfmt --desktop` merges
+/// them; a value without a translation stays alone.
+pub fn merge_desktop(
+    src: &str,
+    language: &str,
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Result<String, String> {
+    let entries = desktop_entries(src)?;
+    let mut out = String::with_capacity(src.len() * 2);
+    for (at, line) in src.lines().enumerate() {
+        out.push_str(line);
+        out.push('\n');
+        if let Some((_, key, value, _)) = entries.iter().find(|entry| entry.0 == at + 1)
+            && let Some(text) = lookup(value)
+        {
+            for part in [key, "[", language, "]=", &text, "\n"] {
+                out.push_str(part);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// A translated element of a metainfo file: its whole span in the source,
+/// its name and its text.
+#[derive(Debug)]
+pub struct MetainfoUnit {
+    /// The element's name (`summary`, `p`, …).
+    pub tag: String,
+    /// Its text, with runs of white space made one space and trimmed, as
+    /// `xgettext` does for ITS rules without `xml:space="preserve"`.
+    pub text: String,
+    /// The line of its start tag, from 1.
+    pub line: usize,
+    /// The byte after its end tag.
+    pub end: usize,
+    /// The white space before its start tag on its line.
+    pub indent: String,
+    /// The `<!-- Translators: … -->` comment just above it, if any (no
+    /// other start tag in between).
+    pub comment: Option<String>,
+}
+
+/// Whether the element at `path` (its names from the root) is translated
+/// by `AppStream`'s ITS rules (`metainfo.its`, which `xgettext` uses): the
+/// name, summary, developer's name, keywords, screenshot captions, and the
+/// paragraphs and list items of the description and of each release's
+/// description.
+fn metainfo_translated(path: &[String]) -> bool {
+    let names: Vec<&str> = path.iter().map(String::as_str).collect();
+    matches!(
+        names.as_slice(),
+        [
+            "component",
+            "name" | "summary" | "developer_name" | "name_variant_suffix"
+        ] | ["component", "developer", "name"]
+            | ["component", "keywords", "keyword"]
+            | ["component", "screenshots", "screenshot", "caption"]
+            | ["component", "description", .., "p" | "li"]
+            | [
+                "component",
+                "releases",
+                "release",
+                "description",
+                ..,
+                "p" | "li"
+            ]
+    )
+}
+
+/// The value of attribute `name` in a start tag's text (the element's
+/// name, then its attributes). The tag is read one attribute at a time,
+/// so a name inside another attribute's value is not taken for one; a
+/// value must be quoted with `"` or `'`. `None` if the attribute is not
+/// there or the tag is not well formed.
+pub fn attribute<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
+    let mut rest = tag.trim_start();
+    // The element's name.
+    rest = &rest[rest.find(char::is_whitespace).unwrap_or(rest.len())..];
+    loop {
+        rest = rest.trim_start();
+        if rest.is_empty() {
+            return None;
+        }
+        let key_end = rest.find(|c: char| c == '=' || c.is_whitespace())?;
+        let key = &rest[..key_end];
+        rest = rest[key_end..].trim_start().strip_prefix('=')?.trim_start();
+        let quote = rest.chars().next().filter(|c| *c == '"' || *c == '\'')?;
+        let body = &rest[1..];
+        let end = body.find(quote)?;
+        if key == name {
+            return Some(&body[..end]);
+        }
+        rest = &body[end + 1..];
+    }
+}
+
+/// Whether `AppStream`'s ITS rules honour `translate="no"` on the element
+/// at `path` (`metainfo.its`: the name, the developer's name, the name
+/// suffix, a keyword, a release's description and an agreement's section
+/// name or description). Elsewhere `xgettext` ignores it, so it is refused.
+fn metainfo_translate_honoured(path: &[String]) -> bool {
+    let names: Vec<&str> = path.iter().map(String::as_str).collect();
+    matches!(
+        names.as_slice(),
+        [
+            "component",
+            "name" | "developer_name" | "name_variant_suffix"
+        ] | ["component", "developer", "name"]
+            | ["component", "keywords", "keyword"]
+            | ["component", "releases", "release", "description"]
+            | [
+                "component",
+                "agreement",
+                "agreement_section",
+                "name" | "description"
+            ]
+    )
+}
+
+/// The translated elements of a metainfo file, in order. A minimal XML
+/// reader for this one file: comments, the declaration, start, end and
+/// empty tags. A translated element must hold plain text only (no child
+/// element such as `<em>`, no `&` entity), so its text is the message as
+/// it stands; anything else is an error naming the line.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one pass over the tags with its element stack; split up it would be harder to follow"
+)]
+pub fn metainfo_units(src: &str) -> Result<Vec<MetainfoUnit>, String> {
+    let line_of = |at: usize| src[..at].matches('\n').count() + 1;
+    let mut units = Vec::new();
+    // (name, translated off by `translate="no"` here or above).
+    let mut stack: Vec<(String, bool)> = Vec::new();
+    let mut pending: Option<Pending> = None;
+    let mut i = 0;
+    while let Some(open) = src[i..].find('<').map(|at| i + at) {
+        let rest = &src[open..];
+        if let Some(inside) = rest.strip_prefix("<!--") {
+            let end = inside
+                .find("-->")
+                .map(|at| at + 4)
+                .ok_or_else(|| format!("line {}: unclosed comment", line_of(open)))?;
+            let text = rest[4..end]
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            if text.starts_with("Translators:") {
+                pending = Some(Pending {
+                    text,
+                    last_line: line_of(open + end),
+                });
+            }
+            i = open + end + 3;
+            continue;
+        }
+        if rest.starts_with("<?") {
+            let end = rest
+                .find("?>")
+                .ok_or_else(|| format!("line {}: unclosed declaration", line_of(open)))?;
+            i = open + end + 2;
+            continue;
+        }
+        if rest.starts_with("<!") {
+            return Err(format!(
+                "line {}: no DOCTYPE or CDATA in metainfo",
+                line_of(open)
+            ));
+        }
+        let close = rest
+            .find('>')
+            .ok_or_else(|| format!("line {}: unclosed tag", line_of(open)))?;
+        let tag = &rest[1..close];
+        i = open + close + 1;
+        if let Some(name) = tag.strip_prefix('/') {
+            match stack.pop() {
+                Some((open_name, _)) if open_name == name.trim() => {}
+                _ => return Err(format!("line {}: unexpected </{name}>", line_of(open))),
+            }
+            continue;
+        }
+        let empty = tag.ends_with('/');
+        let tag = tag.trim_end_matches('/');
+        let name = tag.split_whitespace().next().unwrap_or("").to_owned();
+        if attribute(tag, "xml:lang").is_some() {
+            return Err(format!(
+                "line {}: <{name}> has xml:lang; translations belong in po/",
+                line_of(open)
+            ));
+        }
+        let mut path: Vec<String> = stack.iter().map(|(name, _)| name.clone()).collect();
+        path.push(name.clone());
+        let translate = attribute(tag, "translate");
+        if translate.is_some() && !(translate == Some("no") && metainfo_translate_honoured(&path)) {
+            return Err(format!(
+                "line {}: <{name}> has translate={translate:?}; only translate=\"no\" on the \
+                 elements AppStream's ITS rules name has an effect",
+                line_of(open)
+            ));
+        }
+        let off = stack.last().is_some_and(|(_, off)| *off) || translate.is_some();
+        if empty {
+            pending = None;
+            continue;
+        }
+        if !off && metainfo_translated(&path) {
+            let end_tag = format!("</{name}>");
+            let body_end = src[i..]
+                .find(&end_tag)
+                .map(|at| i + at)
+                .ok_or_else(|| format!("line {}: <{name}> is not closed", line_of(open)))?;
+            let body = &src[i..body_end];
+            if body.contains('<') || body.contains('&') {
+                return Err(format!(
+                    "line {}: <{name}> must hold plain text (no markup, no entities) \
+                     for the extraction",
+                    line_of(open)
+                ));
+            }
+            let text = body.split_whitespace().collect::<Vec<_>>().join(" ");
+            if text.is_empty() {
+                return Err(format!("line {}: <{name}> is empty", line_of(open)));
+            }
+            let line = line_of(open);
+            let line_start = src[..open].rfind('\n').map_or(0, |at| at + 1);
+            let indent: String = src[line_start..open]
+                .chars()
+                .take_while(|c| c.is_whitespace())
+                .collect();
+            let comment = pending
+                .take()
+                .filter(|waiting| line - waiting.last_line <= COMMENT_REACH)
+                .map(|waiting| waiting.text);
+            units.push(MetainfoUnit {
+                tag: name,
+                text,
+                line,
+                end: body_end + end_tag.len(),
+                indent,
+                comment,
+            });
+            i = body_end + end_tag.len();
+            continue;
+        }
+        // A comment for translators goes with the next element only.
+        pending = None;
+        stack.push((name, off));
+    }
+    if let Some((name, _)) = stack.last() {
+        return Err(format!("<{name}> is not closed"));
+    }
+    Ok(units)
+}
+
+/// Scans an `AppStream` metainfo file (`data/*.metainfo.xml.in`): each
+/// translated element ([`metainfo_units`]) is a message, with the
+/// `<!-- Translators: … -->` comment just above it.
+pub fn scan_metainfo(file: &str, src: &str) -> Scan {
+    let mut scan = Scan::default();
+    match metainfo_units(src) {
+        Ok(units) => {
+            for unit in units {
+                scan.messages.push(Message {
+                    context: None,
+                    id: unit.text,
+                    plural: None,
+                    comment: unit.comment,
+                    file: file.to_owned(),
+                    line: unit.line,
+                    toast: None,
+                });
+            }
+        }
+        Err(err) => scan.errors.push(format!("{file}: {err}")),
+    }
+    scan
+}
+
+/// The metainfo file `src` with each translated element followed by its
+/// translation (`<summary xml:lang="fr">…</summary>`), as `msgfmt --xml`
+/// merges them; an element without a translation stays alone.
+pub fn merge_metainfo(
+    src: &str,
+    language: &str,
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Result<String, String> {
+    let units = metainfo_units(src)?;
+    let mut out = String::with_capacity(src.len() * 2);
+    let mut from = 0;
+    for unit in units {
+        out.push_str(&src[from..unit.end]);
+        from = unit.end;
+        if let Some(text) = lookup(&unit.text) {
+            let text = text
+                .replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;");
+            for part in [
+                "\n",
+                &unit.indent,
+                "<",
+                &unit.tag,
+                " xml:lang=\"",
+                language,
+                "\">",
+            ] {
+                out.push_str(part);
+            }
+            out.push_str(&text);
+            for part in ["</", &unit.tag, ">"] {
+                out.push_str(part);
+            }
+        }
+    }
+    out.push_str(&src[from..]);
+    Ok(out)
 }
 
 /// The header of `po/rappel.pot`. No creation date, so the file changes

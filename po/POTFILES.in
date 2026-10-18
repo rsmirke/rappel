@@ -63,3 +63,5 @@ crates/app/src/widgets/tag_entry/keys.rs
 crates/app/src/widgets/tag_pills.rs
 crates/app/src/widgets/tag_pills/text.rs
 crates/app/src/window.rs
+data/io.github.rsmirke.Rappel.desktop.in
+data/io.github.rsmirke.Rappel.metainfo.xml.in

@@ -394,6 +394,8 @@ msgstr ""
 
 #: crates/app/data/decks_page.blp
 #: crates/app/data/window.blp
+#: data/io.github.rsmirke.Rappel.desktop.in
+#: data/io.github.rsmirke.Rappel.metainfo.xml.in
 msgid "Rappel"
 msgstr ""
 
@@ -2624,4 +2626,73 @@ msgstr ""
 #. Translators: a toast's text goes on: {message} is what came before ("Backup restored"), {path} a file's path.
 #: crates/app/src/window.rs
 msgid "{message}. The copy an earlier restore left waiting was kept as {path}"
+msgstr ""
+
+#. Translators: A short name for what the app is, shown next to its name in some menus.
+#: data/io.github.rsmirke.Rappel.desktop.in
+msgid "Flashcards"
+msgstr ""
+
+#. Translators: A tooltip in the menus; the same text as the summary in the app's store listing.
+#. Translators: The app's summary in software stores, at most 35 characters.
+#: data/io.github.rsmirke.Rappel.desktop.in
+#: data/io.github.rsmirke.Rappel.metainfo.xml.in
+msgid "Memorize with flashcards"
+msgstr ""
+
+#. Translators: Search terms to find this app. Do NOT translate or localize the semicolons, and end the list with one. Add words people would search for in your language.
+#: data/io.github.rsmirke.Rappel.desktop.in
+msgid "flashcards;spaced repetition;memorize;learn;study;cards;"
+msgstr ""
+
+#: data/io.github.rsmirke.Rappel.metainfo.xml.in
+msgid "Rappel shows each card again just before you would forget it, so a few minutes a day are enough to remember what you learn. After each card you only say whether you knew it: Fail or Pass."
+msgstr ""
+
+#: data/io.github.rsmirke.Rappel.metainfo.xml.in
+msgid "Cards are written in Markdown, with formulas, images and sound. Everything stays on your computer: Rappel never goes online and needs no account."
+msgstr ""
+
+#: data/io.github.rsmirke.Rappel.metainfo.xml.in
+msgid "Two answers only, scheduled by FSRS, a modern model of memory"
+msgstr ""
+
+#: data/io.github.rsmirke.Rappel.metainfo.xml.in
+msgid "Formulas drawn as in LaTeX"
+msgstr ""
+
+#: data/io.github.rsmirke.Rappel.metainfo.xml.in
+msgid "Pictures and sound on cards"
+msgstr ""
+
+#: data/io.github.rsmirke.Rappel.metainfo.xml.in
+msgid "Search, tags and statistics"
+msgstr ""
+
+#: data/io.github.rsmirke.Rappel.metainfo.xml.in
+msgid "Automatic backups, and export to a single file"
+msgstr ""
+
+#: data/io.github.rsmirke.Rappel.metainfo.xml.in
+msgid "Works on phones and with the keyboard alone"
+msgstr ""
+
+#: data/io.github.rsmirke.Rappel.metainfo.xml.in
+msgid "Study a card, then say whether you knew it"
+msgstr ""
+
+#: data/io.github.rsmirke.Rappel.metainfo.xml.in
+msgid "Your decks with the cards due today"
+msgstr ""
+
+#: data/io.github.rsmirke.Rappel.metainfo.xml.in
+msgid "Write cards in Markdown with a live preview"
+msgstr ""
+
+#: data/io.github.rsmirke.Rappel.metainfo.xml.in
+msgid "See how much you studied and how well you remember"
+msgstr ""
+
+#: data/io.github.rsmirke.Rappel.metainfo.xml.in
+msgid "Pictures on cards, on a phone"
 msgstr ""

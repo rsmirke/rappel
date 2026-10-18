@@ -396,6 +396,8 @@ msgstr "_Renommer…"
 
 #: crates/app/data/decks_page.blp
 #: crates/app/data/window.blp
+#: data/io.github.rsmirke.Rappel.desktop.in
+#: data/io.github.rsmirke.Rappel.metainfo.xml.in
 msgid "Rappel"
 msgstr "Rappel"
 
@@ -2627,3 +2629,72 @@ msgstr "{title}. L’ancienne base de données a été conservée sous {path}"
 #: crates/app/src/window.rs
 msgid "{message}. The copy an earlier restore left waiting was kept as {path}"
 msgstr "{message}. La copie laissée en attente par une restauration précédente a été conservée sous {path}"
+
+#. Translators: A short name for what the app is, shown next to its name in some menus.
+#: data/io.github.rsmirke.Rappel.desktop.in
+msgid "Flashcards"
+msgstr "Cartes mémoire"
+
+#. Translators: A tooltip in the menus; the same text as the summary in the app's store listing.
+#. Translators: The app's summary in software stores, at most 35 characters.
+#: data/io.github.rsmirke.Rappel.desktop.in
+#: data/io.github.rsmirke.Rappel.metainfo.xml.in
+msgid "Memorize with flashcards"
+msgstr "Mémorisez avec des cartes"
+
+#. Translators: Search terms to find this app. Do NOT translate or localize the semicolons, and end the list with one. Add words people would search for in your language.
+#: data/io.github.rsmirke.Rappel.desktop.in
+msgid "flashcards;spaced repetition;memorize;learn;study;cards;"
+msgstr "cartes mémoire;répétition espacée;mémoriser;apprendre;réviser;cartes;flashcards;"
+
+#: data/io.github.rsmirke.Rappel.metainfo.xml.in
+msgid "Rappel shows each card again just before you would forget it, so a few minutes a day are enough to remember what you learn. After each card you only say whether you knew it: Fail or Pass."
+msgstr "Rappel vous remontre chaque carte juste avant que vous ne l’oubliiez : quelques minutes par jour suffisent pour retenir ce que vous apprenez. Après chaque carte, vous dites seulement si vous la saviez : Raté ou Réussi."
+
+#: data/io.github.rsmirke.Rappel.metainfo.xml.in
+msgid "Cards are written in Markdown, with formulas, images and sound. Everything stays on your computer: Rappel never goes online and needs no account."
+msgstr "Les cartes s’écrivent en Markdown, avec des formules, des images et du son. Tout reste sur votre ordinateur : Rappel ne se connecte jamais à Internet et ne demande aucun compte."
+
+#: data/io.github.rsmirke.Rappel.metainfo.xml.in
+msgid "Two answers only, scheduled by FSRS, a modern model of memory"
+msgstr "Deux réponses seulement, planifiées par FSRS, un modèle moderne de la mémoire"
+
+#: data/io.github.rsmirke.Rappel.metainfo.xml.in
+msgid "Formulas drawn as in LaTeX"
+msgstr "Formules dessinées comme en LaTeX"
+
+#: data/io.github.rsmirke.Rappel.metainfo.xml.in
+msgid "Pictures and sound on cards"
+msgstr "Images et sons sur les cartes"
+
+#: data/io.github.rsmirke.Rappel.metainfo.xml.in
+msgid "Search, tags and statistics"
+msgstr "Recherche, étiquettes et statistiques"
+
+#: data/io.github.rsmirke.Rappel.metainfo.xml.in
+msgid "Automatic backups, and export to a single file"
+msgstr "Sauvegardes automatiques et export dans un seul fichier"
+
+#: data/io.github.rsmirke.Rappel.metainfo.xml.in
+msgid "Works on phones and with the keyboard alone"
+msgstr "Fonctionne sur téléphone et au clavier seul"
+
+#: data/io.github.rsmirke.Rappel.metainfo.xml.in
+msgid "Study a card, then say whether you knew it"
+msgstr "Étudiez une carte, puis dites si vous la saviez"
+
+#: data/io.github.rsmirke.Rappel.metainfo.xml.in
+msgid "Your decks with the cards due today"
+msgstr "Vos paquets et les cartes à revoir aujourd’hui"
+
+#: data/io.github.rsmirke.Rappel.metainfo.xml.in
+msgid "Write cards in Markdown with a live preview"
+msgstr "Écrivez vos cartes en Markdown avec un aperçu en direct"
+
+#: data/io.github.rsmirke.Rappel.metainfo.xml.in
+msgid "See how much you studied and how well you remember"
+msgstr "Voyez combien vous avez étudié et ce que vous retenez"
+
+#: data/io.github.rsmirke.Rappel.metainfo.xml.in
+msgid "Pictures on cards, on a phone"
+msgstr "Des images sur les cartes, sur un téléphone"

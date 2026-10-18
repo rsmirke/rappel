@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Copyright 2026 Robert Smirke -->
+<!-- A draft for packaging (ADR 0060): checked by the tests, not installed yet. -->
+<component type="desktop-application">
+  <id>io.github.rsmirke.Rappel</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+
+  <name>Rappel</name>
+  <!-- Translators: The app's summary in software stores, at most 35 characters. -->
+  <summary>Memorize with flashcards</summary>
+  <developer id="io.github.rsmirke">
+    <name translate="no">Robert Smirke</name>
+  </developer>
+
+  <description>
+    <p>Rappel shows each card again just before you would forget it, so a few minutes a day are enough to remember what you learn. After each card you only say whether you knew it: Fail or Pass.</p>
+    <p>Cards are written in Markdown, with formulas, images and sound. Everything stays on your computer: Rappel never goes online and needs no account.</p>
+    <ul>
+      <li>Two answers only, scheduled by FSRS, a modern model of memory</li>
+      <li>Formulas drawn as in LaTeX</li>
+      <li>Pictures and sound on cards</li>
+      <li>Search, tags and statistics</li>
+      <li>Automatic backups, and export to a single file</li>
+      <li>Works on phones and with the keyboard alone</li>
+    </ul>
+  </description>
+
+  <launchable type="desktop-id">io.github.rsmirke.Rappel.desktop</launchable>
+  <provides>
+    <binary>rappel</binary>
+  </provides>
+  <translation type="gettext">rappel</translation>
+
+  <url type="homepage">https://github.com/rsmirke/rappel</url>
+  <url type="bugtracker">https://github.com/rsmirke/rappel/issues</url>
+  <url type="vcs-browser">https://github.com/rsmirke/rappel</url>
+
+  <!-- No network, no sharing, no ads, no purchases: nothing to rate. -->
+  <content_rating type="oars-1.1"/>
+
+  <requires>
+    <display_length compare="ge">360</display_length>
+  </requires>
+  <supports>
+    <control>keyboard</control>
+    <control>pointing</control>
+    <control>touch</control>
+  </supports>
+
+  <branding>
+    <color type="primary" scheme_preference="light">#99c1f1</color>
+    <color type="primary" scheme_preference="dark">#1a5fb4</color>
+  </branding>
+
+  <screenshots>
+    <screenshot type="default">
+      <image>https://raw.githubusercontent.com/rsmirke/rappel/main/data/screenshots/review.png</image>
+      <caption>Study a card, then say whether you knew it</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://raw.githubusercontent.com/rsmirke/rappel/main/data/screenshots/decks.png</image>
+      <caption>Your decks with the cards due today</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://raw.githubusercontent.com/rsmirke/rappel/main/data/screenshots/editor.png</image>
+      <caption>Write cards in Markdown with a live preview</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://raw.githubusercontent.com/rsmirke/rappel/main/data/screenshots/statistics.png</image>
+      <caption>See how much you studied and how well you remember</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://raw.githubusercontent.com/rsmirke/rappel/main/data/screenshots/phone.png</image>
+      <caption>Pictures on cards, on a phone</caption>
+    </screenshot>
+  </screenshots>
+
+  <!-- Newest first, one per version of CHANGELOG.md (a test checks).
+       A pre-release is written with "~" (0.2.0~beta.1), which AppStream
+       sorts before 0.2.0; the notes are not translated (ADR 0060). -->
+  <releases>
+    <release version="0.2.0~beta.1" date="2026-10-18" type="development">
+      <description translate="no">
+        <p>All Cards finds any card and changes many at once, with Undo. New statistics, card information, a keyboard shortcuts window and an About window. Cards can be suspended or deleted during a session.</p>
+      </description>
+    </release>
+    <release version="0.2.0~alpha.3" date="2026-10-17" type="development">
+      <description translate="no">
+        <p>Undo your last answers while studying, and reset a card's progress. Preferences for the daily limits and the desired retention, a Markdown editor with a live preview, and formulas drawn as in LaTeX.</p>
+      </description>
+    </release>
+    <release version="0.2.0~alpha.1" date="2026-10-16" type="development">
+      <description translate="no">
+        <p>Cards was renamed Rappel. Cards are written in Markdown, can be edited while studying, and everything can be exported to one file and imported again.</p>
+      </description>
+    </release>
+    <release version="0.1.0" date="2026-10-15">
+      <description translate="no">
+        <p>The first release: decks, plain-text cards and studying with Fail and Pass on an FSRS schedule, with automatic backups.</p>
+      </description>
+    </release>
+  </releases>
+</component>

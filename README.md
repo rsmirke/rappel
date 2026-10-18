@@ -28,6 +28,9 @@ You need:
 - `blueprint-compiler` and `glib-compile-resources` (from GLib) on your `PATH`
 - for the tests, the C library's locale sources, from which a test makes a French locale
   (Debian/Ubuntu: `locales`; Fedora: `glibc-locale-source`)
+- for the tests, the validators of the desktop integration drafts, `appstreamcli` and
+  `desktop-file-validate` (Debian/Ubuntu: `appstream desktop-file-utils`;
+  Fedora: `appstream desktop-file-utils`)
 - [`cargo-deny`](https://github.com/EmbarkStudios/cargo-deny) for the quality gate (`cargo install cargo-deny`)
 
 ```sh
@@ -51,7 +54,7 @@ cargo run -p rappel-core --example fill_scratch_db -- /tmp/rappel-scratch 60 --d
 RAPPEL_DATA_DIR=/tmp/rappel-scratch cargo run -p rappel
 ```
 
-Add `--markdown` for a deck with one card per Markdown construct, and `--math` for a deck with 15 formulas, one per card, plus a card with invalid LaTeX (`… fill_scratch_db -- /tmp/rappel-md 0 --markdown --math` adds only those two decks).
+Add `--markdown` for a deck with one card per Markdown construct, and `--math` for a deck with 15 formulas, one per card, plus a card with invalid LaTeX (`… fill_scratch_db -- /tmp/rappel-md 0 --markdown --math` adds only those two decks). `--demo` adds six decks that look like a real collection, with a month of history (the store screenshots use it).
 
 ## Translations
 
@@ -69,6 +72,20 @@ Rappel uses gettext, laid out as GNOME projects are (ADR 0059): `po/LINGUAS` lis
   ```
   The gate fails while a string is unmarked, the template is out of date, or a catalog misses a message, keeps one fuzzy, or changes its placeholders.
 - **Add a language**: copy `po/rappel.pot` to `po/<lang>.po`, fill in its header (`Language:` and `Plural-Forms:`), translate every entry, then add its code to `po/LINGUAS`. A language cannot land partly translated: once it is in `LINGUAS`, the gate refuses its catalog while any message is missing, empty or fuzzy, so finish the translation before listing it.
+
+## Desktop integration
+
+Drafts of the files that make Rappel look like a GNOME app once installed are in [`data/`](data/) (ADR 0060): the desktop entry (`io.github.rsmirke.Rappel.desktop.in`), the AppStream metainfo for software stores (`io.github.rsmirke.Rappel.metainfo.xml.in`: description, releases, content rating, screenshots), **placeholder** icons in `data/icons/` (to be replaced by a designed icon before 1.0), and the store screenshots in `data/screenshots/`. Nothing installs them yet: packaging (a Meson build that merges their translations and installs them, and a Flatpak manifest, which a person writes for Flathub) comes in a later phase.
+
+- **Validate them**: the gate does (`cargo test -p rappel desktop_files`), with `desktop-file-validate` and `appstreamcli validate --no-net --pedantic`, in English and with the French translation merged in. Their texts are in `po/rappel.pot` like the app's.
+- **A new release** needs its `<release>` in the metainfo (newest first, a pre-release written `0.3.0~beta.1`); the gate fails while `CHANGELOG.md` has a version the metainfo lacks.
+- **Retake the store screenshots** after a visible change (light style, GNOME's window buttons and accent, 1000 × 700 and a phone at 360 × 640):
+  ```sh
+  cargo run -p rappel-core --example fill_scratch_db -- $PWD/target/tmp/demo 0 --demo
+  scripts/screenshot.py --out store --size 1000x700 --data target/tmp/demo \
+      --env ADW_DEBUG_ACCENT_COLOR=blue --decoration-layout :close --steps "wait:6 shot:decks"
+  ```
+  then copy the shots from `docs/briefs/screenshots/` to `data/screenshots/` (`convert … -strip` keeps them small). The harness has no compositor, so the windows have no shadow; for a Flathub submission, retake them on GNOME with Alt+Print.
 
 ## Recovering your data
 
