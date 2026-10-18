@@ -1,0 +1,78 @@
+# 58. Phone and touch: an audit at 360 × 640 and 640 × 360, touch-sized controls, nothing hover-only, the focused field kept above the keyboard
+
+- Status: Accepted
+- Date: 2026-10-18
+- Amends: ADR 0043 (the tag entry's pills: touch-sized, names never cut; the narrow editor's preview takes the keys), ADR 0045 (the review page scrolls to the answer; images are capped by the card's own view), ADR 0046 (Statistics' empty state), ADR 0052 (the startup pages on a short window), ADR 0057 (the clean-up toast)
+- Refers to: SPEC §1 principle 6, §4.8 ("Phase 2, phone and touch"); `docs/briefs/phase-2.md` (slice 6)
+
+## Context
+
+SPEC §1 asks for an app usable from a 360 px phone to a desktop, touch-friendly and ready for mobile Linux; §4.8 asks for an audit of every screen at 360 px, touch targets of at least 44 px for primary targets, no hover-only actions and grade buttons large enough for a thumb. The brief adds: everything usable at 360 × 640 portrait and 640 × 360 landscape, no swipe-to-grade, the on-screen keyboard never covering the focused field, and bottom sheets where the HIG suggests them. Several problems were known from earlier slices (tag pills' 24 px remove buttons, tooltip-only tag names, the narrow preview that the keyboard could not scroll, long toasts cut with "…" at 360 px, a suggested-action pill used to go back).
+
+## How the audit was done
+
+Every screen was shot with the harness (`scripts/screenshot.py`, private Xvfb, keys and clicks through XTest) at 360 × 640 and 640 × 360, light and dark, and the larger screens at 1000 × 720 too, then looked at one by one. Screenshots are in `docs/briefs/screenshots/` with the prefix `s6-` (git-ignored). The harness got a `resize:W,H` step that resizes the app's window as an on-screen keyboard does on a phone (Phosh and other mobile compositors shrink the toplevel when the keyboard opens); 360 × 300 stands for a phone with its keyboard up.
+
+**Sizes used.** libadwaita 1.10's own stylesheet (extracted from `libadwaita-1.so` with `gresource`; its C source is not on this system) was read for the concrete numbers: a button is 24 px of content plus 5 px padding (34 px), a circular button 34 × 34 px, a pill button 24 + 2 × 10 = 44 px tall, an entry 34 px, a boxed-list row at least 50 px, a menu item 32 px. The GNOME HIG gives no pixel figure; it asks for libadwaita's widgets at their own sizes, which GNOME's phone apps use. So: **primary touch targets are at least 44 px** (grade buttons and Show Answer 48 px, Study and the empty states' pills 44 px, list rows 50 px or more), and secondary controls (header bar buttons, a row's ⋮ menu, the editor's Insert buttons, the audio play button) keep libadwaita's 34 px. No custom size was invented except where a widget was below libadwaita's own (the tag pills).
+
+## Decision
+
+**Touch targets.** A removable tag pill (the card editor's and Add Tags' tag field) is now libadwaita's flat circular button (34 px) in a pill as tall (`.tag-pill.removable` in `style.css`; its old 24 px override is gone). The other controls already used libadwaita's sizes; the audit found none smaller.
+
+**Nothing hover-only.** A removable pill shows its whole name: the label is no longer cut at 16 characters but asks for its whole width (`max-width-chars` 80, `natural-wrap-mode: none`) in an `AdwWrapBox` with `wrap-policy: natural` ("wrap to the next line as soon as the previous line cannot fit any more children without shrinking them past their natural size", AdwWrapPolicy docs), and wraps only when wider than the field. A list row's single-line pills keep "+N" and their cut names (a row is one 50 px target that opens the card; a second button inside it would be an 18 px target competing with the row, which the HIG's one-action rows avoid), and **Card Information gets a Tags row** naming every tag (at most 200, then "and N more"), reached by a tap from the row's ⋮ menu or the review page's Card Menu, and by keyboard (I). The editor shows them all too. The other tooltips are icon-button names (as the HIG has them, with accessible labels) or repeat what is on screen; a link's URL is a tooltip on the review page and is in the card's source in the editor; the suspended row's pause icon is also said by its menu (Unsuspend) and its accessible label. Accepted.
+
+**No swipe-to-grade.** Nothing on the review page grades or reveals by a gesture. A test (`no_gesture_on_the_review_page_can_grade`) walks the page's widgets, front and back shown, with an image and an audio link, and fails on any swipe, drag, pan or long-press gesture that is not GTK's own (a scrolled window's kinetic scrolling, a scrollbar, the header's window handle, Back's long-press history). `AdwNavigationView`'s swipe back stays: it only leaves the page, as Back does (HIG).
+
+**The on-screen keyboard never covers the focused field** (`ui::scroll`). GTK scrolls to a widget only when the focus *moves* (`GtkViewport:scroll-to-focus`, TRUE since GTK 4.6.2, "whether to scroll when the focus changes", `gtk/gtkviewport.c`; a `GtkScrolledWindow` wraps a non-scrollable child in a viewport, `gtk_scrolled_window_set_child`). When the keyboard opens the focus stays put, so before this slice the card editor's tag field ended under the keyboard (`s6-before-osk-*-after.png`). `ui::scroll::install`, called once by the window, connects to the window surface's `layout` signal ("emitted when the size of surface is changed") and on the next two frames (`gtk_widget_add_tick_callback`; the widgets are allocated at the new size in the frame that reported it) runs `bring_focus_into_view`: going out from the focus, a text view that is its scrolled window's child keeps its cursor in view (`gtk_text_view_scroll_mark_onscreen`, "the minimum distance such that mark is contained within the visible area"), and every scrolled window around shows what it holds of the focus (the focused widget, or the inner scrolled window) by the least scroll, with 6 px for the focus ring (`scroll_delta`, pure and tested: none if in view; a widget taller than the view shows its start). Dialogs are inside the window (`AdwDialog`), so this covers the editor, Preferences, Add Tags and the deck name dialog. Tested with GTK: a focused entry at the bottom of a form, and a text view's cursor and frame, stay in view when the view gets shorter; and in the harness at 360 × 300 (`s6-osk-*`, `s6-d-addtags-*-osk.png`, `s6-d-deckname-*-osk.png`).
+
+**Bottom sheets.** Every dialog is an `AdwDialog` (the card editor, Card Information, the full-size image, Preferences, About, Keyboard Shortcuts) or an `AdwAlertDialog` (questions, Add Tags, Move, the deck name); none is a `GtkWindow` (only tests make windows). libadwaita presents an `AdwDialog` as a bottom sheet on a narrow window; the shots show it at 360 × 640. Alerts float centred, as the HIG has them. `AdwBottomSheet` (a persistent sheet) fits nothing here: the HIG suggests it for a persistent secondary view (a music player's now playing), which Rappel has not. File choosers are `GtkFileDialog` (the portal on a phone).
+
+**Short windows (640 × 360, or the keyboard up).**
+- The review page scrolls the card to the answer at the reveal when less than 96 px of it (or half the view) would be in view (`answer_scroll`, pure; on the second frame after the reveal, once the answer is laid out). A tall front on a phone held sideways otherwise showed Fail and Pass with no answer on screen. Images are capped at 60 % of the card's own view (between the header and the buttons) rather than of the whole page, so a tall image leaves the text in view.
+- The startup problem pages (recovery, "too new", "could not start") become `compact` without their icons under 450 sp of height, as the setting page did (ADR 0052): each in an `AdwBreakpointBin` of its own (a breakpoint on the window would check the whole content against the window's minimum, which logged warnings in the harness's undecorated window). `ui::breakpoint::compact_status_page` is now shared by these, the setting page and the review summary.
+- The empty states (No Decks Yet, No Cards Yet, No Statistics Yet, All Cards') become `compact` without their icon under 400 sp of their own height (All Cards keeps its icon, which changes with the state: `ui::breakpoint::compact_when`), so the button stays on screen sideways and with the keyboard up.
+- The bottom bars (Study, Show Answer / Fail / Pass, Edit / Preview, All Cards' action bar) were checked at 640 × 360: each leaves the content at least two list rows or the card's start. The review page's key hints already hide under 400 sp (ADR 0045).
+
+**The narrow editor's preview takes the keys.** Its content is focusable (a group named "Preview", with a focus ring like the charts'). Up / Down, Page Up / Page Down, Space, Home and End scroll it while the focus is in it, or while it is the only pane (narrow, Preview; Alt+P leaves the focus on the toggle), through `GtkScrolledWindow`'s own `scroll-child` keybinding signal (`layout::scroll_key`, pure and tested; never with Ctrl, Alt or Super). Switching from the text to the preview puts the focus on the preview; back to the text, on the front (`layout::focus_after`).
+
+**Toasts are short** (`ui::toast::toast_text`). At 360 px a toast title shows about 34 characters beside its close button and about 24 beside a button too (measured on the harness's shots; libadwaita ellipsizes the title). A longer text is never put whole in the title: the toast shows its first clause (up to ". ", ": ", "; " or ", ") when that fits, else "Something went wrong", with a **Details** button that opens an alert with the whole text (the first sentence as its heading). Such a toast stays until dismissed, so the button can be reached. This covers every error toast at once (they end in the error's own text), the recovery toasts with their paths ("Backup restored" / "Restore finished" / "Started fresh" + Details), the export ("Export done" or "Media files left out" + Details), the import ("Import done", "Nothing was imported", "Cannot import this file", "Cannot check the file", "The file changed" + Details), the start-up warnings ("Daily backup failed", "Backups not tidied") and the setting reset ("Setting reset", "Setting not changed"); tests check that each of these has its own title, not the fallback. Undo toasts cannot have a second button, so their texts are short: "12 files moved to trash" (Clean Up Media; the size was in the question, and the row counts again) and "1,000 cards reset" (All Cards). An Undo toast that names a deck or tag the user just chose ("3 cards moved to …") may cut that name at 360 px; accepted, as the list shows the result.
+
+**Statistics' empty state** uses a plain pill for Back to Decks / Back to Deck: going back is navigation, not the action the page suggests (`suggested-action` is for that).
+
+**Kept as they were.** After a startup problem page, the window keeps its startup size (ADR 0052): resizing a window the user already sees is not done, and a phone's compositor sizes the window anyway. Images smaller than 44 px are smaller targets; opening one at full size shows the same pixels (never scaled up), so nothing is lost.
+
+## Audit
+
+Sizes: P = 360 × 640, L = 640 × 360, both in light and dark; K = 360 × 300 (keyboard up).
+
+| Screen | Size | Finding | Fix |
+|---|---|---|---|
+| Deck list (full, empty) | P, L | Full: fits; rows 50 px+. Empty sideways: the 128 px icon pushes Create Deck to the bottom edge. | Empty state compact without its icon on a short view. |
+| Deck page (cards, empty, menus) | P, L | Fits; Study in a 44 px bottom pill at P; the deck name is cut with "…" in the header at P (the full name is the page's own). Empty sideways: as the deck list. | Empty state compact. |
+| Review: front, back, images, audio, card menu | P, L | Grade buttons and Show Answer 48 px; no gesture grades. L: a tall image or front left the answer below the view after the reveal; images were capped by the whole page's height. | Scroll to the answer at the reveal; cap images by the card's view; test of no swipe. |
+| Review summary | P, L | Fits (compact on short windows since ADR 0045). | — |
+| Full-size image | P, L | A bottom sheet at P; Escape closes it; the focus goes back to the image. | — |
+| Card editor: wide, narrow Edit / Preview | P, L, K | Tag pills' remove buttons 24 px; long tag names cut with a tooltip only; in Preview the keyboard could not scroll; with the keyboard up the focused tag field was hidden. L: the text fields scroll in the dialog (acceptable). | 34 px pills and buttons, whole names; preview focusable and scrolled by the keys; `ui::scroll`. |
+| Tag suggestions | P, 1000 | Opens above the field when there is no room below; no empty space under its last row (not reproduced). | — |
+| Insert Image / Audio | P | `GtkFileDialog` (the portal's chooser on a phone). | — |
+| All Cards: search, filters, selection, action bar | P, L | Fits; the action bar's buttons lose their words under 500 sp (ADR 0044). L: about two rows between the bars, usable. Empty sideways: icon pushes the button down. | Empty state compact. |
+| Add Tags / Move / Remove Tag | P, K | Alerts, centred; Add Tags' long name wraps in its pill; with the keyboard up the field stays in view. | (pills, `ui::scroll`) |
+| Deck name dialog | P, L, K | Fits; stays usable with the keyboard up. | — |
+| Statistics (charts, empty) | P, L | Charts scroll; empty state used a suggested-action pill to go back; sideways its icon pushed the button down. | Plain pill; compact. |
+| Card Information | P, L | A bottom sheet at P; tags were nowhere in full on a touch screen. | Tags row. |
+| Preferences (all groups, Clean Up Media) | P, L | Fits; after Clean Up the focus jumped to the first row (the button turned insensitive under it). | The focus goes to the Clean Up Media row. |
+| Keyboard Shortcuts, About | P, L | libadwaita's own dialogs; fit. | — |
+| Import / export dialogs and toasts | P | Long toasts cut with "…" (export with missing media, import file changed, refused file, errors). | Short titles + Details. |
+| Clean-up toast | P | "Moved 3 files (356.4 kB) to …" cut beside Undo. | "3 files moved to trash". |
+| Recovery, setting, too new, could not start | P, L | L: the icon took the screen; the backups, the text or the button needed scrolling (setting page was already compact). Recovery toasts with paths cut. | Compact without icons on short windows; toast titles + Details. |
+
+### Untrusted input
+
+Nothing new reads untrusted input. Tag names in the Card Information row are plain text in a label without markup, each in a bidi isolate; toast details are an alert's body with markup off.
+
+## Consequences
+
+- New: `ui::scroll` (installed by the window), `ui::toast::toast_text` / `titled` / `ToastText` with `TOAST_FITS`, `TOAST_FITS_WITH_BUTTON` and `FALLBACK_TITLE`, `ui::breakpoint::compact_status_page` and `compact_when`, the editor's `layout::scroll_key` and `Target::Preview` / `Place::Preview`, the review page's `answer_scroll`, Card Information's `tags_text`, and the harness's `resize:W,H`.
+- Long toasts need a tap on Details to be read in full, on a desktop too; their titles are always whole.
+- A test fix: `ui::dropdown`'s popup test waits for its window to map before opening the popup; under load it could open it too early (seen while this slice's tests ran). The new GTK tests keep their windows inside Xvfb's default screen and wait for them to unmap.
+- Not done: the startup window size after a problem page (above), a "+N" button in list rows (above).
