@@ -189,7 +189,8 @@ fn popup_factory(dropdown: &gtk::DropDown) -> gtk::SignalListItemFactory {
             .and_downcast::<gtk::Label>()
             && let Some(string) = item.item().and_downcast::<gtk::StringObject>()
         {
-            set_popup_text(&label, &string.string());
+            // One line: an entry's own line breaks would wrap it anyway.
+            set_popup_text(&label, &crate::ui::text::one_line(&string.string()));
         }
     });
     factory

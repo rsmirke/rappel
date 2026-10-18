@@ -103,6 +103,9 @@ mod imp {
         pub split_queued: Cell<bool>,
         /// The tags could not be read: the field is disabled and says so.
         pub unavailable: Cell<bool>,
+        /// How many tags the card had when they were set, for its limit
+        /// (`field::tag_limit`).
+        pub loaded: Cell<usize>,
         pub on_changed: RefCell<Option<Callback<OnChanged>>>,
     }
 
@@ -199,6 +202,7 @@ impl TagEntry {
         self.close_suggestions();
         imp.unavailable.set(false);
         imp.frame.set_sensitive(true);
+        imp.loaded.set(names.len());
         imp.names.replace(names.to_vec());
         self.refresh_pills();
         self.fill_text("");
@@ -231,7 +235,7 @@ impl TagEntry {
                 error: None,
             };
         }
-        field::check(&imp.names.borrow(), &self.text().text())
+        field::check(&imp.names.borrow(), &self.text().text(), self.limit())
     }
 
     /// The tags shown as pills.
@@ -507,7 +511,7 @@ impl TagEntry {
     fn split(&self, whole: bool) {
         let imp = self.imp();
         let text = self.text().text();
-        let split = field::split_typed(&imp.names.borrow(), &text, whole);
+        let split = field::split_typed(&imp.names.borrow(), &text, whole, self.limit());
         if split.add.is_empty() && split.rest == text.as_str() {
             return;
         }
@@ -521,6 +525,11 @@ impl TagEntry {
         self.fill_text(&split.rest);
         self.update_error();
         self.emit_changed();
+    }
+
+    /// The most tags this field lets the card have (`field::tag_limit`).
+    fn limit(&self) -> usize {
+        field::tag_limit(self.imp().loaded.get())
     }
 
     /// Puts `text` in the field with the cursor at its end, without it
@@ -730,6 +739,13 @@ impl TagEntry {
         let Some(tag) = imp.suggested.borrow().get(index).cloned() else {
             return;
         };
+        // At the limit a suggestion is no more a tag than a typed name: the
+        // text stays, with the error under the field.
+        if imp.names.borrow().len() >= self.limit() {
+            self.close_suggestions();
+            self.update_error();
+            return;
+        }
         let text = self.text();
         let typed_text = text.text();
         let cursor = usize::try_from(text.position()).unwrap_or(0);
@@ -935,6 +951,39 @@ mod tests {
             crate::testing::print_timing("tag entry: a key after them", key);
             crate::testing::assert_cpu_within(paste, Duration::from_secs(1), "paste");
             crate::testing::assert_cpu_within(key, Duration::from_millis(500), "key");
+        });
+    }
+
+    #[test]
+    fn a_suggestion_is_refused_at_the_limit_and_room_comes_back_after_removing() {
+        crate::testing::with_widgets(|| {
+            let entry = TagEntry::default();
+            entry.set_all_tags(vec![Tag {
+                id: "id".to_owned(),
+                name: "Algèbre".to_owned(),
+            }]);
+            let full: Vec<String> = (0..field::MAX_TAGS_PER_CARD)
+                .map(|i| format!("tag {i}"))
+                .collect();
+            entry.set_tags(&full);
+            entry.type_text("alg");
+            assert_eq!(entry.suggest_for_test().len(), 1);
+            entry.accept_suggestion(0);
+            assert_eq!(entry.pill_names().len(), field::MAX_TAGS_PER_CARD);
+            assert_eq!(entry.typed(), "alg");
+            assert_eq!(
+                entry.shown_error().as_deref(),
+                Some("A card can have at most 100 tags")
+            );
+            // A card imported with 150: removing 30 leaves room for 30.
+            let imported: Vec<String> = (0..150).map(|i| format!("tag {i}")).collect();
+            entry.set_tags(&imported);
+            for _ in 0..30 {
+                entry.remove_for_test(0);
+            }
+            entry.type_text("new,");
+            assert_eq!(entry.pill_names().len(), 121);
+            assert_eq!(entry.shown_error(), None);
         });
     }
 

@@ -112,32 +112,34 @@ enum Unread {
 }
 
 /// The file's bytes, if it is a regular file of at most
-/// [`MAX_FILE_BYTES`]. The file is untrusted (ADR 0050, row 33): a symbolic
-/// link is not followed, and a pipe, a device or a folder is never opened,
-/// so reading can neither block nor run on without end. The checks are made
-/// before opening, on the name, and again on the open file, with its read
-/// cut one byte past the limit. A file swapped in between the two can only
-/// be another regular file of the user's, as for an import (ADR 0025,
-/// row 6).
+/// [`MAX_FILE_BYTES`]. The file is untrusted (ADR 0050, row 33). It is
+/// opened with `O_NOFOLLOW`, so a symbolic link is refused (`ELOOP`) rather
+/// than followed, and `O_NONBLOCK`, so opening a pipe returns at once
+/// instead of waiting for a writer (open(2)). What was opened is then
+/// checked on the open file itself, so there is no gap between a check and
+/// the open: anything but a regular file (a pipe, a device, a folder) is
+/// refused before a byte is read, and the read stops one byte past the
+/// limit. `O_NONBLOCK` changes nothing for a regular file.
 fn read_bounded(path: &Path) -> Result<Vec<u8>, Unread> {
+    use std::os::unix::fs::OpenOptionsExt;
     let refuse = |what: &str| Unread::Refused(what.to_owned());
-    let meta = match std::fs::symlink_metadata(path) {
-        Ok(meta) => meta,
+    let file = match std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+    {
+        Ok(file) => file,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Err(Unread::Missing),
         Err(err) => return Err(Unread::Refused(err.to_string())),
     };
+    let meta = file
+        .metadata()
+        .map_err(|err| Unread::Refused(err.to_string()))?;
     if !meta.file_type().is_file() {
         return Err(refuse("not a regular file"));
     }
     if meta.len() > MAX_FILE_BYTES {
         return Err(refuse("too large"));
-    }
-    let file = std::fs::File::open(path).map_err(|err| Unread::Refused(err.to_string()))?;
-    let open = file
-        .metadata()
-        .map_err(|err| Unread::Refused(err.to_string()))?;
-    if !open.file_type().is_file() {
-        return Err(refuse("not a regular file"));
     }
     let mut bytes = Vec::new();
     file.take(MAX_FILE_BYTES + 1)

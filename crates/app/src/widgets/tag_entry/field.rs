@@ -28,6 +28,14 @@ pub const MAX_SUGGESTIONS: usize = 8;
 /// past the limit stays in the text, with an error under the field.
 pub const MAX_TAGS_PER_CARD: usize = 100;
 
+/// The most tags the field lets a card have, which had `loaded` tags when
+/// the editor opened: [`MAX_TAGS_PER_CARD`], or `loaded` if more (a card
+/// imported with more keeps them, and removing some leaves room up to what
+/// it had).
+pub fn tag_limit(loaded: usize) -> usize {
+    loaded.max(MAX_TAGS_PER_CARD)
+}
+
 /// The name being typed: the piece of `text` between the commas around
 /// `cursor` (a character offset), without the spaces at its ends, as a byte
 /// range of `text`. Empty (and placed at the cursor) when the piece is blank.
@@ -141,7 +149,7 @@ pub struct Split {
 /// under the field can say what to fix; nothing is lost. Splitting what is
 /// left again changes nothing, so this can run on every change. Linear in
 /// the text: the names seen are kept in a set.
-pub fn split_typed(pills: &[String], text: &str, whole: bool) -> Split {
+pub fn split_typed(pills: &[String], text: &str, whole: bool, limit: usize) -> Split {
     let mut pieces: Vec<&str> = text.split(',').collect();
     let last = if whole { None } else { pieces.pop() };
     let mut keys: HashSet<String> = pills.iter().map(|p| name_key(p)).collect();
@@ -159,7 +167,7 @@ pub fn split_typed(pills: &[String], text: &str, whole: bool) -> Split {
         if keys.contains(&key) {
             continue;
         }
-        if keys.len() >= MAX_TAGS_PER_CARD {
+        if keys.len() >= limit {
             kept.push(piece);
             continue;
         }
@@ -188,17 +196,15 @@ pub struct TagsCheck {
 /// without a comma or Enter is not lost). The names are merged by
 /// [`name_key`], keeping the first spelling. The pills were checked when
 /// they were made, so an error is about the typed text: "this tag". The
-/// typed text may not take the card past [`MAX_TAGS_PER_CARD`], or past the
-/// pills it has if it has more (a card imported with more tags still saves
-/// as it is).
-pub fn check(pills: &[String], typed: &str) -> TagsCheck {
+/// typed text may not take the card past `limit` ([`tag_limit`]).
+pub fn check(pills: &[String], typed: &str, limit: usize) -> TagsCheck {
     let mut text = pills.join(",");
     if !pills.is_empty() {
         text.push(',');
     }
     text.push_str(typed);
     match parse_tag_field(&text) {
-        Ok(names) if names.len() > pills.len().max(MAX_TAGS_PER_CARD) => TagsCheck {
+        Ok(names) if names.len() > limit => TagsCheck {
             names: Vec::new(),
             error: Some(too_many_text()),
         },
@@ -211,7 +217,8 @@ pub fn check(pills: &[String], typed: &str) -> TagsCheck {
 }
 
 /// The error under the field when the typed names would take the card past
-/// [`MAX_TAGS_PER_CARD`].
+/// its limit. It names [`MAX_TAGS_PER_CARD`]: a card over it came so from an
+/// import, and gets no more.
 fn too_many_text() -> String {
     format!(
         "A card can have at most {} tags",
@@ -249,6 +256,16 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+
+    /// [`super::split_typed`] for a card loaded with `pills`.
+    fn split_typed(pills: &[String], text: &str, whole: bool) -> Split {
+        super::split_typed(pills, text, whole, tag_limit(pills.len()))
+    }
+
+    /// [`super::check`] for a card loaded with `pills`.
+    fn check(pills: &[String], typed: &str) -> TagsCheck {
+        super::check(pills, typed, tag_limit(pills.len()))
+    }
 
     fn tag(name: &str) -> Tag {
         Tag {
@@ -544,9 +561,20 @@ mod tests {
         assert_eq!(kept.names.len(), 150);
         assert!(check(&pills, "new").error.is_some());
         assert_eq!(split_typed(&pills, "new,", false).add, Vec::<String>::new());
-        // Removing some does not make room past the limit either.
-        assert!(check(&pills[..120], "new").error.is_some());
-        assert_eq!(check(&pills[..99], "new").error, None);
+        // Removing some makes room up to what the card had, never past it.
+        let limit = tag_limit(pills.len());
+        assert_eq!(super::check(&pills[..120], "new", limit).error, None);
+        assert_eq!(
+            super::split_typed(&pills[..120], "new,", false, limit).add,
+            ["new"]
+        );
+        assert!(super::check(&pills, "new", limit).error.is_some());
+        assert_eq!(super::check(&pills[..99], "new", tag_limit(0)).error, None);
+        assert!(
+            super::check(&pills[..100], "new", tag_limit(0))
+                .error
+                .is_some()
+        );
     }
 
     #[test]
