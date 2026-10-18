@@ -3,20 +3,26 @@
 //!
 //! A `.rappel` file is a zip archive with exactly two entries: `cards.json`
 //! (decks, cards, tags, the review log with its resets and undos, deleted
-//! rows included, and the settings) and an empty `media/` directory. The same database exported at the same time always
-//! gives the same bytes.
+//! rows included, and the settings) and an empty `media/` directory. The
+//! same database exported at the same time always gives the same bytes.
 //!
 //! Import is two steps. [`Store::plan_import`](crate::storage::Store::plan_import)
 //! reads and checks the file and compares it with the database without
 //! writing anything; [`Store::apply_import`](crate::storage::Store::apply_import)
-//! backs the database up, then adds the new rows and brings back deleted
-//! rows that are live in the file, in one transaction. The
-//! file is untrusted: anything unexpected refuses the whole import.
+//! backs the database up, then reads the file again and adds the new rows
+//! and brings back deleted rows that are live in the file, in one
+//! transaction. Both read the file as a stream and keep only compact notes
+//! (ADR 0053). The file is untrusted: anything unexpected refuses the
+//! whole import.
 
 mod archive;
+mod engine;
 mod export;
 mod format;
 mod import;
+mod notes;
+mod source;
+mod stream;
 mod validate;
 
 use std::fmt;
@@ -182,19 +188,43 @@ impl ImportSummary {
 /// A checked file and how it compares with the database, from
 /// [`Store::plan_import`](crate::storage::Store::plan_import). Pass it to
 /// [`Store::apply_import`](crate::storage::Store::apply_import) to write.
+///
+/// It holds no content of the file, only where it is and what identifies
+/// it, so it stays small whatever the file holds (ADR 0053).
 #[derive(Clone)]
 pub struct ImportPlan {
-    document: format::Document,
-    /// The summary, and exactly which rows apply would write.
-    classified: import::Classified,
+    /// The file, read again by the apply.
+    source: source::Source,
+    /// The limits it was checked with.
+    limits: Limits,
+    /// Its size, time and identity when it was opened (none for bytes in
+    /// memory).
+    stamp: Option<source::Stamp>,
+    /// How it was read.
+    mode: Mode,
+    /// The SHA-256 of its `cards.json`.
+    sha256: [u8; 32],
+    /// The digest of every decision, in order: exactly which rows the
+    /// apply writes.
+    digest: [u8; 32],
+    summary: ImportSummary,
 }
 
-/// Only the summary: the document holds card text, which must not reach
-/// the logs (SPEC §2).
+/// How a file was read: in one pass (a file as an export writes it), or
+/// one step at a time (its keys in another order). The apply reads it the
+/// same way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    OnePass,
+    StepByStep,
+}
+
+/// Only the summary: the path is the user's, and nothing of the file is
+/// held (SPEC §2).
 impl fmt::Debug for ImportPlan {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ImportPlan")
-            .field("summary", &self.classified.summary)
+            .field("summary", &self.summary)
             .finish_non_exhaustive()
     }
 }
@@ -204,7 +234,7 @@ impl ImportPlan {
     /// already there, and the conflicts.
     #[must_use]
     pub fn summary(&self) -> &ImportSummary {
-        &self.classified.summary
+        &self.summary
     }
 }
 
@@ -250,6 +280,13 @@ pub enum ImportProblem {
     /// zip reader found).
     #[error("not a valid Rappel export: {0}")]
     InvalidArchive(String),
+    /// The archive's end record declares more entries than an import
+    /// reads (refused before the list of entries is read).
+    #[error("the archive has more than {limit} entries")]
+    TooManyEntries {
+        /// The limit.
+        limit: u64,
+    },
     /// The archive has an entry other than `cards.json` and `media/`, or
     /// one of them twice. The name is shown escaped and shortened.
     #[error("unexpected entry {0} in the archive")]
@@ -269,8 +306,9 @@ pub enum ImportProblem {
         /// The limit, in bytes.
         limit: u64,
     },
-    /// `cards.json` is not valid JSON or does not have the expected shape
-    /// (`0` is the parser's message, with line and column).
+    /// `cards.json` is not valid JSON, does not have the expected shape,
+    /// or has a string longer than any field can be (`0` says which, with
+    /// line and column).
     #[error("cards.json is malformed: {0}")]
     Json(String),
     /// The file was made by an early test version of Rappel (format
@@ -385,14 +423,24 @@ pub enum FieldProblem {
     OutOfRange,
 }
 
-/// Size limits for reading a file. The defaults are generous; tests lower
-/// them.
-#[derive(Debug, Clone, Copy)]
+/// Size limits for reading a file (ADR 0053). The defaults are generous;
+/// tests lower them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Limits {
-    /// The whole `.rappel` file.
+    /// The whole `.rappel` file. Never read whole: media make it large.
     pub archive: u64,
-    /// `cards.json`, decompressed.
+    /// Entries in the archive, from its end record.
+    pub entries: u64,
+    /// The archive's central directory (the list of entries), from its end
+    /// record: read into memory by the zip reader.
+    pub central_directory: u64,
+    /// `cards.json`, decompressed. Bounds the notes an import keeps.
     pub json: u64,
+    /// One image in `media/`, decompressed (SPEC §4.3; read by the media
+    /// import, phase 2, slice 2).
+    pub image: u64,
+    /// One audio file in `media/`, decompressed (SPEC §4.9; idem).
+    pub audio: u64,
     /// One card side.
     pub card_text: usize,
     /// One deck name.
@@ -404,8 +452,14 @@ pub(crate) struct Limits {
 impl Limits {
     /// The limits used by [`Store::plan_import`](crate::storage::Store::plan_import).
     pub(crate) const DEFAULT: Self = Self {
-        archive: 256 << 20,
+        archive: 2 << 30,
+        entries: 100_000,
+        // 100,000 central records with media names (about 122 bytes each)
+        // fit with room to spare.
+        central_directory: 16 << 20,
         json: 256 << 20,
+        image: 10_000_000,
+        audio: 20_000_000,
         card_text: crate::domain::MAX_CARD_SIDE_BYTES,
         deck_name: crate::domain::MAX_DECK_NAME_BYTES,
         tag_name: crate::domain::MAX_TAG_NAME_BYTES,

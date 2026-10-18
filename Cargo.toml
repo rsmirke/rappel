@@ -54,6 +54,11 @@ zip = { version = "9", default-features = false, features = ["deflate-flate2-zli
 # Export / import (rappel-core): the `cards.json` format.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Export / import (rappel-core, ADR 0053): SHA-256 of `cards.json` while it
+# streams, so `apply_import` knows the file is the one `plan_import` checked;
+# the media store (SPEC §4.3) names files by it. Already in the tree through
+# rust-embed (the app's KaTeX fonts). No default features: no OIDs needed.
+sha2 = { version = "0.11", default-features = false }
 
 # Card content (rappel-core, ADR 0019): CommonMark parser with tables,
 # strikethrough and math. No default features: they only add a CLI.
@@ -109,3 +114,8 @@ lto = "thin"
 # Never set `panic = "abort"` (here or in any profile): the app catches
 # panics inside RaTeX so that one hostile formula cannot close the window
 # (ADR 0023). `crates/app/src/main.rs` refuses to build with it.
+
+# SHA-256 runs over every byte an import reads (ADR 0053); unoptimized it
+# is many times slower, which the debug app and the tests would feel.
+[profile.dev.package.sha2]
+opt-level = 3

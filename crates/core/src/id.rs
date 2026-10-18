@@ -79,7 +79,7 @@ impl IdGen {
 }
 
 /// The lowercase hyphenated `UUIDv7` string of the 122-bit `value`.
-fn format_id(value: u128) -> String {
+pub(crate) fn format_id(value: u128) -> String {
     let ts = value >> RANDOM_BITS;
     let rand_a = (value >> RAND_B_BITS) & 0xfff;
     let rand_b = value & ((1 << RAND_B_BITS) - 1);
@@ -98,35 +98,55 @@ fn format_id(value: u128) -> String {
 /// Whether `id` is a lowercase hyphenated `UUIDv7` with the RFC 9562
 /// variant (`10`): the only ids whose string order equals the order
 /// [`IdGen`] compares them in (ADR 0008, #12). Ids from outside the app
-/// (an import) must pass this before they are stored.
+/// (an import) must pass this before they are stored ([`uuid_v7_value`]).
+#[cfg(test)]
 pub(crate) fn is_uuid_v7(id: &str) -> bool {
-    let bytes = id.as_bytes();
-    parse_id(id).is_some() && bytes[14] == b'7' && matches!(bytes[19], b'8' | b'9' | b'a' | b'b')
+    uuid_v7_value(id).is_some()
 }
 
 /// The Unix millisecond timestamp in a `UUIDv7` id (its first 48 bits);
 /// `None` unless [`is_uuid_v7`] holds.
+#[cfg(test)]
 pub(crate) fn uuid_v7_ms(id: &str) -> Option<i64> {
-    if !is_uuid_v7(id) {
+    uuid_v7_value(id).map(|(_, ms)| ms)
+}
+
+/// The 122-bit value of `id` and its timestamp in milliseconds, if `id`
+/// is a lowercase hyphenated `UUIDv7` with the RFC 9562 variant (`10`):
+/// the only ids whose string order equals the order [`IdGen`] compares
+/// them in (ADR 0008, #12). Ids from outside the app (an import) must pass
+/// this before they are stored. Two such ids are equal exactly when their values
+/// are, and they compare as their values do, so an import keeps an id in
+/// 16 bytes instead of its string (ADR 0053).
+pub(crate) fn uuid_v7_value(id: &str) -> Option<(u128, i64)> {
+    let bytes = id.as_bytes();
+    let value = parse_id(id)?;
+    if bytes[14] != b'7' || !matches!(bytes[19], b'8' | b'9' | b'a' | b'b') {
         return None;
     }
-    i64::from_str_radix(&format!("{}{}", &id[..8], &id[9..13]), 16).ok()
+    let ms = i64::try_from(value >> RANDOM_BITS).ok()?;
+    Some((value, ms))
 }
 
 /// The 122-bit value of a lowercase hyphenated UUID string (the version
 /// and variant bits are dropped); `None` if `id` is not one.
 fn parse_id(id: &str) -> Option<u128> {
     let bytes = id.as_bytes();
-    let well_formed = bytes.len() == 36
-        && bytes.iter().enumerate().all(|(i, &b)| match i {
-            8 | 13 | 18 | 23 => b == b'-',
-            _ => b.is_ascii_digit() || (b'a'..=b'f').contains(&b),
-        });
-    if !well_formed {
+    if bytes.len() != 36 {
         return None;
     }
-    let hex: String = id.chars().filter(|&c| c != '-').collect();
-    let uuid = u128::from_str_radix(&hex, 16).ok()?;
+    // One pass, no allocation: an import parses every id of a file.
+    let mut uuid: u128 = 0;
+    for (i, &b) in bytes.iter().enumerate() {
+        let digit = match (i, b) {
+            (8 | 13 | 18 | 23, b'-') => continue,
+            (8 | 13 | 18 | 23, _) => return None,
+            (_, b'0'..=b'9') => b - b'0',
+            (_, b'a'..=b'f') => b - b'a' + 10,
+            _ => return None,
+        };
+        uuid = (uuid << 4) | u128::from(digit);
+    }
     let ts = uuid >> 80;
     let rand_a = (uuid >> 64) & 0xfff;
     let rand_b = uuid & ((1 << RAND_B_BITS) - 1);
@@ -164,6 +184,30 @@ mod tests {
             0x1234_5678_9abc_def0_1234_5678_9abc,
         ] {
             assert_eq!(parse_id(&format_id(v)), Some(v), "{v:x}");
+        }
+    }
+
+    #[test]
+    fn values_match_the_string_checks() {
+        let mut ids = IdGen::new();
+        let mut previous = None;
+        for now in [T0, T0, T0 + 5, T0 - 3] {
+            let id = ids.next(now).unwrap();
+            let (value, ms) = uuid_v7_value(&id).unwrap();
+            assert_eq!(Some(ms), uuid_v7_ms(&id));
+            assert_eq!(format_id(value), id);
+            if let Some(p) = previous {
+                assert!(p < value);
+            }
+            previous = Some(value);
+        }
+        for bad in [
+            "01920000-0000-4000-8000-000000000001",
+            "01920000-0000-7000-c000-000000000001",
+            "01920000-0000-7000-8000-00000000000A",
+            "x",
+        ] {
+            assert_eq!(uuid_v7_value(bad), None, "{bad}");
         }
     }
 

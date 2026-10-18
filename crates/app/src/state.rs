@@ -132,7 +132,8 @@ impl AppState {
     /// Applies `plan` to the database in `data_dir` (see
     /// [`Store::apply_import`]). Blocking; on its own connection like
     /// [`Self::export_on_worker`]. A change made meanwhile on the main
-    /// connection refuses it with `ImportPlanStale`.
+    /// connection refuses it with `ImportPlanStale`, and a change to the
+    /// file since it was checked with `ImportFileChanged`.
     pub fn apply_import_on_worker(
         data_dir: &Path,
         plan: &ImportPlan,
