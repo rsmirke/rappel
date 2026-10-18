@@ -27,6 +27,11 @@ enum Transfer {
 /// The window actions that start a [`Transfer`].
 const TRANSFER_ACTIONS: [&str; 2] = ["win.export", "win.import"];
 
+/// The icons of the "too new" and "could not start" pages, as in
+/// `data/window.blp`, given back after a short window took them off.
+const TOO_NEW_ICON: &str = "software-update-available-symbolic";
+const ERROR_ICON: &str = "dialog-error-symbolic";
+
 mod imp {
     use std::cell::{Cell, OnceCell};
 
@@ -60,6 +65,10 @@ mod imp {
         pub error_page: TemplateChild<adw::StatusPage>,
         #[template_child]
         pub error_details: TemplateChild<gtk::Label>,
+        #[template_child]
+        pub too_new_short: TemplateChild<adw::Breakpoint>,
+        #[template_child]
+        pub error_short: TemplateChild<adw::Breakpoint>,
         /// Set once, when the database is open (at startup or after a
         /// restore). Pages and dialogs get a clone from here.
         pub state: OnceCell<AppState>,
@@ -140,6 +149,21 @@ mod imp {
             for action in super::TRANSFER_ACTIONS {
                 window.action_set_enabled(action, false);
             }
+            // The on-screen keyboard never covers the focused field
+            // (ADR 0058).
+            crate::ui::scroll::install(&*window);
+            // The "too new" and "could not start" pages on a short window
+            // (ADR 0058).
+            crate::ui::breakpoint::compact_status_page(
+                &self.too_new_short,
+                &self.too_new_page,
+                super::TOO_NEW_ICON,
+            );
+            crate::ui::breakpoint::compact_status_page(
+                &self.error_short,
+                &self.error_page,
+                super::ERROR_ICON,
+            );
         }
     }
     impl WidgetImpl for RappelWindow {}
@@ -596,16 +620,19 @@ impl RappelWindow {
 /// had left waiting was kept (`set_aside`): Start Fresh moves one that could
 /// not be used (ADR 0050, row 35), a restore sets any aside (ADR 0052).
 fn recovered_message(how: Recovered, replaced: Option<&Path>, set_aside: Option<&Path>) -> String {
-    let done = match how {
-        Recovered::Backup => "Backup restored",
-        Recovered::Finished => "Restore finished",
-        Recovered::Fresh => "Started with an empty database",
+    // The first sentence is the toast's title when the paths make the text
+    // too long for it, so it is short (`ui::toast::toast_text`).
+    let (done, short) = match how {
+        Recovered::Backup => ("Backup restored", "Backup restored"),
+        Recovered::Finished => ("Restore finished", "Restore finished"),
+        Recovered::Fresh => ("Started with an empty database", "Started fresh"),
     };
     let mut message = match replaced {
         Some(path) => format!(
-            "{done}. The previous database was kept as {}",
+            "{short}. The previous database was kept as {}",
             path.display()
         ),
+        None if set_aside.is_some() => short.to_owned(),
         None => done.to_owned(),
     };
     if let Some(path) = set_aside {
@@ -711,7 +738,7 @@ mod tests {
         );
         assert_eq!(
             recovered_message(Recovered::Fresh, Some(kept), None),
-            "Started with an empty database. The previous database was kept as \
+            "Started fresh. The previous database was kept as \
              /data/rappel.sqlite3.replaced-20261015-120000"
         );
         assert_eq!(
@@ -721,7 +748,7 @@ mod tests {
         let copy = Path::new("/data/rappel.sqlite3.restore.refused-20261015-120000");
         assert_eq!(
             recovered_message(Recovered::Fresh, Some(kept), Some(copy)),
-            "Started with an empty database. The previous database was kept as \
+            "Started fresh. The previous database was kept as \
              /data/rappel.sqlite3.replaced-20261015-120000. The copy an earlier restore left \
              waiting was kept as /data/rappel.sqlite3.restore.refused-20261015-120000"
         );
@@ -732,6 +759,19 @@ mod tests {
              /data/rappel.sqlite3.replaced-20261015-120000. The copy an earlier restore left \
              waiting was kept as /data/rappel.sqlite3.restore.set-aside-20261015-120000"
         );
+        // Each fits a toast whole, or starts with a title that does.
+        for how in [Recovered::Backup, Recovered::Finished, Recovered::Fresh] {
+            for replaced in [None, Some(kept)] {
+                for set_aside in [None, Some(aside)] {
+                    let text = recovered_message(how, replaced, set_aside);
+                    if let crate::ui::toast::ToastText::Detailed { title, .. } =
+                        crate::ui::toast::toast_text(&text)
+                    {
+                        assert_ne!(title, crate::ui::toast::FALLBACK_TITLE, "{text}");
+                    }
+                }
+            }
+        }
     }
 
     /// A damaged stored setting at startup shows "A Setting Is Damaged" with

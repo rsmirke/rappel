@@ -9,9 +9,13 @@
 //!   pill for the rest, whose tooltip names them.
 //!
 //! In the wrapping form the pills can be `removable` (the tag entry, ADR
-//! 0043): each then has a small remove button, focusable, with "Remove Tag"
-//! as its tooltip and "Remove tag NAME" as its accessible label, and an
+//! 0043): each then has a remove button, focusable, with "Remove Tag" as
+//! its tooltip and "Remove tag NAME" as its accessible label, and an
 //! `end-child` (the entry's text) can follow the pills in the same lines.
+//! A removable pill is a touch target: libadwaita's own circular button
+//! (34 px) in a pill as tall, and its name is never cut: it wraps onto
+//! more lines when wider than the field, so no name is tooltip-only
+//! (ADR 0058).
 //!
 //! Built to be bound often: a recycled list row calls [`TagPills::set_tags`]
 //! on every bind, so the pill labels are kept and relabelled, never made
@@ -275,7 +279,7 @@ impl TagPills {
             let pill = if removable {
                 self.removable_pill()
             } else {
-                let label = pill_label();
+                let label = pill_label(false);
                 Pill {
                     root: label.clone().upcast(),
                     label,
@@ -289,9 +293,11 @@ impl TagPills {
             match names.get(i).filter(|_| i < shown) {
                 Some(name) => {
                     pill.label.set_label(name);
-                    // `set_tooltip_text` is plain text, like the label.
-                    pill.label
-                        .set_tooltip_text(text::is_cut(name).then_some(name.as_str()));
+                    // `set_tooltip_text` is plain text, like the label. A
+                    // removable pill shows its whole name.
+                    pill.label.set_tooltip_text(
+                        (!removable && text::is_cut(name)).then_some(name.as_str()),
+                    );
                     if let Some(remove) = &pill.remove {
                         remove.update_property(&[gtk::accessible::Property::Label(
                             &super::tag_entry::keys::remove_label(name),
@@ -305,7 +311,7 @@ impl TagPills {
         drop(pills);
         if hidden > 0 {
             let overflow = self.overflow_label().unwrap_or_else(|| {
-                let overflow = pill_label();
+                let overflow = pill_label(false);
                 overflow.add_css_class("numeric");
                 overflow.set_ellipsize(gtk::pango::EllipsizeMode::None);
                 self.container_append(overflow.upcast_ref());
@@ -323,7 +329,7 @@ impl TagPills {
     /// A pill with a remove button, which tells [`Self::set_on_remove`]'s
     /// callback which pill it belongs to when used.
     fn removable_pill(&self) -> Pill {
-        let label = pill_label();
+        let label = pill_label(true);
         let remove = gtk::Button::builder()
             .icon_name("window-close-symbolic")
             .tooltip_text("Remove Tag")
@@ -431,16 +437,33 @@ impl TagPills {
     }
 }
 
-/// One pill: a plain label, cut with "…" past [`text::PILL_CHARS`].
-fn pill_label() -> gtk::Label {
-    gtk::Label::builder()
+/// The widest a removable pill's name asks to be, in characters, before it
+/// wraps: about the editor's widest field.
+const REMOVABLE_PILL_CHARS: i32 = 80;
+
+/// One pill: a plain label, cut with "…" past [`text::PILL_CHARS`], or
+/// for a removable pill whole, wrapping where it is wider than the field.
+fn pill_label(removable: bool) -> gtk::Label {
+    let label = gtk::Label::builder()
         .use_markup(false)
-        .single_line_mode(true)
-        .ellipsize(gtk::pango::EllipsizeMode::End)
-        .max_width_chars(text::PILL_CHARS)
         .valign(gtk::Align::Center)
         .css_classes(["tag-pill", "caption"])
-        .build()
+        .build();
+    if removable {
+        label.set_wrap(true);
+        label.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+        label.set_xalign(0.0);
+        // A wrapping label's natural width is `max-width-chars` wide at
+        // most; unset, GTK makes it narrow. This lets a name ask for its
+        // whole line (the wrap box gives it at most the field's width).
+        label.set_max_width_chars(REMOVABLE_PILL_CHARS);
+        label.set_natural_wrap_mode(gtk::NaturalWrapMode::None);
+    } else {
+        label.set_single_line_mode(true);
+        label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        label.set_max_width_chars(text::PILL_CHARS);
+    }
+    label
 }
 
 #[cfg(test)]
@@ -537,6 +560,16 @@ mod tests {
             // Fewer tags: the buttons of hidden pills are not stops.
             pills.set_tags(&names(&["a"]));
             assert_eq!(pills.remove_buttons().len(), 1);
+            // A long name is shown whole in a removable pill, without a
+            // tooltip: it wraps instead of being cut.
+            let long = "a tag name far longer than a pill shows on one line";
+            pills.set_tags(&names(&["a", long]));
+            let label = pills.imp().pills.borrow()[1].label.clone();
+            assert_eq!(label.label(), long);
+            assert!(label.wraps());
+            assert_eq!(label.ellipsize(), gtk::pango::EllipsizeMode::None);
+            assert_eq!(label.tooltip_text(), None);
+            pills.set_tags(&names(&["a"]));
             // Not removable again: plain labels, no buttons.
             pills.set_removable(false);
             assert_eq!(pills.shown_texts(), ["a"]);

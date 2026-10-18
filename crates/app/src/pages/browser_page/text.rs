@@ -394,27 +394,27 @@ fn cards(n: usize) -> String {
     count(n, "card", "cards")
 }
 
-pub fn moved_text(n: usize, deck: &str) -> String {
-    format!("{} moved to {}", cards(n), one_line(deck))
+pub fn moved_text(n: usize) -> String {
+    // The deck was just chosen; short, so it fits beside Undo (ADR 0058).
+    format!("{} moved", cards(n))
 }
 
-/// The toast after Add Tags put `tags` (those that went on at least one
-/// card) on `n` cards, leaving out `full` cards that would have had more
-/// than `limit` tags.
-pub fn tags_added_text(tags: &[String], n: usize, full: usize, limit: usize) -> String {
-    let added = match tags {
-        [tag] => format!("Tag “{}” added to {}", one_line(tag), cards(n)),
-        _ => format!("{} added to {}", count(tags.len(), "tag", "tags"), cards(n)),
-    };
-    if full == 0 {
-        added
-    } else {
+/// The Undo toast after Add Tags put tags on `n` cards. Short, so it fits
+/// beside Undo at 360 px (ADR 0058): the names were just typed.
+pub fn tags_added_text(n: usize) -> String {
+    format!("{} tagged", cards(n))
+}
+
+/// The note after Add Tags left out `full` cards that would have had more
+/// than `limit` tags, or `None`.
+pub fn tags_left_out_text(full: usize, limit: usize) -> Option<String> {
+    (full > 0).then(|| {
         format!(
-            "{added}; {} left out, as a card can have at most {} tags",
+            "{} left out. A card can have at most {} tags",
             cards(full),
             group_digits(limit)
         )
-    }
+    })
 }
 
 /// The notice when Add Tags changed no card because each would have had
@@ -426,8 +426,9 @@ pub fn no_room_text(limit: usize) -> String {
     )
 }
 
-pub fn tag_removed_text(n: usize, tag: &str) -> String {
-    format!("Tag “{}” removed from {}", one_line(tag), cards(n))
+pub fn tag_removed_text(n: usize) -> String {
+    // The tag was just chosen; short, so it fits beside Undo (ADR 0058).
+    format!("{} untagged", cards(n))
 }
 
 pub fn suspended_text(n: usize, suspended: bool) -> String {
@@ -440,7 +441,8 @@ pub fn suspended_text(n: usize, suspended: bool) -> String {
 }
 
 pub fn reset_text(n: usize) -> String {
-    format!("Progress reset for {}", cards(n))
+    // Short, so it fits beside Undo at 360 px (ADR 0058).
+    format!("{} reset", cards(n))
 }
 
 pub fn deleted_text(n: usize) -> String {
@@ -744,38 +746,42 @@ mod tests {
 
     #[test]
     fn toasts_count_and_name() {
-        assert_eq!(moved_text(3, "Maths"), "3 cards moved to Maths");
-        assert_eq!(moved_text(1, "a\n b"), "1 card moved to a b");
+        assert_eq!(moved_text(3), "3 cards moved");
+        assert_eq!(tags_added_text(2), "2 cards tagged");
+        assert_eq!(tags_left_out_text(0, 100), None);
         assert_eq!(
-            tags_added_text(&["hard".to_owned()], 2, 0, 100),
-            "Tag “hard” added to 2 cards"
+            tags_left_out_text(1, 100).as_deref(),
+            Some("1 card left out. A card can have at most 100 tags")
         );
         assert_eq!(
-            tags_added_text(&["a\nb".to_owned()], 1, 0, 100),
-            "Tag “a b” added to 1 card"
-        );
-        let two = ["hard".to_owned(), "exam".to_owned()];
-        assert_eq!(tags_added_text(&two, 3, 0, 100), "2 tags added to 3 cards");
-        assert_eq!(
-            tags_added_text(&two, 3, 1, 100),
-            "2 tags added to 3 cards; 1 card left out, as a card can have at most 100 tags"
-        );
-        assert_eq!(
-            tags_added_text(&two, 1_000, 2_000, 1_000),
-            "2 tags added to 1,000 cards; 2,000 cards left out, as a card can have at most 1,000 tags"
+            tags_left_out_text(2_000, 1_000).as_deref(),
+            Some("2,000 cards left out. A card can have at most 1,000 tags")
         );
         assert_eq!(
             no_room_text(100),
             "No tags added; a card can have at most 100 tags"
         );
-        assert_eq!(
-            tag_removed_text(1, "hard"),
-            "Tag “hard” removed from 1 card"
-        );
+        assert_eq!(tag_removed_text(1), "1 card untagged");
         assert_eq!(suspended_text(2, true), "2 cards suspended");
         assert_eq!(suspended_text(1, false), "1 card unsuspended");
-        assert_eq!(reset_text(1_000), "Progress reset for 1,000 cards");
+        assert_eq!(reset_text(1_000), "1,000 cards reset");
         assert_eq!(deleted_text(1), "1 card deleted");
+        // Each Undo toast's title fits beside Undo at 360 px (ADR 0058),
+        // up to 99,999 cards.
+        for title in [
+            moved_text(99_999),
+            tags_added_text(99_999),
+            tag_removed_text(99_999),
+            suspended_text(99_999, false),
+            suspended_text(99_999, true),
+            reset_text(99_999),
+            deleted_text(99_999),
+        ] {
+            assert!(
+                title.chars().count() <= crate::ui::toast::TOAST_FITS_WITH_BUTTON,
+                "{title}"
+            );
+        }
         assert_eq!(
             unchanged_text(),
             "Nothing changed; the cards were already like that"

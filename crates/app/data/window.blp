@@ -54,19 +54,32 @@ template $RappelWindow: Adw.ApplicationWindow {
           [top]
           Adw.HeaderBar {}
 
-          content: Adw.StatusPage too_new_page {
-            icon-name: "software-update-available-symbolic";
-            title: _("Update Rappel to Continue");
+          // A short window (a phone held sideways, 640 × 360) makes the
+          // page `compact` without its icon (window.rs, ADR 0058). A bin of
+          // its own, as the setting page has: a breakpoint on the window
+          // would check the whole content against the window's minimum.
+          content: Adw.BreakpointBin {
+            width-request: 360;
+            height-request: 294;
 
-            child: Gtk.Label too_new_path {
-              wrap: true;
-              wrap-mode: word_char;
-              selectable: true;
-              justify: center;
+            Adw.Breakpoint too_new_short {
+              condition ("max-height: 450sp")
+            }
 
-              styles [
-                "dimmed",
-              ]
+            child: Adw.StatusPage too_new_page {
+              icon-name: "software-update-available-symbolic";
+              title: _("Update Rappel to Continue");
+
+              child: Gtk.Label too_new_path {
+                wrap: true;
+                wrap-mode: word_char;
+                selectable: true;
+                justify: center;
+
+                styles [
+                  "dimmed",
+                ]
+              };
             };
           };
         };
@@ -79,19 +92,32 @@ template $RappelWindow: Adw.ApplicationWindow {
           [top]
           Adw.HeaderBar {}
 
-          content: Adw.StatusPage error_page {
-            icon-name: "dialog-error-symbolic";
-            title: _("Rappel Could Not Start");
+          // A short window (a phone held sideways, 640 × 360) makes the
+          // page `compact` without its icon (window.rs, ADR 0058). A bin of
+          // its own, as the setting page has: a breakpoint on the window
+          // would check the whole content against the window's minimum.
+          content: Adw.BreakpointBin {
+            width-request: 360;
+            height-request: 294;
 
-            child: Gtk.Label error_details {
-              wrap: true;
-              wrap-mode: word_char;
-              selectable: true;
-              justify: center;
+            Adw.Breakpoint error_short {
+              condition ("max-height: 450sp")
+            }
 
-              styles [
-                "dimmed",
-              ]
+            child: Adw.StatusPage error_page {
+              icon-name: "dialog-error-symbolic";
+              title: _("Rappel Could Not Start");
+
+              child: Gtk.Label error_details {
+                wrap: true;
+                wrap-mode: word_char;
+                selectable: true;
+                justify: center;
+
+                styles [
+                  "dimmed",
+                ]
+              };
             };
           };
         };

@@ -12,6 +12,7 @@ pub mod dropdown;
 pub mod focus;
 pub mod nav;
 pub mod rows;
+pub mod scroll;
 pub mod text;
 pub mod tile;
 pub mod time;

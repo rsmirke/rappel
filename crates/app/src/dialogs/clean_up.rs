@@ -54,17 +54,13 @@ pub fn question_text(unused: UnusedMedia) -> String {
     )
 }
 
-/// The toast after a clean-up of `files` of `bytes`: "Moved 12 files
-/// (4.3 MB) to the trash"; none when nothing moved (another window cleaned
-/// up meanwhile: the row's count says "No unused files").
-pub fn moved_text(files: usize, bytes: u64) -> Option<String> {
-    (files > 0).then(|| {
-        format!(
-            "Moved {} ({}) to the trash",
-            count(files, "file", "files"),
-            size_text(bytes)
-        )
-    })
+/// The toast after a clean-up of `files`: "12 files trashed"; none
+/// when nothing moved (another window cleaned up meanwhile: the row's count
+/// says "No unused files"). Short, so it fits beside Undo at 360 px
+/// (`ui::toast::TOAST_FITS_WITH_BUTTON`, ADR 0058); the size was in the
+/// question, and the row counts again.
+pub fn moved_text(files: usize) -> Option<String> {
+    (files > 0).then(|| format!("{} trashed", count(files, "file", "files")))
 }
 
 /// Whether the row's button can start a clean-up: only with something to
@@ -88,10 +84,20 @@ struct Context {
 }
 
 impl Context {
-    /// The button follows what is known and what runs.
+    /// The button follows what is known and what runs. A button turned
+    /// off with the focus on it hands the focus to its row, so it does not
+    /// jump to the top of Preferences (and the alert, which gives the focus
+    /// back to where it was when it closes, gives it back to the row).
     fn update(&self) {
         if let Some(button) = self.button.upgrade() {
-            button.set_sensitive(can_clean_up(self.unused.get(), self.busy.get()));
+            let sensitive = can_clean_up(self.unused.get(), self.busy.get());
+            if !sensitive
+                && button.has_focus()
+                && let Some(row) = self.row.upgrade()
+            {
+                row.grab_focus();
+            }
+            button.set_sensitive(sensitive);
         }
     }
 
@@ -204,7 +210,7 @@ async fn ask_and_clean_up(ctx: &Context) {
     match result {
         Ok(Ok(cleaned)) => {
             // Nothing moved: no toast; the count below says so.
-            let Some(text) = moved_text(cleaned.files, cleaned.bytes) else {
+            let Some(text) = moved_text(cleaned.files) else {
                 refresh(ctx).await;
                 return;
             };
@@ -316,15 +322,11 @@ mod tests {
                 .starts_with("1 media file that no card uses (500 bytes)")
         );
         assert!(plain(question_text(unused(1_500, 500))).starts_with("1,500 media files"));
-        assert_eq!(
-            moved_text(12, 4_300_000).map(plain).as_deref(),
-            Some("Moved 12 files (4.3 MB) to the trash")
-        );
-        assert_eq!(
-            moved_text(1, 2_000).map(plain).as_deref(),
-            Some("Moved 1 file (2.0 kB) to the trash")
-        );
-        assert_eq!(moved_text(0, 0), None, "no toast for nothing");
+        assert_eq!(moved_text(12).as_deref(), Some("12 files trashed"));
+        assert_eq!(moved_text(1).as_deref(), Some("1 file trashed"));
+        assert_eq!(moved_text(0), None, "no toast for nothing");
+        let most = moved_text(99_999).unwrap_or_default();
+        assert!(most.chars().count() <= crate::ui::toast::TOAST_FITS_WITH_BUTTON);
     }
 
     /// The row counts on a worker when connected, then shows the count and

@@ -22,20 +22,34 @@ template $RappelStatsPage: Adw.NavigationPage {
         // The brief's empty state: icon, title, one sentence, one pill
         // button. The button goes back (`navigation.pop`, an action of
         // AdwNavigationView); its label is set in pages/stats_page.rs.
-        child: Adw.StatusPage {
-          icon-name: "document-open-recent-symbolic";
-          title: _("No Statistics Yet");
-          description: _("Study some cards to see your progress here");
+        // A plain pill: going back is navigation, not the action the page
+        // suggests (the HIG keeps `suggested-action` for that; ADR 0058).
+        // Short (a phone held sideways, or the on-screen keyboard up), the
+        // empty state is `compact` so its button stays on screen (ADR 0058;
+        // `ui::breakpoint`). A bin of its own: the condition is on the
+        // room the page leaves it.
+        child: Adw.BreakpointBin {
+          width-request: 300;
+          height-request: 200;
 
-          child: Gtk.Button back_button {
-            use-underline: true;
-            halign: center;
-            action-name: "navigation.pop";
+          Adw.Breakpoint empty_short {
+            condition ("max-height: 400sp")
+          }
 
-            styles [
-              "pill",
-              "suggested-action",
-            ]
+          child: Adw.StatusPage empty_status {
+            icon-name: "document-open-recent-symbolic";
+            title: _("No Statistics Yet");
+            description: _("Study some cards to see your progress here");
+
+            child: Gtk.Button back_button {
+              use-underline: true;
+              halign: center;
+              action-name: "navigation.pop";
+
+              styles [
+                "pill",
+              ]
+            };
           };
         };
       }

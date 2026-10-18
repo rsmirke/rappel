@@ -131,6 +131,8 @@ mod imp {
         #[template_child]
         pub preview_pane: TemplateChild<gtk::ScrolledWindow>,
         #[template_child]
+        pub preview_content: TemplateChild<gtk::Box>,
+        #[template_child]
         pub mode_toggles: TemplateChild<adw::ToggleGroup>,
         #[template_child]
         pub mode_bar: TemplateChild<gtk::ActionBar>,
@@ -451,7 +453,56 @@ impl CardEditor {
             self,
             move |_| editor.mode_changed()
         ));
+        // The keys scroll the preview while the focus is in it, or while
+        // it is the only pane (narrow, Preview; the focus may be on the
+        // toggle, where Alt+P leaves it) (ADR 0058): a box has no keys of
+        // its own, and GtkScrolledWindow binds only Page Up / Page Down and
+        // Ctrl with the arrows (`scroll-child`). Bubble phase, on the
+        // dialog: the focused widget (an image or audio button, a toggle)
+        // takes its own Space, Enter and arrows first.
+        let keys = gtk::EventControllerKey::new();
+        keys.connect_key_pressed(glib::clone!(
+            #[weak(rename_to = editor)]
+            self,
+            #[upgrade_or]
+            glib::Propagation::Proceed,
+            move |_, key, _, state| match layout::scroll_key(key, state) {
+                Some(scroll) if editor.preview_takes_keys() => {
+                    editor.scroll_preview(scroll);
+                    glib::Propagation::Stop
+                }
+                _ => glib::Propagation::Proceed,
+            }
+        ));
+        self.add_controller(keys);
         self.apply_layout();
+    }
+
+    /// Whether the scroll keys go to the preview: the focus is in it, or
+    /// it is the only pane on screen.
+    fn preview_takes_keys(&self) -> bool {
+        let imp = self.imp();
+        let panes = layout::panes(imp.narrow.get(), self.mode());
+        let focus_in_preview = self
+            .focus()
+            .is_some_and(|focus| focus.is_ancestor(&*imp.preview_pane));
+        focus_in_preview || (panes.preview && !panes.edit)
+    }
+
+    /// Scrolls the preview as a key asks (`layout::scroll_key`), through
+    /// `GtkScrolledWindow`'s own `scroll-child` keybinding signal.
+    fn scroll_preview(&self, scroll: layout::Scroll) {
+        let kind = match scroll {
+            layout::Scroll::StepUp => gtk::ScrollType::StepUp,
+            layout::Scroll::StepDown => gtk::ScrollType::StepDown,
+            layout::Scroll::PageUp => gtk::ScrollType::PageUp,
+            layout::Scroll::PageDown => gtk::ScrollType::PageDown,
+            layout::Scroll::Start => gtk::ScrollType::Start,
+            layout::Scroll::End => gtk::ScrollType::End,
+        };
+        self.imp()
+            .preview_pane
+            .emit_by_name::<bool>("scroll-child", &[&kind, &false]);
     }
 
     fn mode(&self) -> Mode {
@@ -497,6 +548,9 @@ impl CardEditor {
             Some(layout::Target::Toggle) => {
                 imp.mode_toggles.child_focus(gtk::DirectionType::TabForward);
             }
+            Some(layout::Target::Preview) => {
+                imp.preview_content.grab_focus();
+            }
             None => {}
         }
     }
@@ -507,6 +561,7 @@ impl CardEditor {
             None => layout::Place::Lost,
             Some(focus) if !focus.is_mapped() || !focus.is_focusable() => layout::Place::Lost,
             Some(focus) if focus.is_ancestor(&*imp.edit_pane) => layout::Place::Edit,
+            Some(focus) if focus.is_ancestor(&*imp.preview_pane) => layout::Place::Preview,
             Some(focus) if focus.is_ancestor(&*imp.mode_bar) => layout::Place::Toggle,
             Some(_) => layout::Place::Other,
         }
@@ -1119,10 +1174,47 @@ pub(super) mod tests {
                 Duration::from_secs(5)
             ));
             assert_eq!(editor.focus().as_ref(), Some(imp.front_view.upcast_ref()));
-            // To the preview with the focus in the text: on the toggle.
+            // To the preview with the focus in the text: on the preview,
+            // where the keys scroll it (ADR 0058).
+            imp.front_buffer
+                .set_text(&"A paragraph of the front.\n\n".repeat(80));
             imp.mode_toggles.set_active_name(Some(Mode::PREVIEW));
-            assert!(toggle_focused(), "focus: {:?}", editor.focus());
-            // Back to the text: the toggle keeps it (the user is there).
+            assert_eq!(
+                editor.focus().as_ref(),
+                Some(imp.preview_content.upcast_ref()),
+                "focus: {:?}",
+                editor.focus()
+            );
+            let adjustment = imp.preview_pane.vadjustment();
+            assert!(
+                crate::testing::settle_until(
+                    || adjustment.upper() > adjustment.page_size() + 100.0,
+                    Duration::from_secs(5)
+                ),
+                "the preview is taller than its view"
+            );
+            // `scroll-child` may animate the move (gtk_adjustment_animate_to_value).
+            editor.scroll_preview(layout::Scroll::PageDown);
+            assert!(
+                crate::testing::settle_until(|| adjustment.value() > 0.0, Duration::from_secs(5)),
+                "Page Down scrolls the preview"
+            );
+            editor.scroll_preview(layout::Scroll::Start);
+            assert!(
+                crate::testing::settle_until(
+                    || adjustment.value().abs() < f64::EPSILON,
+                    Duration::from_secs(5)
+                ),
+                "Home goes back up"
+            );
+            // Back to the text: the front.
+            imp.mode_toggles.set_active_name(Some(Mode::EDIT));
+            assert_eq!(editor.focus().as_ref(), Some(imp.front_view.upcast_ref()));
+            // On the toggle, switching keeps it there (the user is there).
+            imp.mode_toggles.child_focus(gtk::DirectionType::TabForward);
+            assert!(toggle_focused());
+            imp.mode_toggles.set_active_name(Some(Mode::PREVIEW));
+            assert!(toggle_focused());
             imp.mode_toggles.set_active_name(Some(Mode::EDIT));
             assert!(toggle_focused());
             // Wide again, the bar hidden by the setter: to the front.

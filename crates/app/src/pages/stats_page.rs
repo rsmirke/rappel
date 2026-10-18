@@ -19,6 +19,10 @@ use crate::ui::tile::set_tile;
 use crate::ui::time;
 use crate::widgets::chart_card::{ChartCard, ChartModel};
 
+/// The empty state's icon, as in its layout, given back after a short
+/// window took it off (`ui::breakpoint::compact_status_page`).
+const EMPTY_ICON: &str = "document-open-recent-symbolic";
+
 mod imp {
     use adw::prelude::*;
     use adw::subclass::prelude::*;
@@ -30,6 +34,10 @@ mod imp {
     #[derive(Debug, Default, gtk::CompositeTemplate)]
     #[template(resource = "/io/github/rsmirke/Rappel/stats_page.ui")]
     pub struct StatsPage {
+        #[template_child]
+        pub empty_short: TemplateChild<adw::Breakpoint>,
+        #[template_child]
+        pub empty_status: TemplateChild<adw::StatusPage>,
         #[template_child]
         pub window_title: TemplateChild<adw::WindowTitle>,
         #[template_child]
@@ -76,6 +84,12 @@ mod imp {
     impl ObjectImpl for StatsPage {
         fn constructed(&self) {
             self.parent_constructed();
+            // The empty state on a short window (ADR 0058).
+            crate::ui::breakpoint::compact_status_page(
+                &self.empty_short,
+                &self.empty_status,
+                super::EMPTY_ICON,
+            );
             // GTK documents `shown` as the place to set the focus after a
             // push (ui/nav.rs): earlier, the view focuses the Back button.
             self.obj()

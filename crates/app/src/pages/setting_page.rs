@@ -78,17 +78,11 @@ mod imp {
         fn constructed(&self) {
             self.parent_constructed();
             crate::ui::focus::unselect_on_first_focus(&self.path_label);
-            let status = self.status.downgrade();
-            crate::ui::breakpoint::follow(&self.short_breakpoint, move |short| {
-                if let Some(status) = status.upgrade() {
-                    if short {
-                        status.add_css_class("compact");
-                    } else {
-                        status.remove_css_class("compact");
-                    }
-                    status.set_icon_name((!short).then_some(super::ICON));
-                }
-            });
+            crate::ui::breakpoint::compact_status_page(
+                &self.short_breakpoint,
+                &self.status,
+                super::ICON,
+            );
             // No confirmation: a backup is made first, and only the one
             // damaged value, which nothing can read, is replaced.
             self.reset_button.connect_clicked(glib::clone!(
