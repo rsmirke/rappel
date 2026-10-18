@@ -54,13 +54,13 @@ pub fn question_text(unused: UnusedMedia) -> String {
     )
 }
 
-/// The toast after a clean-up of `files`: "12 files moved to trash"; none
+/// The toast after a clean-up of `files`: "12 files trashed"; none
 /// when nothing moved (another window cleaned up meanwhile: the row's count
 /// says "No unused files"). Short, so it fits beside Undo at 360 px
 /// (`ui::toast::TOAST_FITS_WITH_BUTTON`, ADR 0058); the size was in the
 /// question, and the row counts again.
 pub fn moved_text(files: usize) -> Option<String> {
-    (files > 0).then(|| format!("{} moved to trash", count(files, "file", "files")))
+    (files > 0).then(|| format!("{} trashed", count(files, "file", "files")))
 }
 
 /// Whether the row's button can start a clean-up: only with something to
@@ -322,10 +322,10 @@ mod tests {
                 .starts_with("1 media file that no card uses (500 bytes)")
         );
         assert!(plain(question_text(unused(1_500, 500))).starts_with("1,500 media files"));
-        assert_eq!(moved_text(12).as_deref(), Some("12 files moved to trash"));
-        assert_eq!(moved_text(1).as_deref(), Some("1 file moved to trash"));
+        assert_eq!(moved_text(12).as_deref(), Some("12 files trashed"));
+        assert_eq!(moved_text(1).as_deref(), Some("1 file trashed"));
         assert_eq!(moved_text(0), None, "no toast for nothing");
-        let most = moved_text(999).unwrap_or_default();
+        let most = moved_text(99_999).unwrap_or_default();
         assert!(most.chars().count() <= crate::ui::toast::TOAST_FITS_WITH_BUTTON);
     }
 

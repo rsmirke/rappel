@@ -270,18 +270,9 @@ fn perform(
                     text::no_room_text(limit)
                 }));
             }
-            // Only the tags that went on some card are named.
-            let linked: std::collections::HashSet<&str> =
-                added.links.iter().map(|(_, id)| id.as_str()).collect();
-            let put: Vec<String> = added
-                .tags
-                .iter()
-                .filter(|t| linked.contains(t.id.as_str()))
-                .map(|t| t.name.clone())
-                .collect();
             let links = added.links;
             Done {
-                text: text::tags_added_text(put.len(), added.cards.len()),
+                text: text::tags_added_text(added.cards.len()),
                 note: text::tags_left_out_text(added.full.len(), limit),
                 total: added.cards.len(),
                 undo: Box::new(move |s| s.release_tags(&links)),
@@ -1415,7 +1406,7 @@ mod tests {
         let done = perform(&state, &ids, Bulk::AddTags(tags(&["hard"])), now)
             .unwrap()
             .unwrap();
-        assert_eq!(done.text, "Tag added to 3 cards");
+        assert_eq!(done.text, "3 cards tagged");
         assert_eq!(state.card_tags(&ids[1]).unwrap().len(), 2);
         assert_eq!((done.undo)(&state).unwrap(), 3);
         assert_eq!(rows(&state), before);
@@ -1423,7 +1414,7 @@ mod tests {
         // Undo takes off the others.
         let bulk = Bulk::AddTags(tags(&["Algebra", "hard", "exam"]));
         let done = perform(&state, &ids, bulk, now).unwrap().unwrap();
-        assert_eq!(done.text, "Tags added to 3 cards");
+        assert_eq!(done.text, "3 cards tagged");
         assert_eq!(state.card_tags(&ids[1]).unwrap().len(), 3);
         assert_eq!((done.undo)(&state).unwrap(), 3);
         assert_eq!(rows(&state), before);
@@ -1436,7 +1427,7 @@ mod tests {
         let done = perform(&state, &ids, Bulk::RemoveTag(algebra), now)
             .unwrap()
             .unwrap();
-        assert_eq!(done.text, "Tag removed (3 cards)");
+        assert_eq!(done.text, "3 cards untagged");
         assert_eq!(state.card_tags(&ids[1]).unwrap().len(), 0);
         assert_eq!((done.undo)(&state).unwrap(), 3);
         assert_eq!(rows(&state), before);
@@ -1499,7 +1490,7 @@ mod tests {
         let done = perform(&state, &ids, Bulk::AddTags(tags(&["x"])), now)
             .unwrap()
             .unwrap();
-        assert_eq!(done.text, "Tag added to 2 cards");
+        assert_eq!(done.text, "2 cards tagged");
         assert_eq!(
             done.note.as_deref(),
             Some("1 card left out. A card can have at most 100 tags")

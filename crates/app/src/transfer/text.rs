@@ -81,7 +81,7 @@ pub(super) fn refused_text(problem: &ImportProblem) -> String {
 pub(super) fn check_failed_text(err: &Error) -> String {
     match err {
         Error::ImportFileChanged => {
-            "Import it again. The file changed while it was being checked.".to_owned()
+            "File changed. It changed while it was being checked; import it again.".to_owned()
         }
         other => format!("Cannot check the file: {other}"),
     }
@@ -612,7 +612,7 @@ mod tests {
     fn a_changed_file_says_so_and_nothing_was_imported() {
         assert_eq!(
             check_failed_text(&Error::ImportFileChanged),
-            "Import it again. The file changed while it was being checked."
+            "File changed. It changed while it was being checked; import it again."
         );
         assert_eq!(
             import_failed_text(&Error::ImportFileChanged),

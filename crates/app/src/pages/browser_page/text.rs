@@ -399,11 +399,10 @@ pub fn moved_text(n: usize) -> String {
     format!("{} moved", cards(n))
 }
 
-/// The Undo toast after Add Tags put `tags` tags on `n` cards. Short, so
-/// it fits beside Undo at 360 px (ADR 0058): the names were just typed.
-pub fn tags_added_text(tags: usize, n: usize) -> String {
-    let what = if tags == 1 { "Tag" } else { "Tags" };
-    format!("{what} added to {}", cards(n))
+/// The Undo toast after Add Tags put tags on `n` cards. Short, so it fits
+/// beside Undo at 360 px (ADR 0058): the names were just typed.
+pub fn tags_added_text(n: usize) -> String {
+    format!("{} tagged", cards(n))
 }
 
 /// The note after Add Tags left out `full` cards that would have had more
@@ -429,7 +428,7 @@ pub fn no_room_text(limit: usize) -> String {
 
 pub fn tag_removed_text(n: usize) -> String {
     // The tag was just chosen; short, so it fits beside Undo (ADR 0058).
-    format!("Tag removed ({})", cards(n))
+    format!("{} untagged", cards(n))
 }
 
 pub fn suspended_text(n: usize, suspended: bool) -> String {
@@ -748,8 +747,7 @@ mod tests {
     #[test]
     fn toasts_count_and_name() {
         assert_eq!(moved_text(3), "3 cards moved");
-        assert_eq!(tags_added_text(1, 2), "Tag added to 2 cards");
-        assert_eq!(tags_added_text(2, 3), "Tags added to 3 cards");
+        assert_eq!(tags_added_text(2), "2 cards tagged");
         assert_eq!(tags_left_out_text(0, 100), None);
         assert_eq!(
             tags_left_out_text(1, 100).as_deref(),
@@ -763,20 +761,21 @@ mod tests {
             no_room_text(100),
             "No tags added; a card can have at most 100 tags"
         );
-        assert_eq!(tag_removed_text(1), "Tag removed (1 card)");
+        assert_eq!(tag_removed_text(1), "1 card untagged");
         assert_eq!(suspended_text(2, true), "2 cards suspended");
         assert_eq!(suspended_text(1, false), "1 card unsuspended");
         assert_eq!(reset_text(1_000), "1,000 cards reset");
         assert_eq!(deleted_text(1), "1 card deleted");
         // Each Undo toast's title fits beside Undo at 360 px (ADR 0058),
-        // up to 999 cards.
+        // up to 99,999 cards.
         for title in [
-            moved_text(999),
-            tags_added_text(99, 999),
-            tag_removed_text(999),
-            suspended_text(999, false),
-            reset_text(999),
-            deleted_text(999),
+            moved_text(99_999),
+            tags_added_text(99_999),
+            tag_removed_text(99_999),
+            suspended_text(99_999, false),
+            suspended_text(99_999, true),
+            reset_text(99_999),
+            deleted_text(99_999),
         ] {
             assert!(
                 title.chars().count() <= crate::ui::toast::TOAST_FITS_WITH_BUTTON,

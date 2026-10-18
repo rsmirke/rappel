@@ -87,8 +87,14 @@ pub fn titled(title: &str, text: String) -> String {
     }
 }
 
-/// `text` with its first letter in upper case ("disk full" → "Disk full").
+/// `text` with its first letter in upper case ("disk full" → "Disk full"),
+/// unless its first word holds a "." or a digit: a file name or a path
+/// ("rappel.sqlite3: …", "/data/…") is written as it is.
 fn capitalized(text: &str) -> String {
+    let first_word = text.split_whitespace().next().unwrap_or("");
+    if first_word.chars().any(|c| c == '.' || c.is_ascii_digit()) {
+        return text.to_owned();
+    }
     let mut chars = text.chars();
     chars.next().map_or_else(String::new, |first| {
         first.to_uppercase().chain(chars).collect()
@@ -298,6 +304,14 @@ mod tests {
                 details: "Disk full; more words to make it long".into(),
             }
         );
+        // A body that starts with a file name is left as it is.
+        let text = "The export failed: rappel.rappel could not be written to the disk";
+        assert!(matches!(
+            toast_text(text),
+            ToastText::Detailed { details, .. } if details == "rappel.rappel could not be written to the disk"
+        ));
+        assert_eq!(capitalized("x2 is a name"), "x2 is a name");
+        assert_eq!(capitalized("é accent"), "É accent");
         // A comma does not end a title: it may be in a list.
         let text = "Imported 12 decks, 840 cards and 5,210 reviews from the file";
         assert!(
