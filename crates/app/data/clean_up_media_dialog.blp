@@ -1,0 +1,17 @@
+using Gtk 4.0;
+using Adw 1;
+
+// Asked before Clean Up Media in Preferences moves the files no card uses
+// to the trash (ADR 0057). The body, with the count and size, is set in
+// dialogs/clean_up.rs. Cancel is the default: Enter or Space never moves
+// anything.
+Adw.AlertDialog clean_up_media_dialog {
+  heading: _("Clean Up Media?");
+  close-response: "cancel";
+  default-response: "cancel";
+
+  responses [
+    cancel: _("_Cancel"),
+    clean-up: _("Clean _Up") destructive,
+  ]
+}

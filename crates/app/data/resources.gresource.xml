@@ -26,6 +26,7 @@
     <file preprocess="xml-stripblanks">import_dialog.ui</file>
     <file preprocess="xml-stripblanks">preferences_dialog.ui</file>
     <file preprocess="xml-stripblanks">retention_dialog.ui</file>
+    <file preprocess="xml-stripblanks">clean_up_media_dialog.ui</file>
     <file preprocess="xml-stripblanks">chart_card.ui</file>
     <file preprocess="xml-stripblanks">stats_page.ui</file>
     <file preprocess="xml-stripblanks">card_info_dialog.ui</file>

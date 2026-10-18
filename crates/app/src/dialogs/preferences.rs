@@ -1,5 +1,6 @@
-//! Preferences: the daily limits, the day start hour, the desired retention
-//! and a button for the backup folder (SPEC §4.8, ADR 0027). Layout in
+//! Preferences: the daily limits, the day start hour, the desired retention,
+//! a button for the backup folder (SPEC §4.8, ADR 0027) and Clean Up Media
+//! (`clean_up`, ADR 0057). Layout in
 //! `data/preferences_dialog.blp` and `data/retention_dialog.blp`.
 //!
 //! The limits and the day start are saved as soon as they change. The
@@ -15,6 +16,7 @@ use gtk::{gio, glib};
 use rappel_core::data_dir::ensure_data_dir;
 use rappel_core::domain::{DESIRED_RETENTION_RANGE, MAX_DAILY_LIMIT, MAX_DAY_START_HOUR, Settings};
 
+use crate::dialogs::clean_up;
 use crate::state::AppState;
 use crate::ui::dialog;
 use crate::ui::toast::{ErrorSlot, log_failure, show_error};
@@ -116,6 +118,8 @@ pub(crate) struct Rows {
     retention_row: adw::ActionRow,
     retention_value: gtk::Label,
     open_backups: adw::ButtonRow,
+    clean_up_row: adw::ActionRow,
+    clean_up_button: gtk::Button,
 }
 
 impl Rows {
@@ -137,6 +141,8 @@ impl Rows {
             object(&b, "retention_value"),
             object(&b, "open_backups"),
         );
+        let (clean_up_row, clean_up_button) =
+            (object(&b, "clean_up_row"), object(&b, "clean_up_button"));
         let rows = Self {
             dialog: dialog?,
             page: page?,
@@ -146,6 +152,8 @@ impl Rows {
             retention_row: retention_row?,
             retention_value: retention_value?,
             open_backups: open_backups?,
+            clean_up_row: clean_up_row?,
+            clean_up_button: clean_up_button?,
         };
         let hours: Vec<String> = (0..=MAX_DAY_START_HOUR).map(hour_label).collect();
         let hours: Vec<&str> = hours.iter().map(String::as_str).collect();
@@ -219,6 +227,13 @@ pub fn show(window: &RappelWindow, state: &AppState) {
     connect_study_rows(&rows, &ctx);
     connect_retention(window, &rows, &ctx);
     connect_backups(window, &rows, &ctx);
+    clean_up::connect(
+        &rows.dialog,
+        &rows.clean_up_row,
+        &rows.clean_up_button,
+        state,
+        &ctx.errors,
+    );
 
     // What the limits and the day start changed shows on the pages behind.
     let changed = ctx.changed.clone();

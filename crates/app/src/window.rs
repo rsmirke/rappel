@@ -13,8 +13,8 @@ use crate::pages::{BrowserPage, DeckPage, DecksPage, Recovered};
 use crate::startup::{Problem, data_folder_line, setting_reset_text, too_new_text};
 use crate::state::AppState;
 use crate::transfer;
-use crate::ui::nav;
 use crate::ui::toast::{info_toast, persistent_toast, warning_message};
+use crate::ui::{nav, worker};
 use crate::window_state;
 
 /// The two jobs of the primary menu.
@@ -236,6 +236,7 @@ impl RappelWindow {
         }
         tracing::debug!("showing the main page");
         imp.stack.set_visible_child_name("main");
+        self.tidy_media_trash();
         // Only at startup, before the window is shown; not after a restore.
         if !self.is_mapped() {
             self.restore_state();
@@ -247,6 +248,38 @@ impl RappelWindow {
         for action in TRANSFER_ACTIONS {
             self.action_set_enabled(action, true);
         }
+    }
+
+    /// Brings back the media trash's files the database uses and purges
+    /// the old ones nothing uses (ADR 0057), on a worker after the main
+    /// page is shown, so it never holds the window back. At startup and
+    /// after a restore. Only logged: the user asked for nothing.
+    fn tidy_media_trash(&self) {
+        let Some(data_dir) = self.imp().state.get().map(|s| s.data_dir().to_path_buf()) else {
+            return;
+        };
+        glib::spawn_future_local(glib::clone!(
+            #[weak(rename_to = window)]
+            self,
+            async move {
+                let result = worker::run(&window, move || {
+                    AppState::tidy_media_trash_on_worker(&data_dir)
+                })
+                .await;
+                match result {
+                    Ok(Ok(tidied)) => {
+                        if tidied.blocked {
+                            tracing::warn!(
+                                "the media trash was not purged: a backup cannot be read"
+                            );
+                        }
+                        tracing::debug!(?tidied, "media trash tidied");
+                    }
+                    Ok(Err(err)) => tracing::warn!("tidying the media trash failed: {err}"),
+                    Err(_) => tracing::warn!("tidying the media trash stopped unexpectedly"),
+                }
+            }
+        ));
     }
 
     /// Applies the size, maximised state and open deck saved when the

@@ -64,6 +64,12 @@ const CHECKS: &[(&str, Load)] = &[
     ("deck_row.blp", Load::Template(template::<DeckRow>)),
     ("decks_page.blp", Load::Template(template::<DecksPage>)),
     (
+        "clean_up_media_dialog.blp",
+        Load::Plain(|| {
+            loads("clean_up_media_dialog", dialog::CLEAN_UP_MEDIA.load().err());
+        }),
+    ),
+    (
         "delete_card_dialog.blp",
         Load::Plain(|| {
             loads("delete_card_dialog", dialog::DELETE_CARD.load().err());

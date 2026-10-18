@@ -210,6 +210,17 @@ impl Store {
             &scheduler_in(&tx)?,
             found.reviewed.iter().map(String::as_str),
         )?;
+        // A card the file brings may name a file a clean-up moved to the
+        // trash, which the file does not have: it comes back (ADR 0057).
+        // A failure is only logged, as for a card write: the import is not
+        // refused for it, and the next start tries again.
+        if let Some(dir) = self.media_dir.as_deref() {
+            match crate::media::recover_all(&tx, dir, now) {
+                Ok(0) => {}
+                Ok(n) => tracing::info!(files = n, "media files an import uses brought back"),
+                Err(err) => tracing::warn!("cannot bring media back from the trash: {err}"),
+            }
+        }
         tx.commit()?;
         tracing::info!(
             decks = summary.decks.new,

@@ -14,6 +14,8 @@
 mod kind;
 mod store;
 mod structure;
+mod trash;
+mod used;
 
 use std::fmt;
 
@@ -22,6 +24,8 @@ pub(crate) use store::{
     CopyFailure, Ingested, MEDIA_DIR_NAME, Sync, copy_capped, ingest, insert_media_row, sync_folder,
 };
 pub use structure::{Malformed, check_structure};
+pub use trash::{CleanedUp, PURGE_AFTER_DAYS, TrashTidied, UnusedMedia};
+pub(crate) use trash::{recover_all, recover_refs, recover_rows};
 
 /// The scheme of a media reference in card Markdown.
 pub const SCHEME: &str = "media:";
@@ -176,3 +180,5 @@ pub(crate) fn parse_hex(text: &[u8]) -> Option<[u8; 32]> {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod trash_tests;

@@ -8,14 +8,15 @@
 //! damaged, kept under a second name, and the good copy takes the name.
 //! Nothing here deletes a media file. The temporary name is removed once the file has
 //! its name, or after a failure; a crash can leave one behind, named
-//! `.incoming-…`, which is never a media name (slice 5 cleans up).
+//! `.incoming-…`, which is never a media name, and which a clean-up leaves
+//! alone (ADR 0057).
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, Transaction, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
 
 use super::{DETECT_BYTES, MediaKind, MediaProblem, MediaRef, check_structure, hex};
@@ -116,8 +117,18 @@ impl Store {
     /// time the file is added.
     pub(crate) fn add_media_at(&self, reader: &mut impl Read, now: i64) -> Result<MediaRef> {
         let dir = self.media_dir.as_deref().ok_or(Error::NoMediaDir)?;
-        let got = ingest(dir, reader, Sync::Folder)?;
-        insert_media_row(&self.conn, &got, now)?;
+        // The write lock from before the file gets its name until its row
+        // is committed, so a clean-up (which takes it too) never sees the
+        // file without its row and moves it to the trash (ADR 0057). Taken
+        // once the copy is complete, so a slow input never holds it.
+        let (got, tx) = ingest_then(dir, reader, Sync::Folder, || {
+            Ok(Transaction::new_unchecked(
+                &self.conn,
+                TransactionBehavior::Immediate,
+            )?)
+        })?;
+        insert_media_row(&tx, &got, now)?;
+        tx.commit()?;
         Ok(got.media)
     }
 
@@ -164,27 +175,21 @@ pub(crate) enum Sync {
 /// under that name is kept if it has that content, and set aside if not
 /// ([`give_name`]).
 pub(crate) fn ingest(dir: &Path, reader: &mut impl Read, sync: Sync) -> Result<Ingested> {
+    ingest_then(dir, reader, sync, || Ok(())).map(|(got, ())| got)
+}
+
+/// [`ingest`], calling `before_naming` once the copy is complete and synced
+/// and before the file gets its name, and returning its value too; its
+/// error stops the add before the file is named.
+pub(crate) fn ingest_then<T>(
+    dir: &Path,
+    reader: &mut impl Read,
+    sync: Sync,
+    before_naming: impl FnOnce() -> Result<T>,
+) -> Result<(Ingested, T)> {
     ensure_data_dir(dir)?;
-    let (temp, mut file) = create_temp(dir)?;
-    let io_err = |path: &Path| {
-        let path = path.to_path_buf();
-        move |source| Error::Io { path, source }
-    };
-    let result = (|| {
-        let got = copy_capped(reader, &mut file).map_err(|e| match e {
-            CopyFailure::Refused(problem) => Error::MediaRefused(problem),
-            CopyFailure::Read(err) => Error::MediaRead(err),
-            CopyFailure::Write(err) => io_err(&temp)(err),
-        })?;
-        file.sync_all().map_err(io_err(&temp))?;
-        drop(file);
-        let target = dir.join(got.media.file_name());
-        give_name(&Disk, &temp, &target, &got)?;
-        if sync == Sync::Folder {
-            sync_folder(dir)?;
-        }
-        Ok(got)
-    })();
+    let (temp, file) = create_temp(dir)?;
+    let result = copy_and_name(dir, &temp, file, reader, sync, before_naming);
     // The temporary name goes in every case: on success the file has its
     // own name (or was already there), on failure it is incomplete.
     match fs::remove_file(&temp) {
@@ -193,6 +198,35 @@ pub(crate) fn ingest(dir: &Path, reader: &mut impl Read, sync: Sync) -> Result<I
         Err(err) => tracing::warn!("cannot remove a temporary media file: {err}"),
     }
     result
+}
+
+/// The body of [`ingest_then`], with the temporary file made.
+fn copy_and_name<T>(
+    dir: &Path,
+    temp: &Path,
+    mut file: File,
+    reader: &mut impl Read,
+    sync: Sync,
+    before_naming: impl FnOnce() -> Result<T>,
+) -> Result<(Ingested, T)> {
+    let io_err = |path: &Path| {
+        let path = path.to_path_buf();
+        move |source| Error::Io { path, source }
+    };
+    let got = copy_capped(reader, &mut file).map_err(|e| match e {
+        CopyFailure::Refused(problem) => Error::MediaRefused(problem),
+        CopyFailure::Read(err) => Error::MediaRead(err),
+        CopyFailure::Write(err) => io_err(temp)(err),
+    })?;
+    file.sync_all().map_err(io_err(temp))?;
+    drop(file);
+    let value = before_naming()?;
+    let target = dir.join(got.media.file_name());
+    give_name(&Disk, temp, &target, &got)?;
+    if sync == Sync::Folder {
+        sync_folder(dir)?;
+    }
+    Ok((got, value))
 }
 
 /// A new, empty temporary file in `dir`, mode `0600`. `create_new` never
@@ -396,7 +430,7 @@ fn no_links(err: &io::Error) -> bool {
 
 /// Whether the file at `path` has exactly the content `expected` (its
 /// hash and kind), read once, at most its size plus one byte.
-fn has_content(path: &Path, expected: &Ingested) -> io::Result<bool> {
+pub(super) fn has_content(path: &Path, expected: &Ingested) -> io::Result<bool> {
     let file = File::open(path)?;
     let mut capped = file.take(expected.bytes.saturating_add(1));
     match copy_capped(&mut capped, &mut io::sink()) {

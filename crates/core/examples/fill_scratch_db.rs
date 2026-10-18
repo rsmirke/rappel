@@ -3,7 +3,7 @@
 //! try studying without waiting days (ADR 0014).
 //!
 //! ```text
-//! cargo run -p rappel-core --example fill_scratch_db -- /tmp/rappel-scratch [count] [--due N] [--markdown] [--math] [--tags] [--suspended N] [--media]
+//! cargo run -p rappel-core --example fill_scratch_db -- /tmp/rappel-scratch [count] [--due N] [--markdown] [--math] [--tags] [--suspended N] [--media] [--unused-media]
 //! RAPPEL_DATA_DIR=/tmp/rappel-scratch cargo run -p rappel
 //! ```
 //!
@@ -25,7 +25,8 @@
 //! one-second WAV tone (on the back, and on the front among text), two
 //! naming files that are not there (an image and a sound, ADR 0056), and
 //! one with a remote image, which is shown as text; the same files every
-//! run.
+//! run. With `--unused-media`, it adds three media files that no card
+//! names (three PNGs), for Clean Up Media in Preferences (ADR 0057).
 //! The directory
 //! must be absolute and is never one of the
 //! app's own data directories, release or debug: this is for throwaway
@@ -61,7 +62,7 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<String, String> {
-    let usage = "usage: fill_scratch_db <absolute scratch dir> [count] [--due N] [--markdown] [--math] [--tags] [--suspended N] [--media]";
+    let usage = "usage: fill_scratch_db <absolute scratch dir> [count] [--due N] [--markdown] [--math] [--tags] [--suspended N] [--media] [--unused-media]";
     let number = |arg: Option<std::ffi::OsString>| {
         arg.as_ref()
             .and_then(|n| n.to_str())
@@ -71,7 +72,7 @@ fn run() -> Result<String, String> {
     let mut args = std::env::args_os().skip(1);
     let dir = PathBuf::from(args.next().ok_or(usage)?);
     let (mut count, mut due, mut markdown, mut math, mut tags) = (None, 0, false, false, false);
-    let (mut suspended, mut media) = (0, false);
+    let (mut suspended, mut media, mut unused_media) = (0, false, false);
     while let Some(arg) = args.next() {
         if arg == "--due" {
             due = number(args.next())?;
@@ -85,6 +86,8 @@ fn run() -> Result<String, String> {
             suspended = number(args.next())?;
         } else if arg == "--media" {
             media = true;
+        } else if arg == "--unused-media" {
+            unused_media = true;
         } else if count.is_none() {
             count = Some(number(Some(arg))?);
         } else {
@@ -92,8 +95,11 @@ fn run() -> Result<String, String> {
         }
     }
     let count = count.unwrap_or(DEFAULT_COUNT);
-    if count == 0 && !markdown && !math && !media {
-        return Err("nothing to add: count is 0 and no --markdown, --math or --media".to_owned());
+    if count == 0 && !markdown && !math && !media && !unused_media {
+        return Err(
+            "nothing to add: count is 0 and no --markdown, --math, --media or --unused-media"
+                .to_owned(),
+        );
     }
     if due > count {
         return Err(format!("--due {due} is more than the {count} cards"));
@@ -142,6 +148,12 @@ fn run() -> Result<String, String> {
     }
     if media {
         added.push(fill_media_deck(&mut store)?);
+    }
+    if unused_media {
+        for bytes in [png(300, 300)?, png(900, 500)?, png(200, 700)?] {
+            store.add_media_bytes(&bytes).map_err(|e| e.to_string())?;
+        }
+        added.push("3 media files no card uses".to_owned());
     }
     Ok(format!(
         "Added {} in {}",
