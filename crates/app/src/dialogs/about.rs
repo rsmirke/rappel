@@ -5,6 +5,8 @@
 
 use adw::prelude::*;
 
+use crate::i18n::gettext;
+
 /// The repository, from the workspace's `[package] repository`.
 const REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
 
@@ -12,24 +14,25 @@ const REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
 const DEVELOPER: &str = "Robert Smirke";
 
 /// The libraries Rappel is built on, credited by name.
-const LIBRARIES: [&str; 8] = [
+const LIBRARIES: [&str; 9] = [
     "GTK",
     "libadwaita",
     "GtkSourceView",
     "gtk-rs",
     "RaTeX",
-    "SQLite and rusqlite",
+    "SQLite",
+    "rusqlite",
     "FSRS (fsrs-rs)",
     "pulldown-cmark",
 ];
 
 /// A legal section of the dialog: a title, a copyright and a licence.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Legal {
-    title: &'static str,
+    title: String,
     copyright: &'static str,
     /// Pango markup (`AdwAboutDialog` shows a custom licence as markup).
-    license: &'static str,
+    license: String,
 }
 
 /// The `KaTeX` fonts drawn by the math renderer (ADR 0021, 0023). The
@@ -37,13 +40,26 @@ struct Legal {
 /// to be kept with the fonts. Both strings are shown as markup
 /// (`adw-about-dialog.c`, `append_legal_section`), so neither may hold a
 /// bare `&` or `<`.
-const KATEX_FONTS: Legal = Legal {
-    title: "KaTeX Fonts",
-    copyright: "© 2009–2010 Design Science, Inc.\n© 2014–2018 Khan Academy",
-    license: "These fonts are licensed under the \
-              <a href=\"https://openfontlicense.org\">SIL Open Font License, Version 1.1</a>. \
-              They are data shipped with Rappel, not part of its code.",
-};
+fn katex_fonts() -> Legal {
+    Legal {
+        title: gettext("KaTeX Fonts"),
+        copyright: "© 2009–2010 Design Science, Inc.\n© 2014–2018 Khan Academy",
+        license: gettext(
+            // Translators: Pango markup: keep the <a href="…"> link and
+            // the licence's name as they are, and write & as &amp;.
+            "These fonts are licensed under the \
+             <a href=\"https://openfontlicense.org\">SIL Open Font License, Version 1.1</a>. \
+             They are data shipped with Rappel, not part of its code.",
+        ),
+    }
+}
+
+/// The translators to credit: none where the lookup gave the message
+/// itself back (English, or a language whose catalog has no credits), so
+/// the dialog never lists "translator-credits" as a name.
+fn translator_credits(looked_up: String) -> Option<String> {
+    (looked_up != "translator-credits" && !looked_up.trim().is_empty()).then_some(looked_up)
+}
 
 /// The issue tracker, from the repository.
 fn issue_url() -> String {
@@ -65,12 +81,19 @@ pub fn show(parent: &impl IsA<gtk::Widget>) {
     // Opened in the browser only when clicked; Rappel fetches nothing.
     dialog.set_website(REPOSITORY);
     dialog.set_issue_url(&issue_url());
-    dialog.add_credit_section(Some("Built With"), &LIBRARIES);
+    // Translators: put your name here (one per line, with an e-mail
+    // address in <> if you like); libadwaita lists it under Translated by.
+    let credits = gettext("translator-credits");
+    if let Some(credits) = translator_credits(credits) {
+        dialog.set_translator_credits(&credits);
+    }
+    dialog.add_credit_section(Some(&gettext("Built With")), &LIBRARIES);
+    let fonts = katex_fonts();
     dialog.add_legal_section(
-        KATEX_FONTS.title,
-        Some(KATEX_FONTS.copyright),
+        &fonts.title,
+        Some(fonts.copyright),
         gtk::License::Custom,
-        Some(KATEX_FONTS.license),
+        Some(&fonts.license),
     );
     dialog.present(Some(parent));
 }
@@ -104,12 +127,20 @@ mod tests {
 
     #[test]
     fn the_fonts_keep_their_copyright_and_licence() {
-        assert!(KATEX_FONTS.copyright.contains("Design Science"));
-        assert!(KATEX_FONTS.copyright.contains("Khan Academy"));
+        let fonts = katex_fonts();
+        assert!(fonts.copyright.contains("Design Science"));
+        assert!(fonts.copyright.contains("Khan Academy"));
+        assert!(fonts.license.contains("SIL Open Font License, Version 1.1"));
+        let french = crate::i18n::tests::in_french(katex_fonts);
         assert!(
-            KATEX_FONTS
+            french
                 .license
                 .contains("SIL Open Font License, Version 1.1")
+        );
+        assert!(
+            french
+                .license
+                .contains("<a href=\"https://openfontlicense.org\">")
         );
     }
 
@@ -117,14 +148,30 @@ mod tests {
     fn the_font_licence_is_label_markup() {
         // AdwAboutDialog shows a custom licence in a GtkLabel with markup,
         // which adds `<a href>` to Pango's tags (GtkLabel docs, "Links").
-        crate::testing::with_gtk(|| {
+        let english = katex_fonts().license;
+        let french = crate::i18n::tests::in_french(|| katex_fonts().license);
+        crate::testing::with_gtk(move || {
             let label = gtk::Label::new(None);
-            label.set_markup(KATEX_FONTS.license);
+            label.set_markup(&english);
             assert_eq!(
                 label.text(),
                 "These fonts are licensed under the SIL Open Font License, Version 1.1. \
                  They are data shipped with Rappel, not part of its code."
             );
+            // The translation is markup too: GTK would show a broken one
+            // as its raw text.
+            label.set_markup(&french);
+            assert!(!label.text().contains('<'), "{}", label.text());
+            assert!(label.text().contains("SIL Open Font License"));
         });
+    }
+
+    #[test]
+    fn an_untranslated_credit_line_is_left_out() {
+        assert_eq!(translator_credits("translator-credits".to_owned()), None);
+        assert_eq!(translator_credits(" ".to_owned()), None);
+        assert_eq!(translator_credits(gettext("translator-credits")), None);
+        let french = crate::i18n::tests::in_french(|| gettext("translator-credits"));
+        assert_eq!(translator_credits(french.clone()), Some(french));
     }
 }

@@ -39,6 +39,7 @@ use rappel_core::domain::Tag;
 use self::field::TagsCheck;
 use self::keys::{EntryKey, EntryState, KeyAction, Move};
 use super::TagSuggestions;
+use crate::i18n::gettext;
 use crate::ui::callback::Callback;
 use crate::ui::text::one_line;
 
@@ -316,7 +317,7 @@ impl TagEntry {
         // Made here rather than in the template: it goes into the pills'
         // wrapping lines, after them.
         let text = gtk::Text::builder()
-            .placeholder_text("Add a tag")
+            .placeholder_text(gettext("Add a tag"))
             .width_chars(12)
             .hexpand(true)
             .valign(gtk::Align::Center)
@@ -324,7 +325,7 @@ impl TagEntry {
             .margin_end(6)
             .build();
         text.update_property(&[
-            gtk::accessible::Property::Label("Tags"),
+            gtk::accessible::Property::Label(&gettext("Tags")),
             gtk::accessible::Property::Autocomplete(gtk::AccessibleAutocomplete::List),
         ]);
         text.update_relation(&[gtk::accessible::Relation::DescribedBy(&[imp

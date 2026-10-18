@@ -31,8 +31,10 @@ use rappel_core::media::{IMAGE_MAX_BYTES, MediaRef};
 
 use super::CardEditor;
 use super::media::{self, Offered, WithoutLocal};
+use crate::i18n::gettext;
 use crate::state::{Accept, AddMediaError, AppState, local_path};
 use crate::ui::worker;
+use rappel_core::domain::CardSide;
 
 /// Something to add as media.
 #[derive(Debug)]
@@ -57,14 +59,14 @@ impl CardEditor {
                 &*imp.front_audio_button,
                 &*imp.front_view,
                 &*imp.front_frame,
-                "Front",
+                CardSide::Front,
             ),
             (
                 &*imp.back_image_button,
                 &*imp.back_audio_button,
                 &*imp.back_view,
                 &*imp.back_frame,
-                "Back",
+                CardSide::Back,
             ),
         ];
         for (image_button, audio_button, view, frame, name) in sides {
@@ -92,25 +94,25 @@ impl CardEditor {
     fn choose_files(&self, view: &sourceview5::View, accept: Accept) {
         let filter = gtk::FileFilter::new();
         let title = if accept == Accept::Audio {
-            filter.set_name(Some("Audio"));
+            filter.set_name(Some(&gettext("Audio")));
             for mime in media::AUDIO_MIME_TYPES {
                 filter.add_mime_type(mime);
             }
             for suffix in media::AUDIO_SUFFIXES {
                 filter.add_suffix(suffix);
             }
-            "Insert Audio"
+            gettext("Insert Audio")
         } else {
-            filter.set_name(Some("Images"));
+            filter.set_name(Some(&gettext("Images")));
             for mime in media::IMAGE_MIME_TYPES {
                 filter.add_mime_type(mime);
             }
-            "Insert Image"
+            gettext("Insert Image")
         };
         let filters = gio::ListStore::new::<gtk::FileFilter>();
         filters.append(&filter);
         let chooser = gtk::FileDialog::builder()
-            .title(title)
+            .title(title.as_str())
             .modal(true)
             .filters(&filters)
             .default_filter(&filter)
@@ -307,7 +309,7 @@ impl CardEditor {
                     failure.get_or_insert_with(|| media::add_failed_text(&err, accept));
                 }
                 Err(worker::Panicked) => {
-                    failure.get_or_insert_with(|| media::could_not_add(accept).to_owned());
+                    failure.get_or_insert_with(|| media::could_not_add(accept));
                 }
             }
         }

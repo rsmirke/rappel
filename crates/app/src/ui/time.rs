@@ -1,10 +1,11 @@
 //! Dates and times for display, in the user's local time zone and locale
-//! (`GLib` formats them), and the pure "in 3 days" / "overdue by 2 days"
-//! phrase. English only until translations exist (SPEC §5).
+//! (`GLib` formats them, with formats a translator can change, as GNOME
+//! apps do), and the pure "in 3 days" / "overdue by 2 days" phrase.
 
 use gtk::glib;
 
-use super::text::{count, interval_text};
+use super::text::{counted, interval_text};
+use crate::i18n::{fill, gettext, ngettext, pgettext};
 
 /// Lengths of time in milliseconds, the unit of every timestamp.
 pub const MINUTE_MS: i64 = 60_000;
@@ -20,30 +21,46 @@ fn local_format(ms: i64, format: &str) -> Option<String> {
         .map(String::from)
 }
 
+/// What a date that cannot be shown says.
+fn unknown_date() -> String {
+    gettext("Unknown date")
+}
+
 /// Date and time in the locale's format ("%x %R").
 pub fn date_time(ms: i64) -> String {
-    local_format(ms, "%x %R").unwrap_or_else(|| "Unknown date".to_owned())
+    // Translators: a date and time, as GLib's g_date_time_format() takes
+    // it: %x is the date in your locale's own way, %R the time as 14:05.
+    local_format(ms, &pgettext("date format", "%x %R")).unwrap_or_else(unknown_date)
 }
 
 /// Date and time with seconds ("%x %X"): backups made within a minute of
 /// each other must differ on the recovery page.
 pub fn date_time_seconds(ms: i64) -> String {
-    local_format(ms, "%x %X").unwrap_or_else(|| "Unknown date".to_owned())
+    // Translators: a date and time with seconds, for g_date_time_format():
+    // %x is the date in your locale's own way, %X the time with seconds.
+    local_format(ms, &pgettext("date format", "%x %X")).unwrap_or_else(unknown_date)
 }
 
 /// Day and short month: "17 Sep" (chart axes).
 pub fn day_short(ms: i64) -> String {
-    local_format(ms, "%-d %b").unwrap_or_default()
+    // Translators: a day under a chart's bar, for g_date_time_format():
+    // %-d is the day of the month, %b the short month name ("17 Sep").
+    local_format(ms, &pgettext("date format", "%-d %b")).unwrap_or_default()
 }
 
 /// Day and month: "14 October" (chart summaries).
 pub fn day_long(ms: i64) -> String {
-    local_format(ms, "%-d %B").unwrap_or_default()
+    // Translators: a day in a chart's summary, for g_date_time_format():
+    // %-d is the day of the month, %B the month name ("14 October").
+    local_format(ms, &pgettext("date format", "%-d %B")).unwrap_or_default()
 }
 
 /// Weekday, day and month: "Tue 14 Oct" (a selected day).
 pub fn day_with_weekday(ms: i64) -> String {
-    local_format(ms, "%a %-d %b").unwrap_or_default()
+    // Translators: the day chosen on a chart, for g_date_time_format():
+    // %a is the short weekday, %-d the day of the month, %b the short
+    // month name ("Tue 14 Oct").
+    local_format(ms, &pgettext("date format", "%a %-d %b")).unwrap_or_default()
 }
 
 /// How far `due` is from `now`: "due now", "in 3 days", "in 10 min",
@@ -51,13 +68,22 @@ pub fn day_with_weekday(ms: i64) -> String {
 pub fn relative_due(due: i64, now: i64) -> String {
     let delta = due.saturating_sub(now);
     if delta > 0 {
-        format!("in {}", interval_text(delta))
+        // Translators: when a card is due; {interval} is "3 days", "10 min".
+        fill(
+            &gettext("in {interval}"),
+            &[("interval", &interval_text(delta))],
+        )
     } else {
         let days = usize::try_from(delta.saturating_neg() / DAY_MS).unwrap_or(0);
         if days == 0 {
-            "due now".to_owned()
+            gettext("due now")
         } else {
-            format!("overdue by {}", count(days, "day", "days"))
+            counted(
+                // Translators: a card that should have been reviewed
+                // {count} days ago.
+                &ngettext("overdue by {count} day", "overdue by {count} days", days),
+                days,
+            )
         }
     }
 }
@@ -76,8 +102,8 @@ mod tests {
         assert_eq!(relative_due(NOW - DAY_MS, NOW), "overdue by 1 day");
         assert_eq!(relative_due(NOW - 2 * DAY_MS - 5, NOW), "overdue by 2 days");
         // Far ends of the clock: no overflow.
-        assert_eq!(relative_due(i64::MAX, 0), "in 1000 years");
-        assert_eq!(relative_due(i64::MAX, i64::MIN), "in 1000 years");
+        assert_eq!(relative_due(i64::MAX, 0), "in 1,000 years");
+        assert_eq!(relative_due(i64::MAX, i64::MIN), "in 1,000 years");
         assert_eq!(
             relative_due(i64::MIN, i64::MAX),
             "overdue by 106,751,991,167 days"
@@ -96,5 +122,19 @@ mod tests {
             let _ = day_with_weekday(ms);
         }
         assert_ne!(day_short(1_700_000_000_000), "");
+    }
+
+    #[test]
+    fn a_due_time_is_described_in_french_too() {
+        const NOW: i64 = 1_000_000_000_000;
+        crate::i18n::tests::in_french(|| {
+            assert_eq!(relative_due(NOW + 3 * DAY_MS, NOW), "dans 3\u{a0}jours");
+            assert_eq!(relative_due(NOW, NOW), "à revoir maintenant");
+            assert_eq!(relative_due(NOW - DAY_MS, NOW), "en retard de 1\u{a0}jour");
+            assert_eq!(
+                relative_due(NOW - 2 * DAY_MS, NOW),
+                "en retard de 2\u{a0}jours"
+            );
+        });
     }
 }

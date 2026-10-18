@@ -1,6 +1,9 @@
 //! What the keys of a tag entry do, where the keyboard focus goes, and what
 //! a screen reader is told, decided without GTK (ADR 0031, ADR 0043).
 
+use crate::i18n::{fill, gettext, ngettext};
+use crate::ui::text::{counted, group_digits, list_separator};
+
 /// A key that moves the highlight in the suggestions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Move {
@@ -135,14 +138,32 @@ pub fn should_split(active: bool, inside: bool) -> bool {
 
 /// What a screen reader is told when the highlight lands on `name`.
 pub fn highlight_announcement(name: &str, index: usize, len: usize) -> String {
-    format!("{name}, suggestion {} of {len}", index + 1)
+    fill(
+        // Translators: said by a screen reader on a tag suggestion: {name}
+        // is the tag, {position} its place in the list, {count} the
+        // number of suggestions.
+        &gettext("{name}, suggestion {position} of {count}"),
+        &[
+            ("name", name),
+            ("position", &group_digits(index + 1)),
+            ("count", &group_digits(len)),
+        ],
+    )
 }
 
 /// What a screen reader is told when suggestions appear.
 pub fn suggestions_announcement(len: usize) -> String {
-    format!(
-        "{}: Tab takes the first, the arrow keys choose, Escape keeps what you typed",
-        crate::ui::text::count(len, "suggestion", "suggestions")
+    counted(
+        // Translators: said by a screen reader when tag suggestions appear;
+        // {count} is how many there are.
+        &ngettext(
+            "{count} suggestion: Tab takes the first, the arrow keys choose, Escape keeps what \
+             you typed",
+            "{count} suggestions: Tab takes the first, the arrow keys choose, Escape keeps what \
+             you typed",
+            len,
+        ),
+        len,
     )
 }
 
@@ -151,20 +172,27 @@ pub fn suggestions_announcement(len: usize) -> String {
 pub fn added_announcement(names: &[String]) -> Option<String> {
     match names {
         [] => None,
-        [name] => Some(format!("Tag {name} added")),
-        _ => Some(format!("Tags {} added", names.join(", "))),
+        // Translators: said by a screen reader; {name} is a tag.
+        [name] => Some(fill(&gettext("Tag {name} added"), &[("name", name)])),
+        _ => Some(fill(
+            // Translators: said by a screen reader; {names} is a list of tags.
+            &gettext("Tags {names} added"),
+            &[("names", &names.join(&list_separator()))],
+        )),
     }
 }
 
 /// What a screen reader is told when a pill is removed.
 pub fn removed_announcement(name: &str) -> String {
-    format!("Tag {name} removed")
+    // Translators: said by a screen reader; {name} is a tag.
+    fill(&gettext("Tag {name} removed"), &[("name", name)])
 }
 
 /// The accessible label of a pill's remove button. Its tooltip is the
 /// shorter "Remove Tag", next to the name it is drawn beside.
 pub fn remove_label(name: &str) -> String {
-    format!("Remove tag {name}")
+    // Translators: a button's name for screen readers; {name} is a tag.
+    fill(&gettext("Remove tag {name}"), &[("name", name)])
 }
 
 #[cfg(test)]

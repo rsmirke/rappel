@@ -26,6 +26,8 @@ You need:
   Without the base plugins (`playbin3`), every audio button says "Audio playback is not available on this
   system" and nothing is played. CI installs the base and good plugins so the audio tests play for real.
 - `blueprint-compiler` and `glib-compile-resources` (from GLib) on your `PATH`
+- for the tests, the C library's locale sources, from which a test makes a French locale
+  (Debian/Ubuntu: `locales`; Fedora: `glibc-locale-source`)
 - [`cargo-deny`](https://github.com/EmbarkStudios/cargo-deny) for the quality gate (`cargo install cargo-deny`)
 
 ```sh
@@ -50,6 +52,23 @@ RAPPEL_DATA_DIR=/tmp/rappel-scratch cargo run -p rappel
 ```
 
 Add `--markdown` for a deck with one card per Markdown construct, and `--math` for a deck with 15 formulas, one per card, plus a card with invalid LaTeX (`… fill_scratch_db -- /tmp/rappel-md 0 --markdown --math` adds only those two decks).
+
+## Translations
+
+Rappel uses gettext, laid out as GNOME projects are (ADR 0059): `po/LINGUAS` lists the languages, `po/rappel.pot` is the template and `po/<lang>.po` each translation. GNU gettext's tools are not needed: `build.rs` compiles the catalogs, and the tests make the template and check the translations.
+
+- **Run Rappel in French** without a French system locale: make one once, then point the C library at it (`LC_ALL`, not `LANG`, so the session's other `LC_*` settings do not ask for locales that folder lacks):
+  ```sh
+  mkdir -p target/tmp/locales && localedef -i fr_FR -f UTF-8 target/tmp/locales/fr_FR.UTF-8
+  LOCPATH=$PWD/target/tmp/locales LC_ALL=fr_FR.UTF-8 LANGUAGE=fr cargo run -p rappel
+  ```
+  A debug build reads the catalogs `build.rs` compiled; an installed build reads `/usr/share/locale` (or `RAPPEL_LOCALEDIR`).
+- **After changing a text**: mark every user-visible string with `gettext("…")`, `pgettext("context", "…")` or `ngettext("…", "…", n)` (Rust) or `_("…")` / `C_("context", "…")` (Blueprint), as whole sentences with named placeholders (`{count}`, filled by `i18n::fill` or `ui::text::counted`), and a `// Translators:` comment above any with a placeholder. Then update the template and the catalogs, and translate the new entries (they are empty) in each `po/<lang>.po`:
+  ```sh
+  RAPPEL_UPDATE_TRANSLATIONS=1 cargo test -p rappel the_template_is_up_to_date
+  ```
+  The gate fails while a string is unmarked, the template is out of date, or a catalog misses a message, keeps one fuzzy, or changes its placeholders.
+- **Add a language**: copy `po/rappel.pot` to `po/<lang>.po`, fill in its header (`Language:` and `Plural-Forms:`), translate every entry, then add its code to `po/LINGUAS`. A language cannot land partly translated: once it is in `LINGUAS`, the gate refuses its catalog while any message is missing, empty or fuzzy, so finish the translation before listing it.
 
 ## Recovering your data
 

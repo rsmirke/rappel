@@ -7,6 +7,7 @@
 //! the path the core builds from its checked hash; nothing here opens a
 //! path or a URI from card text.
 
+use crate::i18n::{fill, gettext};
 use rappel_core::content::{Block, Document, Inline, plain_text};
 
 /// At most this many audio controls per side; later links are
@@ -26,8 +27,12 @@ pub fn link_text(content: &[Inline]) -> String {
 }
 
 /// What the button shows: the link's words, or "Audio" without any.
-pub fn button_text(text: &str) -> &str {
-    if text.is_empty() { "Audio" } else { text }
+pub fn button_text(text: &str) -> String {
+    if text.is_empty() {
+        gettext("Audio")
+    } else {
+        text.to_owned()
+    }
 }
 
 /// Where an audio control is.
@@ -74,25 +79,25 @@ impl State {
     }
 
     /// The button's tooltip.
-    pub fn tooltip(self) -> &'static str {
+    pub fn tooltip(self) -> String {
         match self {
-            Self::Ready => "Play",
-            Self::Loading | Self::Playing => "Pause",
-            Self::Unavailable | Self::TooMany => "Audio not available",
-            Self::NoPlayback => "GStreamer's base plugins are not installed",
-            Self::Failed => "Audio could not be played",
+            Self::Ready => gettext("Play"),
+            Self::Loading | Self::Playing => gettext("Pause"),
+            Self::Unavailable | Self::TooMany => gettext("Audio not available"),
+            Self::NoPlayback => gettext("GStreamer’s base plugins are not installed"),
+            Self::Failed => gettext("Audio could not be played"),
         }
     }
 
     /// The dimmed words beside the button, if the state has any (the time
     /// while playing is [`time_text`]).
-    pub fn note(self) -> Option<&'static str> {
+    pub fn note(self) -> Option<String> {
         match self {
             Self::Ready | Self::Loading | Self::Playing => None,
-            Self::Unavailable => Some("Audio not available"),
-            Self::TooMany => Some("Audio not available: too many on this side"),
-            Self::Failed => Some("Could not be played"),
-            Self::NoPlayback => Some("Audio playback is not available on this system"),
+            Self::Unavailable => Some(gettext("Audio not available")),
+            Self::TooMany => Some(gettext("Audio not available: too many on this side")),
+            Self::Failed => Some(gettext("Could not be played")),
+            Self::NoPlayback => Some(gettext("Audio playback is not available on this system")),
         }
     }
 }
@@ -100,15 +105,15 @@ impl State {
 /// The accessible label of the button: what pressing it does, and the
 /// link's words ("Play audio: Bonjour", or "Play audio" without words).
 pub fn accessible_label(text: &str, state: State) -> String {
-    let action = if state.playing() {
-        "Pause audio"
-    } else {
-        "Play audio"
-    };
-    if text.is_empty() {
-        action.to_owned()
-    } else {
-        format!("{action}: {text}")
+    match (state.playing(), text.is_empty()) {
+        (true, true) => gettext("Pause audio"),
+        (false, true) => gettext("Play audio"),
+        // Translators: a sound's button for screen readers; {words} is its
+        // link's words.
+        (true, false) => fill(&gettext("Pause audio: {words}"), &[("words", text)]),
+        // Translators: a sound's button for screen readers; {words} is its
+        // link's words.
+        (false, false) => fill(&gettext("Play audio: {words}"), &[("words", text)]),
     }
 }
 
@@ -200,7 +205,7 @@ mod tests {
         assert!(!TooMany.enabled());
         assert!(!State::NoPlayback.enabled());
         assert_eq!(
-            State::NoPlayback.note(),
+            State::NoPlayback.note().as_deref(),
             Some("Audio playback is not available on this system")
         );
         assert!(State::NoPlayback.tooltip().contains("GStreamer"));
@@ -208,8 +213,8 @@ mod tests {
         assert_eq!(Playing.tooltip(), "Pause");
         assert_eq!(Ready.icon(), "media-playback-start-symbolic");
         assert_eq!(Playing.icon(), "media-playback-pause-symbolic");
-        assert_eq!(Unavailable.note(), Some("Audio not available"));
-        assert_eq!(Failed.note(), Some("Could not be played"));
+        assert_eq!(Unavailable.note().as_deref(), Some("Audio not available"));
+        assert_eq!(Failed.note().as_deref(), Some("Could not be played"));
         assert_eq!(Failed.tooltip(), "Audio could not be played");
         assert!(TooMany.note().unwrap().starts_with("Audio not available"));
         assert_eq!(Ready.note(), None);

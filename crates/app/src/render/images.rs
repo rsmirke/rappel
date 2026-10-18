@@ -10,6 +10,7 @@
 //! (`http:`, `file:`, a path) stays text: [`pieces`] never returns one, so
 //! nothing here can open or fetch it.
 
+use crate::i18n::{fill, gettext};
 use std::collections::VecDeque;
 use std::path::Path;
 
@@ -227,19 +228,19 @@ impl Failure {
 pub fn image_name(alt: &str) -> String {
     let alt = alt.split_whitespace().collect::<Vec<_>>().join(" ");
     if alt.is_empty() {
-        "Image".to_owned()
+        gettext("Image")
     } else {
         alt
     }
 }
 
 /// The placeholder's text for `failure`.
-pub fn placeholder_text(failure: Failure) -> &'static str {
+pub fn placeholder_text(failure: Failure) -> String {
     match failure {
-        Failure::Missing => "Image not available",
-        Failure::CannotShow | Failure::TimedOut => "Image could not be shown",
-        Failure::TooMany => "Image not shown: too many images on this side",
-        Failure::OverBudget => "Image not shown: the images on this side are too large",
+        Failure::Missing => gettext("Image not available"),
+        Failure::CannotShow | Failure::TimedOut => gettext("Image could not be shown"),
+        Failure::TooMany => gettext("Image not shown: too many images on this side"),
+        Failure::OverBudget => gettext("Image not shown: the images on this side are too large"),
     }
 }
 
@@ -249,14 +250,22 @@ pub fn placeholder_label(failure: Failure, alt: &str) -> String {
     let text = placeholder_text(failure);
     let alt = alt.split_whitespace().collect::<Vec<_>>().join(" ");
     if alt.is_empty() {
-        text.to_owned()
+        text
     } else {
-        format!("{text}: {alt}")
+        fill(
+            // Translators: what a screen reader says for an image that is
+            // not shown: {why} is "Image not available" or the like, {alt}
+            // the image's description from the card.
+            &gettext("{why}: {alt}"),
+            &[("why", &text), ("alt", &alt)],
+        )
     }
 }
 
 /// The accessible description of an image that opens at full size.
-pub const OPEN_DESCRIPTION: &str = "Opens the image at full size";
+pub fn open_description() -> String {
+    gettext("Opens the image at full size")
+}
 
 /// The per-side count of images drawn, in document order, like
 /// `math::Budget` for formulas.

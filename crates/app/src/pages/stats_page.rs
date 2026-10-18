@@ -8,12 +8,13 @@
 
 mod text;
 
+use crate::i18n::gettext;
 use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::glib;
 use rappel_core::domain::Deck;
 
-use self::text::{DayNames, FORECAST_TITLE, REVIEWS_TITLE, TIME_TITLE};
+use self::text::DayNames;
 use crate::state::{AppState, StatsData};
 use crate::ui::tile::set_tile;
 use crate::ui::time;
@@ -117,10 +118,10 @@ impl StatsPage {
         // Deck names are untrusted; AdwWindowTitle shows plain text.
         page.imp()
             .window_title
-            .set_subtitle(deck.map_or("All Decks", |d| d.name.as_str()));
+            .set_subtitle(&deck.map_or_else(|| gettext("All Decks"), |d| d.name.clone()));
         page.imp()
             .back_button
-            .set_label(text::back_label(deck.is_some()));
+            .set_label(&text::back_label(deck.is_some()));
         page.fill(&data);
         Ok(page)
     }
@@ -142,22 +143,22 @@ impl StatsPage {
             with_weekday: &time::day_with_weekday,
             long: &time::day_long,
         };
-        let charts: [(&ChartCard, &str, ChartModel, bool); 3] = [
+        let charts: [(&ChartCard, String, ChartModel, bool); 3] = [
             (
                 &imp.reviews_chart,
-                REVIEWS_TITLE,
+                text::reviews_title(),
                 text::reviews_chart(data, &names),
                 true,
             ),
             (
                 &imp.time_chart,
-                TIME_TITLE,
+                text::time_title(),
                 text::time_chart(data, &names),
                 false,
             ),
             (
                 &imp.forecast_chart,
-                FORECAST_TITLE,
+                text::forecast_title(),
                 text::forecast_chart(data, &names),
                 false,
             ),

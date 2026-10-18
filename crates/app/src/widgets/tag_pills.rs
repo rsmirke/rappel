@@ -32,6 +32,7 @@ use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::{gdk, glib};
 
+use crate::i18n::pgettext;
 use crate::ui::callback::Callback;
 
 /// Called with the index of a pill whose remove button was used, and
@@ -332,7 +333,7 @@ impl TagPills {
         let label = pill_label(true);
         let remove = gtk::Button::builder()
             .icon_name("window-close-symbolic")
-            .tooltip_text("Remove Tag")
+            .tooltip_text(pgettext("tag pill", "Remove Tag"))
             .valign(gtk::Align::Center)
             .css_classes(["flat", "circular"])
             .build();

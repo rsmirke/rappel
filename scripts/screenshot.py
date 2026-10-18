@@ -12,7 +12,8 @@ Needs: Xvfb, xauth, ImageMagick's `import`, libX11 and libXtst.
 Usage:
   scripts/screenshot.py --out NAME --size 1000x720 --scheme dark \
       [--data DIR | --fill "30 --due 5 --tags"] [--deck DECK_ID] \
-      [--steps "wait:4 shot:list key:ctrl+n wait:1 type:Hello shot:editor"]
+      [--steps "wait:4 shot:list key:ctrl+n wait:1 type:Hello shot:editor"] \
+      [--env LC_ALL=fr_FR.UTF-8] [--decoration-layout :close]
 
 Steps, separated by spaces (use %20 for a space inside type:):
   wait:SECONDS      let the app run
@@ -207,7 +208,13 @@ def main():
     p.add_argument("--deck", default="", help="deck id to open at start")
     p.add_argument("--steps", default="wait:6 shot:")
     p.add_argument("--env", action="append", default=[], help="extra KEY=VALUE for the app")
+    p.add_argument("--decoration-layout", default="",
+                   help="GTK's gtk-decoration-layout for the window's buttons, e.g. ':close' as GNOME and "
+                        "phones have it (default: GTK's own, with minimize and maximize)")
     a = p.parse_args()
+    # Before anything starts: it goes into a settings file as it is.
+    if a.decoration_layout and not all(c.isalnum() or c in ":,-_" for c in a.decoration_layout):
+        sys.exit("--decoration-layout takes button names, ',' and ':' only")
     if not a.out or "/" in a.out or a.out.startswith("."):
         sys.exit("--out is a file name stem, not a path")
     extra = dict(kv.partition("=")[::2] for kv in a.env)
@@ -265,6 +272,11 @@ def main():
                    XDG_DATA_HOME=f"{home}/.local/share", XDG_STATE_HOME=f"{home}/.local/state",
                    XDG_RUNTIME_DIR=os.path.join(work, "run"))
         os.makedirs(env["XDG_RUNTIME_DIR"], mode=0o700)
+        if a.decoration_layout:
+            gtk_config = os.path.join(env["XDG_CONFIG_HOME"], "gtk-4.0")
+            os.makedirs(gtk_config, mode=0o700)
+            with open(os.path.join(gtk_config, "settings.ini"), "w") as f:
+                f.write(f"[Settings]\ngtk-decoration-layout={a.decoration_layout}\n")
         log = open(os.path.join(SHOTS, a.out + ".log"), "w")
         app = subprocess.Popen([os.path.join(REPO, "target", "debug", "rappel")], env=env, stdout=log, stderr=log,
                                start_new_session=True)

@@ -16,6 +16,7 @@ use rappel_core::domain::{
     MAX_TAG_NAME_BYTES, Tag, TagFieldError, check_tag_name, name_key, parse_tag_field, search_key,
 };
 
+use crate::i18n::{fill, gettext};
 use crate::ui::text::group_digits;
 
 /// The most suggestions shown at once.
@@ -220,9 +221,10 @@ pub fn check(pills: &[String], typed: &str, limit: usize) -> TagsCheck {
 /// its limit. It names [`MAX_TAGS_PER_CARD`]: a card over it came so from an
 /// import, and gets no more.
 fn too_many_text() -> String {
-    format!(
-        "A card can have at most {} tags",
-        group_digits(MAX_TAGS_PER_CARD)
+    fill(
+        // Translators: {limit} is the most tags a card can have (100).
+        &gettext("A card can have at most {limit} tags"),
+        &[("limit", &group_digits(MAX_TAGS_PER_CARD))],
     )
 }
 

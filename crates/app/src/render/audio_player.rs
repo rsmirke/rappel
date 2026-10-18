@@ -308,15 +308,15 @@ impl CardAudio {
             return;
         };
         icon.set_icon_name(Some(state.icon()));
-        label.set_label(&super::breaks::breakable(button_text(&text)));
+        label.set_label(&super::breaks::breakable(&button_text(&text)));
         button.set_sensitive(state.enabled());
-        button.set_tooltip_text(Some(state.tooltip()));
+        button.set_tooltip_text(Some(&state.tooltip()));
         button.update_property(&[gtk::accessible::Property::Label(&accessible_label(
             &text, state,
         ))]);
         if let Some(words) = state.note() {
-            button.update_property(&[gtk::accessible::Property::Description(words)]);
-            note.set_label(words);
+            button.update_property(&[gtk::accessible::Property::Description(&words)]);
+            note.set_label(&words);
             note.set_visible(true);
         } else {
             button.reset_property(gtk::AccessibleProperty::Description);

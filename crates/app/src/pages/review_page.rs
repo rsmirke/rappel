@@ -31,11 +31,12 @@ use rappel_core::scheduling::{Session, Summary, capped};
 
 use crate::dialogs::card_editor::{CardEditor, Saved};
 use crate::dialogs::card_info;
+use crate::i18n::{self, gettext, ngettext};
 use crate::render::{Images, audio_controls, back_shown, clear, fill, shown_part, stop_audio};
 use crate::state::AppState;
 use crate::ui::callback::Callback;
 use crate::ui::dialog;
-use crate::ui::text::{duration_text, group_digits};
+use crate::ui::text::{counted, duration_text, group_digits, whole_percent, with_error};
 use crate::ui::tile::{Tile, set_tile};
 use crate::ui::toast::{info_toast, log_failure, show_error, show_toast_from, undo_toast};
 use crate::ui::undo::{self, UndoFailure};
@@ -209,10 +210,10 @@ enum Removal {
 
 impl Removal {
     /// The toast that offers Undo.
-    fn text(self) -> &'static str {
+    fn text(self) -> String {
         match self {
-            Self::Suspend => "Card suspended",
-            Self::Delete => "Card deleted",
+            Self::Suspend => gettext("Card suspended"),
+            Self::Delete => gettext("Card deleted"),
         }
     }
 }
@@ -245,7 +246,8 @@ fn undo_removal(
             }
         }
         Err(err) => {
-            let message = format!("The card could not be restored: {err}");
+            // Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+            let message = with_error(&gettext("The card could not be restored: {error}"), &err);
             match window {
                 Some(window) => show_error(&window, "a review operation", &message),
                 None => log_failure("a review operation", &message),
@@ -502,7 +504,11 @@ impl ReviewPage {
                 Ok(card) => card,
                 Err(err) => {
                     // Skip it and go on; it is not counted as answered.
-                    self.error_toast(&format!("A card could not be read and was skipped: {err}"));
+                    // Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+                    self.error_toast(&with_error(
+                        &gettext("A card could not be read and was skipped: {error}"),
+                        &err,
+                    ));
                     self.skip_in_session(&id);
                     continue;
                 }
@@ -725,7 +731,11 @@ impl ReviewPage {
         let card = match state.card(&id) {
             Ok(card) => card,
             Err(err) => {
-                self.error_toast(&format!("The card could not be read: {err}"));
+                // Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+                self.error_toast(&with_error(
+                    &gettext("The card could not be read: {error}"),
+                    &err,
+                ));
                 return;
             }
         };
@@ -832,17 +842,21 @@ impl ReviewPage {
             Ok(false) => {
                 // Suspended elsewhere already: there is nothing to undo here.
                 self.leave_session(id);
-                show_toast_from(self, info_toast("The card was already suspended"));
+                show_toast_from(self, info_toast(&gettext("The card was already suspended")));
                 return;
             }
             Err(rappel_core::Error::CardNotFound(_)) => {
                 // Deleted elsewhere meanwhile: it is gone from the session too.
                 self.leave_session(id);
-                show_toast_from(self, info_toast("The card was already gone"));
+                show_toast_from(self, info_toast(&gettext("The card was already gone")));
                 return;
             }
             Err(err) => {
-                self.error_toast(&format!("The card could not be changed: {err}"));
+                // Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+                self.error_toast(&with_error(
+                    &gettext("The card could not be changed: {error}"),
+                    &err,
+                ));
                 return;
             }
         }
@@ -857,7 +871,7 @@ impl ReviewPage {
         let (id, state) = (id.to_owned(), state.clone());
         let page = self.downgrade();
         let window = window.map(|w| w.downgrade());
-        let toast = undo_toast(removal.text(), move || {
+        let toast = undo_toast(&removal.text(), move || {
             undo_removal(&state, &id, removal, &page, window.as_ref());
         });
         show_toast_from(self, toast);
@@ -1029,10 +1043,17 @@ impl ReviewPage {
                     // The button may have had the focus and is now off:
                     // put it where the page's keys work.
                     self.park_focus();
-                    show_toast_from(self, info_toast("This answer can no longer be undone"));
+                    show_toast_from(
+                        self,
+                        info_toast(&gettext("This answer can no longer be undone")),
+                    );
                 }
                 UndoFailure::Failed => {
-                    self.error_toast(&format!("The answer could not be undone: {err}"));
+                    // Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+                    self.error_toast(&with_error(
+                        &gettext("The answer could not be undone: {error}"),
+                        &err,
+                    ));
                 }
             },
         }
@@ -1057,7 +1078,11 @@ impl ReviewPage {
         let event = match state.record_review(&id, grade, duration, now) {
             Ok(event) => event,
             Err(err) => {
-                self.error_toast(&format!("The answer could not be saved: {err}"));
+                // Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+                self.error_toast(&with_error(
+                    &gettext("The answer could not be saved: {error}"),
+                    &err,
+                ));
                 return;
             }
         };
@@ -1092,7 +1117,7 @@ impl ReviewPage {
             imp.summary_page.set_description(None);
         } else {
             imp.summary_figures.set_visible(false);
-            imp.summary_page.set_description(Some(NOTHING_REVIEWED));
+            imp.summary_page.set_description(Some(&nothing_reviewed()));
         }
         imp.window_title.set_subtitle("");
         self.set_controls(Controls::Hidden);
@@ -1121,7 +1146,7 @@ fn cut_note_shown(front_cut: bool, back_cut: bool, revealed: bool) -> bool {
 /// its start is shown, since the note itself is not in the focus chain.
 fn with_cut_note(text: String, cut: bool) -> String {
     if cut {
-        format!("{text}\n\n{CUT_NOTE}")
+        format!("{text}\n\n{}", cut_note())
     } else {
         text
     }
@@ -1129,13 +1154,17 @@ fn with_cut_note(text: String, cut: bool) -> String {
 
 /// The note's text for screen readers. Keep it equal to `cut_note` in
 /// `review_page.blp`.
-const CUT_NOTE: &str = "This card is long: only its start is shown. Edit it to see all of it.";
+fn cut_note() -> String {
+    gettext("This card is long: only its start is shown. Edit it to see all of it.")
+}
 
 /// The subtitle while studying: "12 left", "1,234 left". It counts the
 /// card on screen and step cards that will come back, so it can go up
 /// after a Fail.
 fn left_text(left: usize) -> String {
-    format!("{} left", group_digits(left))
+    // Translators: the subtitle while studying; {count} is the number of
+    // cards left in the session.
+    counted(&ngettext("{count} left", "{count} left", left), left)
 }
 
 /// How long the answer takes to come in, in milliseconds: short enough
@@ -1187,26 +1216,31 @@ const SUMMARY_ICON: &str = "object-select-symbolic";
 
 /// The summary page's text when no card was answered (all of them were
 /// suspended or deleted during the session).
-const NOTHING_REVIEWED: &str = "No cards were reviewed";
+fn nothing_reviewed() -> String {
+    gettext("No cards were reviewed")
+}
 
 /// The summary's three tiles: cards reviewed, pass rate and time, or
 /// `None` when no card was answered.
 fn summary_tiles(summary: &Summary) -> Option<[Tile; 3]> {
     let percent = summary.pass_percent().filter(|_| summary.cards > 0)?;
-    let cards_caption = if summary.cards == 1 {
-        "Card reviewed"
-    } else {
-        "Cards reviewed"
-    };
-    let tile = |value: String, caption: &str| Tile {
-        accessible: format!("{caption}: {value}"),
+    // Translators: the caption under the number of cards reviewed in a
+    // session's summary.
+    let cards_caption = ngettext("Card reviewed", "Cards reviewed", summary.cards);
+    let tile = |value: String, caption: String| Tile {
+        // Translators: what a screen reader says for a headline figure:
+        // {caption} is "Pass rate", {value} "91%".
+        accessible: i18n::fill(
+            &gettext("{caption}: {value}"),
+            &[("caption", &caption), ("value", &value)],
+        ),
         value,
-        caption: caption.to_owned(),
+        caption,
     };
     Some([
         tile(group_digits(summary.cards), cards_caption),
-        tile(format!("{percent}%"), "Pass rate"),
-        tile(duration_text(summary.time), "Time"),
+        tile(whole_percent(percent), gettext("Pass rate")),
+        tile(duration_text(summary.time), gettext("Time")),
     ])
 }
 
@@ -1232,7 +1266,7 @@ mod tests {
         assert_eq!(with_cut_note("Front".to_owned(), false), "Front");
         assert_eq!(
             with_cut_note("Front".to_owned(), true),
-            format!("Front\n\n{CUT_NOTE}")
+            format!("Front\n\n{}", cut_note())
         );
     }
 
@@ -1269,7 +1303,7 @@ mod tests {
     fn the_cut_note_matches_the_blueprint() {
         crate::testing::with_widgets(|| {
             let page: ReviewPage = glib::Object::new();
-            assert_eq!(page.imp().cut_note.label(), CUT_NOTE);
+            assert_eq!(page.imp().cut_note.label(), cut_note());
         });
     }
 
@@ -2244,7 +2278,7 @@ mod tests {
             assert!(!imp.summary_figures.is_visible());
             assert_eq!(
                 imp.summary_page.description().as_deref(),
-                Some(NOTHING_REVIEWED)
+                Some(nothing_reviewed().as_str())
             );
         });
     }

@@ -2,6 +2,7 @@
 //! Restore button. Layout in `data/backup_row.blp`; the page connects the
 //! button.
 
+use crate::i18n::{fill, gettext};
 use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::glib;
@@ -66,7 +67,9 @@ impl BackupRow {
 
 /// The accessible label of the Restore button of the backup made at `when`.
 fn restore_label(when: &str) -> String {
-    format!("Restore backup from {when}")
+    // Translators: a Restore button's name for screen readers; {when} is
+    // the date and time the backup was made.
+    fill(&gettext("Restore backup from {when}"), &[("when", when)])
 }
 
 #[cfg(test)]

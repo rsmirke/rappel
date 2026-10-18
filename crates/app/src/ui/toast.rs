@@ -16,6 +16,7 @@ use std::cell::RefCell;
 use adw::prelude::*;
 use rappel_core::storage::OpenWarning;
 
+use crate::i18n::{fill, gettext};
 use crate::window::RappelWindow;
 
 /// The most characters a toast title shows whole at 360 px beside its
@@ -27,7 +28,9 @@ pub const TOAST_FITS: usize = 34;
 pub const TOAST_FITS_WITH_BUTTON: usize = 24;
 
 /// The title of a toast whose text has no first clause short enough.
-pub const FALLBACK_TITLE: &str = "Something went wrong";
+pub fn fallback_title() -> String {
+    gettext("Something went wrong")
+}
 
 /// What a toast shows for a text.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,14 +42,24 @@ pub enum ToastText {
     Detailed { title: String, details: String },
 }
 
-/// The clause separators a title may end before, in the order tried.
-const CLAUSE_ENDS: [&str; 3] = [". ", ": ", "; "];
+/// The clause separators a title may end before. French puts a no-break
+/// space before ":" and ";" (U+202F, or U+00A0), which is not part of the
+/// title either (ADR 0059).
+const CLAUSE_ENDS: [&str; 7] = [
+    ". ",
+    ": ",
+    "; ",
+    "\u{202f}: ",
+    "\u{202f}; ",
+    "\u{a0}: ",
+    "\u{a0}; ",
+];
 
 /// What a toast shows for `text`: the whole text if it has at most
 /// [`TOAST_FITS`] characters; else its first clause (up to the first ". ",
 /// ": " or "; ", whichever comes first; not ", ", which can end a title
 /// half way through a list) if that has at most
-/// [`TOAST_FITS_WITH_BUTTON`], else [`FALLBACK_TITLE`], with the whole text
+/// [`TOAST_FITS_WITH_BUTTON`], else [`fallback_title`], with the whole text
 /// as the details (without the first clause, which the details' heading
 /// already says).
 pub fn toast_text(text: &str) -> ToastText {
@@ -69,7 +82,7 @@ pub fn toast_text(text: &str) -> ToastText {
             details: capitalized(&text[at + end.len()..]),
         },
         None => ToastText::Detailed {
-            title: FALLBACK_TITLE.to_owned(),
+            title: fallback_title(),
             details: text.to_owned(),
         },
     }
@@ -116,7 +129,7 @@ fn fitted_toast(text: &str, timeout: u32) -> adw::Toast {
                 .title(title.as_str())
                 .use_markup(false)
                 .timeout(timeout)
-                .button_label("_Details")
+                .button_label(gettext("_Details"))
                 .build();
             toast.connect_button_clicked(move |_| show_details(&title, &details));
             toast
@@ -136,7 +149,7 @@ fn show_details(title: &str, details: &str) {
         .body(details)
         .body_use_markup(false)
         .build();
-    alert.add_response("close", "_Close");
+    alert.add_response("close", &gettext("_Close"));
     alert.set_default_response(Some("close"));
     alert.set_close_response("close");
     alert.present(parent.as_ref());
@@ -247,7 +260,7 @@ pub fn undo_toast(title: &str, on_undo: impl Fn() + 'static) -> adw::Toast {
     let toast = adw::Toast::builder()
         .title(title)
         .use_markup(false)
-        .button_label("_Undo")
+        .button_label(gettext("_Undo"))
         // Never queued behind a toast that stays until dismissed.
         .priority(adw::ToastPriority::High)
         .build();
@@ -258,12 +271,18 @@ pub fn undo_toast(title: &str, on_undo: impl Fn() + 'static) -> adw::Toast {
 /// The toast text for a warning from opening the database.
 pub fn warning_message(warning: &OpenWarning) -> String {
     match warning {
-        OpenWarning::DailyBackupFailed(err) => {
-            format!("Daily backup failed. Today’s backup could not be made: {err}")
-        }
-        OpenWarning::PruneFailed(err) => {
-            format!("Backups not tidied. Old backups could not be removed: {err}")
-        }
+        OpenWarning::DailyBackupFailed(err) => fill(
+            // Translators: a toast; its first sentence is its title, the
+            // rest is behind Details. {error} is the reason, in English.
+            &gettext("Daily backup failed. Today’s backup could not be made: {error}"),
+            &[("error", &err.to_string())],
+        ),
+        OpenWarning::PruneFailed(err) => fill(
+            // Translators: a toast; its first sentence is its title, the
+            // rest is behind Details. {error} is the reason, in English.
+            &gettext("Backups not tidied. Old backups could not be removed: {error}"),
+            &[("error", &err.to_string())],
+        ),
     }
 }
 
@@ -315,7 +334,7 @@ mod tests {
         // A comma does not end a title: it may be in a list.
         let text = "Imported 12 decks, 840 cards and 5,210 reviews from the file";
         assert!(
-            matches!(toast_text(text), ToastText::Detailed { title, .. } if title == FALLBACK_TITLE)
+            matches!(toast_text(text), ToastText::Detailed { title, .. } if title == fallback_title())
         );
     }
 
@@ -324,17 +343,17 @@ mod tests {
         let text = "The card’s information could not be read: database is locked";
         assert!(matches!(
             toast_text(text),
-            ToastText::Detailed { title, details } if title == FALLBACK_TITLE && details == text
+            ToastText::Detailed { title, details } if title == fallback_title() && details == text
         ));
         // A path has no clause at all; counted in characters, not bytes.
         let text = "é".repeat(TOAST_FITS + 1);
         assert!(
-            matches!(toast_text(&text), ToastText::Detailed { title, .. } if title == FALLBACK_TITLE)
+            matches!(toast_text(&text), ToastText::Detailed { title, .. } if title == fallback_title())
         );
         // An empty first clause is no title.
         let text = format!(". {}", "word ".repeat(10));
         assert!(
-            matches!(toast_text(&text), ToastText::Detailed { title, .. } if title == FALLBACK_TITLE)
+            matches!(toast_text(&text), ToastText::Detailed { title, .. } if title == fallback_title())
         );
     }
 
@@ -354,7 +373,42 @@ mod tests {
 
     #[test]
     fn titles_fit_their_room() {
-        assert!(FALLBACK_TITLE.chars().count() <= TOAST_FITS_WITH_BUTTON);
+        assert!(fallback_title().chars().count() <= TOAST_FITS_WITH_BUTTON);
+        crate::i18n::tests::in_french(|| {
+            assert!(fallback_title().chars().count() <= TOAST_FITS_WITH_BUTTON);
+        });
+    }
+
+    /// French puts a no-break space before ":" and ";": the title ends
+    /// before it, and the warnings get their own titles in French too.
+    #[test]
+    fn french_clauses_end_before_their_no_break_space() {
+        let text = "L’export a échoué\u{202f}: disque plein, et d’autres mots encore";
+        assert_eq!(
+            toast_text(text),
+            ToastText::Detailed {
+                title: "L’export a échoué".into(),
+                details: "Disque plein, et d’autres mots encore".into(),
+            }
+        );
+        let text = "Échec de l’import\u{a0}; le fichier a changé depuis sa vérification";
+        assert!(
+            matches!(toast_text(text), ToastText::Detailed { title, .. } if title == "Échec de l’import")
+        );
+        let err = || rappel_core::Error::NotADirectory(PathBuf::from("/data/backups"));
+        crate::i18n::tests::in_french(|| {
+            for warning in [
+                OpenWarning::DailyBackupFailed(err()),
+                OpenWarning::PruneFailed(err()),
+            ] {
+                let ToastText::Detailed { title, .. } = toast_text(&warning_message(&warning))
+                else {
+                    panic!("a warning is long");
+                };
+                assert_ne!(title, fallback_title());
+                assert!(title.chars().count() <= TOAST_FITS_WITH_BUTTON, "{title}");
+            }
+        });
     }
 
     #[test]
@@ -370,7 +424,7 @@ mod tests {
             OpenWarning::PruneFailed(err()),
         ] {
             assert!(
-                matches!(toast_text(&warning_message(&warning)), ToastText::Detailed { title, .. } if title != FALLBACK_TITLE)
+                matches!(toast_text(&warning_message(&warning)), ToastText::Detailed { title, .. } if title != fallback_title())
             );
         }
     }

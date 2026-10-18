@@ -41,10 +41,12 @@ use rappel_core::content;
 use rappel_core::domain::{Card, CardSide, MAX_CARD_SIDE_BYTES, TaggedCard, card_side_fits};
 use sourceview5::prelude::*;
 
+use crate::i18n::{self, gettext};
 use crate::render::{Images, back_shown, clear, fill, shown_part};
 use crate::state::AppState;
 use crate::ui::callback::Callback;
 use crate::ui::text::group_digits;
+use crate::ui::text::with_error;
 use crate::ui::toast::{info_toast, show_error};
 use crate::ui::{breakpoint, dialog, init_once};
 use crate::widgets::tag_entry::field::{self as tags, TagsCheck};
@@ -412,9 +414,13 @@ impl CardEditor {
         match read {
             Ok(card_tags) => Some(card_tags.into_iter().map(|tag| tag.name).collect()),
             Err(err) => {
-                imp.tag_entry
-                    .set_unavailable("The tags could not be read, so they are left as they are.");
-                let message = format!("The card's tags could not be read: {err}");
+                imp.tag_entry.set_unavailable(&gettext(
+                    "The tags could not be read, so they are left as they are.",
+                ));
+                // Translators: a toast: what is before ":" is its title, the
+                // rest is behind Details. {error} is why, in English.
+                let message =
+                    with_error(&gettext("The card’s tags could not be read: {error}"), &err);
                 show_error(&*imp.toast_overlay, "reading a card's tags", &message);
                 None
             }
@@ -642,7 +648,9 @@ impl CardEditor {
         imp.preview_back_separator.set_visible(shown);
         imp.preview_back.set_visible(shown);
         imp.preview_group.set_description(
-            (front_cut || back_cut).then_some("This card is long: only its start is previewed."),
+            (front_cut || back_cut)
+                .then(|| gettext("This card is long: only its start is previewed."))
+                .as_deref(),
         );
         tracing::debug!(
             bytes = front_md.len() + back_md.len(),
@@ -656,10 +664,10 @@ impl CardEditor {
     /// (the field is disabled already, `read_card_tags`).
     fn load(&self, card_id: Option<&str>, front: &str, back: &str, tags: Option<&[String]>) {
         let imp = self.imp();
-        self.set_title(if card_id.is_some() {
-            "Edit Card"
+        self.set_title(&if card_id.is_some() {
+            gettext("Edit Card")
         } else {
-            "New Card"
+            gettext("New Card")
         });
         imp.card_id.replace(card_id.map(str::to_owned));
         imp.saved_text.replace((front.to_owned(), back.to_owned()));
@@ -743,14 +751,16 @@ impl CardEditor {
             Ok(saved) => saved,
             Err(err) => {
                 // The editor's own overlay: the dialog covers the page's.
-                let message = format!("The card could not be saved: {err}");
+                // Translators: a toast: what is before ":" is its title, the
+                // rest is behind Details. {error} is why, in English.
+                let message = with_error(&gettext("The card could not be saved: {error}"), &err);
                 show_error(&*imp.toast_overlay, "a card save", &message);
                 return;
             }
         };
         let (toast_text, kept) = match &saved {
-            Saved::Added(tagged) => ("Card added", tagged.tags.clone()),
-            Saved::Edited(tagged) => ("Card saved", tagged.tags.clone()),
+            Saved::Added(tagged) => (gettext("Card added"), tagged.tags.clone()),
+            Saved::Edited(tagged) => (gettext("Card saved"), tagged.tags.clone()),
         };
         if let Some(on_saved) = imp.on_saved.get().map(Callback::get) {
             on_saved(saved);
@@ -760,7 +770,7 @@ impl CardEditor {
         let kept: Vec<String> = kept.into_iter().map(|tag| tag.name).collect();
         self.after_save(and_new, &kept);
         if and_new {
-            imp.toast_overlay.add_toast(info_toast(toast_text));
+            imp.toast_overlay.add_toast(info_toast(&toast_text));
         }
     }
 
@@ -846,10 +856,19 @@ fn check_card(front: &str, back: &str) -> CardCheck {
 }
 
 fn too_long_text(side: CardSide) -> String {
-    format!(
-        "The {side} is too long (the limit is {} bytes)",
-        group_digits(MAX_CARD_SIDE_BYTES)
-    )
+    let limit = group_digits(MAX_CARD_SIDE_BYTES);
+    match side {
+        CardSide::Front => i18n::fill(
+            // Translators: {limit} is a number of bytes (1,048,576).
+            &gettext("The front is too long (the limit is {limit} bytes)"),
+            &[("limit", &limit)],
+        ),
+        CardSide::Back => i18n::fill(
+            // Translators: {limit} is a number of bytes (1,048,576).
+            &gettext("The back is too long (the limit is {limit} bytes)"),
+            &[("limit", &limit)],
+        ),
+    }
 }
 
 /// Shows `error` under `view`, announcing it when it appears or changes.

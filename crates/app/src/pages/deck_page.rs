@@ -23,10 +23,12 @@ use rappel_core::scheduling::StudyInput;
 
 use crate::dialogs::card_editor::{CardEditor, Saved};
 use crate::dialogs::card_info;
+use crate::i18n::gettext;
 use crate::pages::{ReviewPage, StatsPage};
 use crate::state::AppState;
 use crate::ui::focus::{self, ShownFocus, index_after_removal};
 use crate::ui::text::due_new_line;
+use crate::ui::text::with_error;
 use crate::ui::toast::{info_toast, log_failure, show_error, show_toast_from, undo_toast};
 use crate::ui::undo::{self, UndoFailure};
 use crate::ui::{init_once, nav};
@@ -291,7 +293,11 @@ impl DeckPage {
             Err(err) => {
                 imp.window_title.set_subtitle("");
                 self.action_set_enabled("deck.study", false);
-                self.error_toast(&format!("What to study could not be read: {err}"));
+                // Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+                self.error_toast(&with_error(
+                    &gettext("What to study could not be read: {error}"),
+                    &err,
+                ));
             }
         }
     }
@@ -332,7 +338,11 @@ impl DeckPage {
             Ok::<_, rappel_core::Error>(page)
         });
         if let Err(err) = pushed {
-            self.error_toast(&format!("The session could not start: {err}"));
+            // Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+            self.error_toast(&with_error(
+                &gettext("The session could not start: {error}"),
+                &err,
+            ));
         }
     }
 
@@ -346,7 +356,11 @@ impl DeckPage {
             return;
         };
         if let Err(err) = nav::push_unless_on_top(&view, || StatsPage::new(state, Some(deck))) {
-            self.error_toast(&format!("The statistics could not be read: {err}"));
+            // Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+            self.error_toast(&with_error(
+                &gettext("The statistics could not be read: {error}"),
+                &err,
+            ));
         }
     }
 
@@ -444,7 +458,11 @@ impl DeckPage {
             return;
         };
         if let Err(err) = state.delete_card(id) {
-            self.error_toast(&format!("The card could not be deleted: {err}"));
+            // Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+            self.error_toast(&with_error(
+                &gettext("The card could not be deleted: {error}"),
+                &err,
+            ));
             return;
         }
         store.remove(position);
@@ -460,7 +478,7 @@ impl DeckPage {
             .and_downcast::<RappelWindow>()
             .map(|w| w.downgrade());
         // The front is not in the title: it can be long or many lines.
-        let toast = undo_toast("Card deleted", move || {
+        let toast = undo_toast(&gettext("Card deleted"), move || {
             undo_card_delete(&state, &id, &page, window.as_ref());
         });
         show_toast_from(self, toast);
@@ -503,7 +521,7 @@ impl DeckPage {
         let state = state.clone();
         let page = self.downgrade();
         let window = window.map(|w| w.downgrade());
-        let toast = undo_toast("Progress reset", move || {
+        let toast = undo_toast(&gettext("Progress reset"), move || {
             undo_reset(&state, &card_id, &entry_id, &page, window.as_ref());
         });
         show_toast_from(self, toast);
@@ -518,7 +536,11 @@ impl DeckPage {
         let changed = match state.set_suspended(&[id.to_owned()], suspended) {
             Ok(changed) => changed,
             Err(err) => {
-                self.error_toast(&format!("The card could not be changed: {err}"));
+                // Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+                self.error_toast(&with_error(
+                    &gettext("The card could not be changed: {error}"),
+                    &err,
+                ));
                 return;
             }
         };
@@ -534,11 +556,11 @@ impl DeckPage {
         let page = self.downgrade();
         let window = window.map(|w| w.downgrade());
         let title = if suspended {
-            "Card suspended"
+            gettext("Card suspended")
         } else {
-            "Card unsuspended"
+            gettext("Card unsuspended")
         };
-        let toast = undo_toast(title, move || {
+        let toast = undo_toast(&title, move || {
             undo_suspend(&state, &id, suspended, &page, window.as_ref());
         });
         show_toast_from(self, toast);
@@ -558,7 +580,11 @@ impl DeckPage {
                 store.splice(position, 1, &[self.item_for(TaggedCard { card, tags })]);
             }
             (Err(err), _) | (_, Err(err)) => {
-                self.error_toast(&format!("The card could not be read: {err}"));
+                // Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+                self.error_toast(&with_error(
+                    &gettext("The card could not be read: {error}"),
+                    &err,
+                ));
             }
         }
     }
@@ -611,7 +637,11 @@ impl DeckPage {
             .and_then(|cards| Ok((cards, state.new_card_ids(&deck.id)?)))
         {
             Ok((cards, new)) => store.splice(0, store.n_items(), &items_of(cards, &new)),
-            Err(err) => self.error_toast(&format!("The cards could not be read: {err}")),
+            // Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+            Err(err) => self.error_toast(&with_error(
+                &gettext("The cards could not be read: {error}"),
+                &err,
+            )),
         }
     }
 
@@ -734,8 +764,12 @@ enum Notice {
 /// e.g. after an import): that is information, not an error.
 fn reset_notice(err: &Error) -> Notice {
     match err {
-        Error::CardAlreadyNew(_) => Notice::Info("This card has no progress to reset".to_owned()),
-        err => Notice::Error(format!("The progress could not be reset: {err}")),
+        Error::CardAlreadyNew(_) => Notice::Info(crate::pages::browser_text::no_progress_text(1)),
+        // Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+        err => Notice::Error(with_error(
+            &gettext("The progress could not be reset: {error}"),
+            &err,
+        )),
     }
 }
 
@@ -770,23 +804,26 @@ fn undo_reset(
             }
         }
         Err(err) => {
-            let (what, message) = match undo::failure(&err) {
+            let message = match undo::failure(&err) {
                 UndoFailure::Stale => {
                     // Not an error: the card moved on, and nothing was written.
                     if let Some(window) = &window {
-                        show_toast_from(window, info_toast("The reset can no longer be undone"));
+                        show_toast_from(
+                            window,
+                            info_toast(&gettext("The reset can no longer be undone")),
+                        );
                     }
                     return;
                 }
-                UndoFailure::Failed => (
-                    "a card operation",
-                    format!("The reset could not be undone: {err}"),
-                ),
+                // Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+                UndoFailure::Failed => {
+                    with_error(&gettext("The reset could not be undone: {error}"), &err)
+                }
             };
             if let Some(window) = window {
-                show_error(&window, what, &message);
+                show_error(&window, "a card operation", &message);
             } else {
-                log_failure(what, &message);
+                log_failure("a card operation", &message);
             }
         }
     }
@@ -813,7 +850,8 @@ fn undo_suspend(
             }
         }
         Err(err) => {
-            let message = format!("The change could not be undone: {err}");
+            // Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+            let message = with_error(&gettext("The change could not be undone: {error}"), &err);
             if let Some(window) = window {
                 show_error(&window, "a card operation", &message);
             } else {
@@ -844,7 +882,8 @@ fn undo_card_delete(
             }
         }
         Err(err) => {
-            let message = format!("The card could not be restored: {err}");
+            // Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+            let message = with_error(&gettext("The card could not be restored: {error}"), &err);
             if let Some(window) = window {
                 show_error(&window, "a card operation", &message);
             } else {
@@ -858,7 +897,7 @@ fn undo_card_delete(
 /// (the same counts as the deck list's rows, `ui::text::due_new_line`).
 fn study_subtitle(input: &StudyInput) -> String {
     due_new_line(input.reviews.len() + input.steps.len(), input.new.len())
-        .unwrap_or_else(|| "Nothing to study".to_owned())
+        .unwrap_or_else(|| gettext("Nothing to study"))
 }
 
 /// Whether the bottom Study bar shows: on a narrow window (`compact`, where

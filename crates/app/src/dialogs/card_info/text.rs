@@ -7,8 +7,10 @@ use std::time::Duration;
 use rappel_core::domain::Grade;
 use rappel_core::stats::{CardInfo, HistoryEntry};
 
+use crate::i18n::{fill, gettext, ngettext, npgettext};
 use crate::ui::text::{
-    count, duration_text, group_digits, interval_text, isolate, one_line, percent,
+    counted, decimal_separator, duration_text, group_digit_string, group_digits, interval_text,
+    isolate, list_separator, one_line, percent,
 };
 use crate::ui::time::relative_due;
 
@@ -29,19 +31,22 @@ pub fn tags_text(names: &[String]) -> Option<String> {
     if names.is_empty() {
         return None;
     }
-    let mut text = names
+    let text = names
         .iter()
         .take(MAX_TAGS)
         .map(|name| isolate(&one_line(name)))
         .collect::<Vec<_>>()
-        .join(", ");
+        .join(&list_separator());
     let more = names.len().saturating_sub(MAX_TAGS);
-    if more > 0 {
-        text.push_str(" and ");
-        text.push_str(&group_digits(more));
-        text.push_str(" more");
+    if more == 0 {
+        return Some(text);
     }
-    Some(text)
+    Some(fill(
+        // Translators: {list} is a list of names, {count} how many more
+        // names there are after them ("maths, physics and 4,980 more").
+        &ngettext("{list} and {count} more", "{list} and {count} more", more),
+        &[("list", &text), ("count", &group_digits(more))],
+    ))
 }
 
 /// A date and time, as the dialog shows one.
@@ -51,7 +56,7 @@ pub type When<'a> = &'a dyn Fn(i64) -> String;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Memory {
     /// "New card" for a card without a schedule (never studied, or reset).
-    pub status: Option<&'static str>,
+    pub status: Option<String>,
     pub reviews: String,
     pub pass_rate: String,
     pub lapses: String,
@@ -75,19 +80,44 @@ pub fn stability_text(days: f32) -> String {
     }
     // A negative stability (never valid) as zero, and -0 without its sign.
     let days = if days > 0.0 { days } else { 0.0 };
-    if (days - 1.0).abs() < 0.05 {
-        "1 day".to_owned()
+    let (number, n) = if (days - 1.0).abs() < 0.05 {
+        ("1".to_owned(), 1)
     } else if days >= 100.0 {
-        format!("{days:.0} days")
+        let whole = format!("{days:.0}");
+        let n = whole.parse::<usize>().unwrap_or(usize::MAX);
+        (group_digit_string(&whole), n)
     } else {
-        format!("{days:.1} days")
-    }
+        let shown = format!("{days:.1}").replace('.', &decimal_separator());
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "between 0 and 100 here"
+        )]
+        let whole = days.floor() as usize;
+        return fill(
+            // Translators: a card's stability with one decimal ("0.4 days",
+            // "12.4 days"). The count given for the plural is the whole
+            // part (0 for 0.4): English says "days" for every decimal, and
+            // French "jour" below 2 ("1,5 jour"); give the forms your
+            // language uses for decimals with that whole part.
+            &npgettext("decimal number", "{count} days", "{count} days", whole),
+            &[("count", &shown)],
+        );
+    };
+    fill(
+        // Translators: a card's stability, a whole number of days
+        // ("130 days").
+        &ngettext("{count} day", "{count} days", n),
+        &[("count", &number)],
+    )
 }
 
 /// "5.3 of 10"; "—" for not a number or an infinite one.
 pub fn difficulty_text(difficulty: f32) -> String {
     if difficulty.is_finite() {
-        format!("{difficulty:.1} of 10")
+        let value = format!("{difficulty:.1}").replace('.', &decimal_separator());
+        // Translators: a card's difficulty, between 1 and 10 ("5.3 of 10").
+        fill(&gettext("{value} of 10"), &[("value", &value)])
     } else {
         "—".to_owned()
     }
@@ -101,12 +131,17 @@ pub fn memory(info: &CardInfo, now: i64, when: When<'_>) -> Memory {
             recall: info
                 .retrievability
                 .map_or_else(|| "—".to_owned(), |r| percent(f64::from(r))),
-            next_due: format!("{} · {}", when(due), relative_due(due, now)),
+            next_due: fill(
+                // Translators: when a card is due: {date} is a date and time,
+                // {relative} "in 3 days".
+                &gettext("{date} · {relative}"),
+                &[("date", &when(due)), ("relative", &relative_due(due, now))],
+            ),
         }),
         _ => None,
     };
     Memory {
-        status: scheduled.is_none().then_some("New card"),
+        status: scheduled.is_none().then(|| gettext("New card")),
         reviews: group_digits(info.reviews as usize),
         pass_rate: info.pass_rate().map_or_else(|| "—".to_owned(), percent),
         lapses: group_digits(info.lapses as usize),
@@ -145,7 +180,7 @@ impl Mark {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Line {
     pub mark: Mark,
-    pub title: &'static str,
+    pub title: String,
     pub subtitle: String,
 }
 
@@ -156,7 +191,7 @@ pub struct History {
     pub lines: Vec<Line>,
     pub note: Option<String>,
     /// Said instead of the list when there is no entry.
-    pub empty: Option<&'static str>,
+    pub empty: Option<String>,
 }
 
 pub fn history(info: &CardInfo, when: When<'_>) -> History {
@@ -175,29 +210,53 @@ pub fn history(info: &CardInfo, when: When<'_>) -> History {
                 let passed = grade == Grade::Pass;
                 Line {
                     mark: if passed { Mark::Passed } else { Mark::Failed },
-                    title: if passed { "Passed" } else { "Failed" },
-                    subtitle: format!(
-                        "{} · {} · next in {}",
-                        when(at),
-                        duration_text(Duration::from_millis(duration_ms.max(0).unsigned_abs())),
-                        interval_text(interval_ms)
+                    title: if passed {
+                        gettext("Passed")
+                    } else {
+                        gettext("Failed")
+                    },
+                    subtitle: fill(
+                        // Translators: a review in a card's history: {date}
+                        // is when, {time} how long the answer took ("4 s"),
+                        // {interval} when the card came due again ("3 days").
+                        &gettext("{date} · {time} · next in {interval}"),
+                        &[
+                            ("date", &when(at)),
+                            (
+                                "time",
+                                &duration_text(Duration::from_millis(
+                                    duration_ms.max(0).unsigned_abs(),
+                                )),
+                            ),
+                            ("interval", &interval_text(interval_ms)),
+                        ],
                     ),
                 }
             }
             HistoryEntry::Reset { at } => Line {
                 mark: Mark::Reset,
-                title: "Progress Reset",
-                subtitle: format!("{} · counts start again from here", when(at)),
+                title: gettext("Progress Reset"),
+                subtitle: fill(
+                    // Translators: a reset in a card's history; {date} is when.
+                    &gettext("{date} · counts start again from here"),
+                    &[("date", &when(at))],
+                ),
             },
         })
         .collect();
     let hidden = info.history.len().saturating_sub(MAX_HISTORY);
     History {
-        empty: lines.is_empty().then_some("Not studied yet"),
+        empty: lines.is_empty().then(|| gettext("Not studied yet")),
         note: (hidden > 0).then(|| {
-            format!(
-                "{} not shown",
-                count(hidden, "older entry", "older entries")
+            counted(
+                // Translators: under a card's history; {count} is how many
+                // older entries are left out.
+                &ngettext(
+                    "{count} older entry not shown",
+                    "{count} older entries not shown",
+                    hidden,
+                ),
+                hidden,
             )
         }),
         lines,
@@ -253,7 +312,7 @@ mod tests {
     #[test]
     fn a_new_card_has_a_status_and_no_schedule() {
         let m = memory(&info(), 0, &when);
-        assert_eq!(m.status, Some("New card"));
+        assert_eq!(m.status.as_deref(), Some("New card"));
         assert_eq!(m.reviews, "0");
         assert_eq!(m.pass_rate, "—");
         assert_eq!(m.lapses, "0");
@@ -299,7 +358,7 @@ mod tests {
             review(40, Grade::Pass),
         ];
         let h = history(&i, &when);
-        let titles: Vec<_> = h.lines.iter().map(|l| l.title).collect();
+        let titles: Vec<_> = h.lines.iter().map(|l| l.title.as_str()).collect();
         assert_eq!(titles, ["Passed", "Progress Reset", "Passed", "Failed"]);
         assert_eq!(h.lines[0].subtitle, "@40 · 4 s · next in 3 days");
         assert_eq!(h.lines[1].mark, Mark::Reset);
@@ -319,7 +378,7 @@ mod tests {
     fn an_empty_history_is_said() {
         let h = history(&info(), &when);
         assert_eq!(h.lines.len(), 0);
-        assert_eq!(h.empty, Some("Not studied yet"));
+        assert_eq!(h.empty.as_deref(), Some("Not studied yet"));
     }
 
     #[test]
@@ -375,7 +434,7 @@ mod tests {
         assert_eq!(scheduled.difficulty, "—");
         assert_eq!(scheduled.recall, "—");
         assert!(
-            scheduled.next_due.ends_with("in 1000 years"),
+            scheduled.next_due.ends_with("in 1,000 years"),
             "{}",
             scheduled.next_due
         );
@@ -387,11 +446,32 @@ mod tests {
             lines[1].subtitle
         );
         assert!(
-            lines[2].subtitle.ends_with("next in 1000 years"),
+            lines[2].subtitle.ends_with("next in 1,000 years"),
             "{}",
             lines[2].subtitle
         );
-        assert_eq!(stability_text(f32::MAX), format!("{:.0} days", f32::MAX));
+        // Grouped, as every number is.
+        assert_eq!(
+            stability_text(f32::MAX),
+            format!(
+                "{} days",
+                crate::ui::text::group_digit_string(&format!("{:.0}", f32::MAX))
+            )
+        );
         assert_eq!(stability_text(-0.0), "0.0 days");
+    }
+
+    #[test]
+    fn a_decimal_stability_takes_the_form_each_language_gives_decimals() {
+        assert_eq!(stability_text(0.4), "0.4 days");
+        assert_eq!(stability_text(1.5), "1.5 days");
+        assert_eq!(stability_text(12.4), "12.4 days");
+        crate::i18n::tests::in_french(|| {
+            assert_eq!(stability_text(0.4), "0,4\u{a0}jour");
+            assert_eq!(stability_text(1.5), "1,5\u{a0}jour");
+            assert_eq!(stability_text(12.4), "12,4\u{a0}jours");
+            assert_eq!(stability_text(1.0), "1\u{a0}jour");
+            assert_eq!(stability_text(130.4), "130\u{a0}jours");
+        });
     }
 }
