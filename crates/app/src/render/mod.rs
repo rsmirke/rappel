@@ -33,7 +33,7 @@ mod math_paragraph;
 mod math_view;
 mod media_file;
 mod picture;
-mod playback;
+pub(crate) mod playback;
 mod style;
 
 use std::cell::RefCell;

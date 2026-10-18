@@ -115,8 +115,9 @@ pub fn translated(
 }
 
 /// Source files that only tests compile (`#[cfg(test)] mod …;`).
-const TEST_ONLY_FILES: [&str; 4] = [
+const TEST_ONLY_FILES: [&str; 5] = [
     "crates/app/src/testing.rs",
+    "crates/app/src/gst_env/tests.rs",
     "crates/app/src/ui_files.rs",
     "crates/app/src/desktop_files.rs",
     "crates/app/src/dialogs/shortcuts.rs",
@@ -1182,29 +1183,17 @@ fn the_c_library_reads_the_french_catalog() {
              package (README.md), which has its sources"
         ),
     }
-    let exe = std::env::current_exe().expect("the test binary has a path");
-    let output = std::process::Command::new(exe)
-        .args([
-            "--exact",
-            "i18n::tests::french_through_the_c_library",
-            "--test-threads=1",
-        ])
-        .env(REAL_GETTEXT, "1")
-        .env("LOCPATH", locales.path())
-        // LC_ALL, not LANG alone: a session's own LC_TIME, LC_NUMERIC… name
-        // locales that LOCPATH does not have, and setlocale would fail.
-        .env("LC_ALL", "fr_FR.UTF-8")
-        .env_remove("LANGUAGE")
-        .env_remove(super::LOCALEDIR_VARIABLE)
-        .output()
-        .expect("the test binary runs again");
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        output.status.success() && stdout.contains("1 passed"),
-        "French through the C library failed ({}):\n{stdout}\n{}",
-        output.status,
-        String::from_utf8_lossy(&output.stderr)
-    );
+    crate::testing::run_alone("i18n::tests::french_through_the_c_library", |command| {
+        command
+            .env(REAL_GETTEXT, "1")
+            .env("LOCPATH", locales.path())
+            // LC_ALL, not LANG alone: a session's own LC_TIME, LC_NUMERIC…
+            // name locales that LOCPATH does not have, and setlocale would
+            // fail.
+            .env("LC_ALL", "fr_FR.UTF-8")
+            .env_remove("LANGUAGE")
+            .env_remove(super::LOCALEDIR_VARIABLE);
+    });
 }
 
 /// The child of `the_c_library_reads_the_french_catalog`. Does nothing in

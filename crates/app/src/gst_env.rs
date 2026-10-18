@@ -1,34 +1,113 @@
-//! `GStreamer`'s elements that follow URIs or reach the network, demoted so
-//! `playbin` never chooses them (ADR 0056).
+//! What `GStreamer` may load and plug when GTK plays card audio (ADR 0056,
+//! ADR 0062).
 //!
-//! GTK plays card audio through `GStreamer`'s `playbin`, which chooses its
-//! demuxers by finding the format of the bytes. A playlist or a streaming
-//! manifest (HLS, DASH, Smooth Streaming, an SDP session) makes it plug a
-//! demuxer that opens the URIs inside: local files and the network. The
-//! core refuses such content behind an audio signature
-//! (`media::check_structure`); this is the second line. `GStreamer` reads
-//! `GST_PLUGIN_FEATURE_RANK` when it starts (`gst_init`, exact feature
-//! names, later entries winning), and autoplugging never picks a feature
-//! of rank `none`. Checked: with these entries, an HLS master playlist
-//! behind an ID3 tag no longer opens its variant or segments (`strace`,
-//! `GStreamer` 1.28), and Ogg, MP3, M4A and WAV still play.
+//! GTK plays card audio through `GStreamer`'s `playbin3`, which chooses its
+//! demuxers and decoders itself, by finding the format of the bytes, and
+//! runs them in Rappel's process. The core lets only plain audio of the
+//! four kinds through (`media::check_structure`); these are the next
+//! lines, set in the environment before `GStreamer` starts:
+//!
+//! 1. **Only allow-listed plugins load at all** (`ALLOWED`, in
+//!    `GST_PLUGIN_LOADING_WHITELIST`). `GStreamer` reads the variable when
+//!    it starts (`_priv_gst_plugin_initialize`, `gst/gstplugin.c`): entries
+//!    separated by `:`, each `names[@path]`; a single name matches a
+//!    plugin's name or its source package's, several names separated by
+//!    commas only plugins' names. A plugin not listed is never loaded:
+//!    "Whitelist specified and plugin not in whitelist, not loading"
+//!    (`_priv_gst_plugin_load_file_for_registry`), so none of its elements
+//!    can be made, by `playbin3` or anyone. Rappel gives one entry of
+//!    several names, so only plugin names count (never a package, which
+//!    would allow everything in it), and no path (plugin folders differ
+//!    between distributions; names do not). Checked with `GStreamer` 1.28
+//!    (`only_the_allowed_plugins_play`, in a child process): the six
+//!    fixtures play, and FLAC and Matroska, whose plugins are not listed,
+//!    do not, even given to `gtk::MediaFile` directly.
+//! 2. **A registry of Rappel's own** (`GST_REGISTRY_1_0`, under the user's
+//!    cache folder), unless the user chose one: with an allow-list,
+//!    `GStreamer` keeps the plugins it did not load as blacklisted in its
+//!    registry cache, and the user's other programs share the default one;
+//!    alternating would rescan every plugin each time (3 s here). Rappel's
+//!    holds only the allowed plugins: built in about 0.1 s.
+//! 3. **The elements that follow URIs or reach the network are demoted**
+//!    (`DEMOTED`, rank `none` in `GST_PLUGIN_FEATURE_RANK`: exact feature
+//!    names, later entries winning; autoplugging never picks a feature of
+//!    rank `none`). Their plugins are not allowed anyway; this stays as a
+//!    second line in case a distribution ships one of them in an allowed
+//!    plugin. Checked: an HLS master playlist behind an ID3 tag no longer
+//!    opens its variant or segments (`strace`).
 //!
 //! Rust 2024 makes changing a running process's environment `unsafe`
 //! (`std::env::set_var`, `glib::setenv`), which the workspace forbids. So
-//! when the variable lacks our entries, `main` starts the program again in
-//! place (`execv`, the same process) with them added after any value the
-//! user set, before GTK or `GStreamer` are loaded or any thread exists. A
-//! second variable guards against doing it twice; if the new start fails
-//! the app carries on, with only the core's check, and says so in the log.
+//! when a variable lacks our value, `main` starts the program again in
+//! place (`execv`, the same process) with them set, before GTK or
+//! `GStreamer` are loaded or any thread exists. A guard variable stops it
+//! from doing so twice; if the new start fails the app carries on with
+//! only the core's check, and says so in the log.
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::os::unix::process::CommandExt;
+use std::path::PathBuf;
 
-/// The variable `GStreamer` reads.
-pub const VARIABLE: &str = "GST_PLUGIN_FEATURE_RANK";
+/// The variable of feature ranks.
+pub const FEATURE_RANK: &str = "GST_PLUGIN_FEATURE_RANK";
+
+/// The variable of the plugins that may load.
+pub const ALLOW_LIST: &str = "GST_PLUGIN_LOADING_WHITELIST";
+
+/// The variable of the registry cache's file, and the older name
+/// `GStreamer` reads when it is unset (`gst/gstregistry.c`).
+pub const REGISTRY: [&str; 2] = ["GST_REGISTRY_1_0", "GST_REGISTRY"];
 
 /// Set on the new start, so it never starts again.
-const GUARD: &str = "RAPPEL_GST_FEATURES_DEMOTED";
+const GUARD: &str = "RAPPEL_GST_ENVIRONMENT_SET";
+
+/// The plugins that may load, by name (`gst-inspect-1.0 <name>`): what
+/// GTK's media stream and the four kinds need, and nothing else.
+///
+/// - Core and playback: `coreelements` (queues, `typefind`, …),
+///   `typefindfunctions`, `playback` (`playbin3`, which `GstPlay` makes),
+///   `gio` (`giostreamsrc`, through which GTK hands over our memory
+///   stream), `audioconvert`, `audioresample`, `volume`.
+/// - Output: `autodetect` (`autoaudiosink`) and the sinks it may choose:
+///   `pulseaudio`, `pipewire`, `alsa`.
+/// - Ogg Opus and Vorbis: `ogg`, `opus`, `opusparse`, `vorbis`.
+/// - WAV: `wavparse`. MP3: `audioparsers` (`mpegaudioparse`, `aacparse`),
+///   `mpg123`.
+/// - M4A: `isomp4` (`qtdemux`) and an AAC decoder, `fdkaac` or `faad`.
+///
+/// Not listed: `libav` (`FFmpeg`), one plugin of hundreds of demuxers and
+/// decoders that an allow-list of plugins cannot cut down, and whose
+/// features' names depend on the `FFmpeg` it was built with; without it an
+/// M4A of Apple Lossless (ALAC, which only `FFmpeg` decodes in
+/// `GStreamer`) or of AAC on a system with no other AAC decoder "could not
+/// be played" (ADR 0062). Nor `id3demux` and `apetag`: an MP3 is given
+/// without its tags (`media::audio_payload`; `GStreamer` 1.28 aborts the
+/// process on an `ID3v2` tag in GTK's stream), so an ID3 tag that reaches
+/// `GStreamer` anyway is a format it cannot play. Nor `app` and `pbtypes`,
+/// which playback does not need.
+pub const ALLOWED: [&str; 21] = [
+    "coreelements",
+    "typefindfunctions",
+    "playback",
+    "gio",
+    "audioconvert",
+    "audioresample",
+    "volume",
+    "autodetect",
+    "pulseaudio",
+    "pipewire",
+    "alsa",
+    "ogg",
+    "opus",
+    "opusparse",
+    "vorbis",
+    "wavparse",
+    "audioparsers",
+    "mpg123",
+    "isomp4",
+    "fdkaac",
+    "faad",
+];
 
 /// The features given rank `none`: the adaptive-streaming and session
 /// demuxers, which open the URIs their input names, and the network
@@ -55,8 +134,8 @@ pub const DEMOTED: [&str; 19] = [
     "webrtcbin",
 ];
 
-/// Our entries, as `GStreamer` reads them.
-fn ours() -> String {
+/// Our feature ranks, as `GStreamer` reads them.
+fn demoted() -> String {
     DEMOTED
         .iter()
         .map(|name| format!("{name}:none"))
@@ -64,11 +143,17 @@ fn ours() -> String {
         .join(",")
 }
 
-/// The value the variable needs, given the one it has (`None`: unset, or
-/// not text), or `None` if it ends with our entries already. The user's
+/// The allow-list's value: one entry of several names, so `GStreamer`
+/// compares each with plugins' names only.
+pub fn allowed() -> String {
+    ALLOWED.join(",")
+}
+
+/// The value [`FEATURE_RANK`] needs, given the one it has (`None`: unset,
+/// or not text), or `None` if it ends with our entries already. The user's
 /// own entries are kept, before ours, so ours win.
 pub fn with_demoted(existing: Option<&str>) -> Option<String> {
-    let ours = ours();
+    let ours = demoted();
     match existing.map(str::trim) {
         Some(value) if value.ends_with(&ours) => None,
         Some(value) if !value.is_empty() => Some(format!("{value},{ours}")),
@@ -76,25 +161,67 @@ pub fn with_demoted(existing: Option<&str>) -> Option<String> {
     }
 }
 
-/// Starts the program again with [`VARIABLE`] extended, unless it is
-/// already (or this is the new start). Returns only if no new start
-/// happens; called first thing in `main`.
-pub fn ensure_demoted() {
+/// Rappel's registry file, in the user's cache folder (`XDG_CACHE_HOME`
+/// if it is an absolute path, else `$HOME/.cache`), named as `GStreamer`
+/// names its own (`registry.<arch>.bin`). `None` without either.
+pub fn registry_file(get: &dyn Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
+    let absolute = |name: &str| {
+        get(name)
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+    };
+    let cache =
+        absolute("XDG_CACHE_HOME").or_else(|| absolute("HOME").map(|home| home.join(".cache")))?;
+    Some(
+        cache
+            .join("rappel")
+            .join("gstreamer-1.0")
+            .join(format!("registry.{}.bin", std::env::consts::ARCH)),
+    )
+}
+
+/// The variables to set, with their values, given how `get` reads the
+/// environment: empty when every one is as Rappel needs it already.
+pub fn wanted(get: &dyn Fn(&str) -> Option<OsString>) -> Vec<(&'static str, OsString)> {
+    let mut out = Vec::new();
+    let ranks = get(FEATURE_RANK);
+    let text = ranks.as_deref().and_then(OsStr::to_str);
+    if ranks.is_some() && text.is_none() {
+        tracing::warn!(
+            "{FEATURE_RANK} is not text; GStreamer's network elements are demoted anyway"
+        );
+    }
+    if let Some(value) = with_demoted(text) {
+        out.push((FEATURE_RANK, OsString::from(value)));
+    }
+    let allowed = allowed();
+    if get(ALLOW_LIST).as_deref() != Some(OsStr::new(&allowed)) {
+        out.push((ALLOW_LIST, OsString::from(allowed)));
+    }
+    let chosen = REGISTRY
+        .iter()
+        .any(|name| get(name).is_some_and(|v| !v.is_empty()));
+    if !chosen && let Some(file) = registry_file(get) {
+        out.push((REGISTRY[0], file.into_os_string()));
+    }
+    out
+}
+
+/// Starts the program again with the variables of [`wanted`] set, unless
+/// they are already (or this is the new start). Returns only if no new
+/// start happens; called first thing in `main`.
+pub fn ensure_restricted() {
     if std::env::var_os(GUARD).is_some() {
         return;
     }
-    let existing = std::env::var_os(VARIABLE);
-    let text = existing.as_ref().and_then(|v| v.to_str());
-    if existing.is_some() && text.is_none() {
-        tracing::warn!("{VARIABLE} is not text; GStreamer's network elements are demoted anyway");
-    }
-    let Some(value) = with_demoted(text) else {
+    let vars = wanted(&|name| std::env::var_os(name));
+    if vars.is_empty() {
         return;
-    };
+    }
     let exe = match std::env::current_exe() {
         Ok(exe) => exe,
         Err(err) => {
-            tracing::warn!("cannot find the program to demote GStreamer's network elements: {err}");
+            tracing::warn!("cannot find the program to restrict GStreamer's plugins: {err}");
             return;
         }
     };
@@ -104,54 +231,11 @@ pub fn ensure_demoted() {
     let err = std::process::Command::new(exe)
         .arg0(program_name)
         .args(args)
-        .env(VARIABLE, value)
+        .envs(vars)
         .env(GUARD, "1")
         .exec();
-    tracing::warn!("cannot restart to demote GStreamer's network elements: {err}");
+    tracing::warn!("cannot restart to restrict GStreamer's plugins: {err}");
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn our_entries_come_last_and_once() {
-        let ours = ours();
-        assert_eq!(with_demoted(None).as_deref(), Some(ours.as_str()));
-        assert_eq!(with_demoted(Some("  ")).as_deref(), Some(ours.as_str()));
-        // The user's value is kept, ours after it so ours win.
-        let mine = with_demoted(Some("avdec_mp3:none")).unwrap();
-        assert_eq!(mine, format!("avdec_mp3:none,{ours}"));
-        // Already there: nothing to do, so no loop.
-        assert_eq!(with_demoted(Some(&mine)), None);
-        assert_eq!(with_demoted(Some(&ours)), None);
-        // A user value that raises one of ours again, after ours: ours are
-        // added again at the end.
-        let raised = format!("{ours},hlsdemux2:primary");
-        assert!(with_demoted(Some(&raised)).unwrap().ends_with(&ours));
-        for name in [
-            "hlsdemux2",
-            "dashdemux2",
-            "mssdemux2",
-            "sdpdemux",
-            "souphttpsrc",
-            "curlhttpsrc",
-            "rtspsrc",
-        ] {
-            assert!(ours.contains(&format!("{name}:none")), "{name}");
-        }
-        // GTK's own source for our memory stream is not touched.
-        assert!(!ours.contains("giostreamsrc"));
-    }
-
-    /// The entries parse as `GStreamer` reads them: `name:rank`, separated by
-    /// commas, names of letters and digits.
-    #[test]
-    fn the_entries_are_well_formed() {
-        for entry in ours().split(',') {
-            let (name, rank) = entry.split_once(':').expect("name:rank");
-            assert_eq!(rank, "none");
-            assert!(name.chars().all(|c| c.is_ascii_alphanumeric()), "{name}");
-        }
-    }
-}
+mod tests;

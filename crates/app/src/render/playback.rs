@@ -95,6 +95,16 @@ pub fn playback_found(dirs: &[PathBuf], exists: impl Fn(&Path) -> bool) -> bool 
     dirs.iter().any(|dir| exists(&dir.join(PLUGIN)))
 }
 
+/// Whether the plugin `name` (`libgst<name>.so`, as `GStreamer` names the
+/// file of a plugin) is in one of the folders `GStreamer` looks in here
+/// (tests: which formats can play at all).
+#[cfg(test)]
+pub fn plugin_installed(name: &str) -> bool {
+    plugin_dirs(&this_env())
+        .iter()
+        .any(|dir| dir.join(format!("libgst{name}.so")).is_file())
+}
+
 /// The folder of `libgstreamer-1.0` in the text of `/proc/self/maps`.
 pub fn library_dir_from_maps(maps: &str) -> Option<PathBuf> {
     maps.lines()

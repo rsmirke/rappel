@@ -41,9 +41,11 @@ jobs:
           # its loaders and its sandbox, for the image tests (ADR 0055;
           # where bubblewrap cannot make namespaces, as in an unprivileged
           # container, glycin runs its loaders unsandboxed by design).
-          # Fifth line: GStreamer's base and good plugins, so the audio
+          # Fifth line: GStreamer's base, good and bad plugins, so the audio
           # tests play through GTK's media stream for real (ADR 0056);
-          # without playbin3 Rappel plays nothing, by its own check.
+          # without playbin3 Rappel plays nothing, by its own check. The bad
+          # plugins bring faad, the AAC decoder M4A files need under
+          # Rappel's plugin allow-list (ADR 0062).
           # Sixth line: the C library's locale sources, from which a test
           # makes a French locale with localedef to read the French
           # catalog through gettext itself (ADR 0059).
@@ -55,7 +57,7 @@ jobs:
             git ca-certificates curl jq build-essential pkg-config \
             xvfb xauth \
             liblcms2-dev libseccomp-dev libfontconfig-dev glycin-loaders bubblewrap \
-            gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
             locales \
             appstream desktop-file-utils
 

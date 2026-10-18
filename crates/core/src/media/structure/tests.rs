@@ -235,6 +235,37 @@ fn an_ape_tag_must_fill_its_size() {
     assert_eq!(why(MediaKind::Mp3, &huge), not_filled);
 }
 
+/// A player is given an MP3's frames only: no `ID3v2` tag before them,
+/// no APE or `ID3v1` tag after (ADR 0062); the other kinds whole.
+#[test]
+fn a_player_is_given_the_frames_of_an_mp3_and_the_rest_whole() {
+    let gain = [("REPLAYGAIN_TRACK_GAIN", "-6.50 dB")];
+    let mut tagged = id3_then(&id3_then(MP3));
+    let start = tagged.len() - MP3.len();
+    tagged.extend(ape_tag(&gain, 1, 0, true));
+    tagged.extend_from_slice(b"TAG");
+    tagged.extend_from_slice(&[b' '; 125]);
+    let frames = audio_payload(MediaKind::Mp3, &tagged).unwrap();
+    assert_eq!(&tagged[frames.clone()], MP3);
+    assert_eq!(frames.start, start);
+    assert_eq!(check_structure(MediaKind::Mp3, &tagged[frames]), Ok(()));
+    // The fixture made by GStreamer's `id3v2mux`: its frames start after
+    // the tag, and are frames.
+    let frames = audio_payload(MediaKind::Mp3, MP3_ID3).unwrap();
+    assert!(frames.start > 10 && frames.end == MP3_ID3.len());
+    let header = &MP3_ID3[frames.start..frames.start + 2];
+    assert!(header[0] == 0xFF && header[1] & 0xE0 == 0xE0, "{header:?}");
+    assert_eq!(audio_payload(MediaKind::Mp3, MP3), Ok(0..MP3.len()));
+    for (kind, bytes) in fixtures().into_iter().filter(|(k, _)| *k != MediaKind::Mp3) {
+        assert_eq!(audio_payload(kind, bytes), Ok(0..bytes.len()), "{kind:?}");
+    }
+    // What is refused is refused the same way.
+    assert_eq!(
+        audio_payload(MediaKind::Mp3, &id3_then(b"#EXTM3U\n")).unwrap_err(),
+        check_structure(MediaKind::Mp3, &id3_then(b"#EXTM3U\n")).unwrap_err()
+    );
+}
+
 #[test]
 fn a_second_ogg_stream_or_bytes_after_the_last_page_are_refused() {
     // Chained: a second logical stream after the first.

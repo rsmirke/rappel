@@ -23,7 +23,7 @@ pub use kind::{AUDIO_MAX_BYTES, DETECT_BYTES, IMAGE_MAX_BYTES, MediaKind};
 pub(crate) use store::{
     CopyFailure, Ingested, MEDIA_DIR_NAME, Sync, copy_capped, ingest, insert_media_row, sync_folder,
 };
-pub use structure::{Malformed, check_structure};
+pub use structure::{Malformed, audio_payload, check_structure};
 pub use trash::{CleanedUp, PURGE_AFTER_DAYS, TrashTidied, UnusedMedia};
 pub(crate) use trash::{recover_all, recover_refs, recover_rows};
 

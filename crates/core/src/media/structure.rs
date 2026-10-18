@@ -35,6 +35,8 @@
 //! and never reads a URI (ADR 0055). Every check is one pass over the
 //! bytes (linear), with bounds checked on every read: it never panics.
 
+use std::ops::Range;
+
 use super::MediaKind;
 
 /// Why an audio file is refused: what was wrong, for the logs and tests.
@@ -67,12 +69,26 @@ fn extra(why: &'static str) -> Check {
 /// # Errors
 /// [`Malformed`] with the first problem found.
 pub fn check_structure(kind: MediaKind, bytes: &[u8]) -> Check {
+    audio_payload(kind, bytes).map(|_| ())
+}
+
+/// The bytes of `bytes`, the whole file, that a player is given, checked
+/// as [`check_structure`] checks them: for an MP3 only its frames,
+/// without the `ID3v2` tags before them and the APE and `ID3v1` tags
+/// after (ADR 0062: `GStreamer` 1.28 aborts the whole process on an
+/// `ID3v2` tag in a stream GTK gives it, and Rappel shows no tags); for
+/// the other kinds the whole file.
+///
+/// # Errors
+/// [`Malformed`] with the first problem found.
+pub fn audio_payload(kind: MediaKind, bytes: &[u8]) -> Result<Range<usize>, Malformed> {
+    let whole = 0..bytes.len();
     match kind {
-        MediaKind::Png | MediaKind::Jpeg | MediaKind::WebP | MediaKind::Gif => Ok(()),
+        MediaKind::Png | MediaKind::Jpeg | MediaKind::WebP | MediaKind::Gif => Ok(whole),
         MediaKind::Mp3 => mp3(bytes),
-        MediaKind::Ogg => ogg(bytes),
-        MediaKind::Wav => wav(bytes),
-        MediaKind::M4a => m4a(bytes),
+        MediaKind::Ogg => ogg(bytes).map(|()| whole),
+        MediaKind::Wav => wav(bytes).map(|()| whole),
+        MediaKind::M4a => m4a(bytes).map(|()| whole),
     }
 }
 
@@ -137,7 +153,9 @@ fn mp3_frame_len(h: [u8; 4]) -> Option<usize> {
     Some(factor * kbps / rate + padding)
 }
 
-fn mp3(b: &[u8]) -> Check {
+/// The frames of an MP3, between its tags.
+fn mp3(b: &[u8]) -> Result<Range<usize>, Malformed> {
+    let bad = |why| Err(Malformed { why, extra: false });
     let mut pos = 0;
     // ID3v2 tags, each skipped by its declared size (syncsafe).
     while b.get(pos..pos + 3) == Some(b"ID3") {
@@ -169,6 +187,7 @@ fn mp3(b: &[u8]) -> Check {
     if pos >= end {
         return bad("no MP3 frame");
     }
+    let frames = pos..end;
     while pos < end {
         let Some(h) = b.get(pos..pos + 4) else {
             return bad("a cut MP3 frame header");
@@ -181,7 +200,7 @@ fn mp3(b: &[u8]) -> Check {
         }
         pos += len;
     }
-    Ok(())
+    Ok(frames)
 }
 
 /// Where the APE tag whose 32-byte footer ends `b[..end]` begins (its
