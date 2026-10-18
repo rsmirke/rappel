@@ -13,6 +13,7 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 - `rappel-core`: `Store::reset_card` refuses a new card with `Error::CardAlreadyNew`, and nothing is written; `Store::reset_cards` skips new cards and returns only the entries it wrote.
 
 ### Added
+- Development: `scripts/screenshot.py`, the batch-mode screenshot harness (a private Xvfb display, input only through XTest).
 - `rappel-core`: `Error::CardAlreadyNew`; `Store::new_card_ids(deck)` lists a deck's new cards in one query; `BrowseRow::is_new` says whether a card is new, also when it is suspended.
 
 ## [0.2.0-beta.1] — 2026-10-18
