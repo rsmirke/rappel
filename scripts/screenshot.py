@@ -1,11 +1,15 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S python3 -I
 """Screenshot Rappel on a private Xvfb display, optionally driving it with keys.
 
 For batch mode (CLAUDE.md): screenshots go to docs/briefs/screenshots/, which
 is git-ignored. Input is sent only with XTest to the private Xvfb display,
-never through AT-SPI or the session bus, so nothing can reach the desktop.
+never through AT-SPI or the session bus, so nothing can reach the desktop:
+Xvfb picks its own free display (-displayfd) and requires a fresh cookie
+(-auth), so a connection can only reach that server.
 
-Usage (run with `python3 -I`):
+Needs: Xvfb, xauth, ImageMagick's `import`, libX11 and libXtst.
+
+Usage:
   scripts/screenshot.py --out NAME --size 1000x720 --scheme dark \
       [--data DIR | --fill "30 --due 5 --tags"] [--deck DECK_ID] \
       [--steps "wait:4 shot:list key:ctrl+n wait:1 type:Hello shot:editor"]
@@ -16,13 +20,14 @@ Steps, separated by spaces (use %20 for a space inside type:):
   key:COMBO         e.g. Tab, Return, ctrl+n, ctrl+shift+Return, F10, Escape
   type:TEXT         type characters (ASCII)
   click:X,Y         left click at window coordinates
-  resize:WxH        not supported (the screen is the window); run again instead
 Without --steps: wait 6 s, then one shot <out>.png.
-The whole run is killed after 110 s (CLAUDE.md: under 2 minutes).
+Steps stop after 110 s, and the whole run is killed after 115 s
+(CLAUDE.md: under 2 minutes).
 """
 import argparse
 import ctypes
 import os
+import secrets
 import shutil
 import signal
 import subprocess
@@ -32,7 +37,14 @@ import time
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SHOTS = os.path.join(REPO, "docs", "briefs", "screenshots")
-DEADLINE = time.monotonic() + 110
+STEP_SECONDS = 110
+RUN_SECONDS = 115
+# The app never gets these from --env: they keep it on the private display,
+# off the session bus and out of real data.
+PROTECTED = {"DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY", "GDK_BACKEND", "DBUS_SESSION_BUS_ADDRESS",
+             "AT_SPI_BUS_ADDRESS", "NO_AT_BRIDGE", "GTK_A11Y", "RAPPEL_DATA_DIR", "HOME",
+             "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR"}
+REAL_DATA = [os.path.expanduser(f"~/.local/share/{name}") for name in ("rappel", "rappel-dev", "cards")]
 
 NAMED = {
     " ": "space", "\n": "Return", "\t": "Tab", "!": "exclam", '"': "quotedbl",
@@ -48,6 +60,14 @@ SHIFTED = set('!"#$%&()*+:<>?@^_{|}~') | set("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
 MODS = {"ctrl": "Control_L", "shift": "Shift_L", "alt": "Alt_L", "super": "Super_L"}
 
 
+class Stop(Exception):
+    pass
+
+
+def on_signal(signum, _frame):
+    raise Stop(f"signal {signum}")
+
+
 class X:
     def __init__(self, display):
         self.x11 = ctypes.CDLL("libX11.so.6")
@@ -59,17 +79,19 @@ class X:
         self.xtst.XTestFakeButtonEvent.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_int, ctypes.c_ulong]
         self.xtst.XTestFakeMotionEvent.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_ulong]
         self.x11.XFlush.argtypes = [ctypes.c_void_p]
+        self.x11.XCloseDisplay.argtypes = [ctypes.c_void_p]
         self.dpy = self.x11.XOpenDisplay(display.encode())
         if not self.dpy:
-            sys.exit(f"cannot open {display}")
+            raise Stop(f"cannot open {display}")
+
+    def close(self):
+        self.x11.XCloseDisplay(self.dpy)
 
     def code(self, name):
         sym = self.x11.XStringToKeysym(name.encode())
-        if not sym:
-            sys.exit(f"unknown key {name!r}")
-        code = self.x11.XKeysymToKeycode(self.dpy, sym)
+        code = self.x11.XKeysymToKeycode(self.dpy, sym) if sym else 0
         if not code:
-            sys.exit(f"no keycode for {name!r}")
+            raise Stop(f"unknown key {name!r}")
         return code
 
     def press(self, names):
@@ -98,11 +120,34 @@ class X:
         time.sleep(0.1)
 
 
-def free_display():
-    for n in range(90, 200):
-        if not os.path.exists(f"/tmp/.X{n}-lock") and not os.path.exists(f"/tmp/.X11-unix/X{n}"):
-            return f":{n}"
-    sys.exit("no free display number")
+def start_xvfb(width, height, auth):
+    """Starts Xvfb on a display it picks itself; returns (process, ":N")."""
+    read_fd, write_fd = os.pipe()
+    xvfb = subprocess.Popen(["Xvfb", "-displayfd", str(write_fd), "-auth", auth, "-nolisten", "tcp",
+                             "-screen", "0", f"{width}x{height}x24"],
+                            pass_fds=(write_fd,), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            start_new_session=True)
+    os.close(write_fd)
+    with os.fdopen(read_fd) as f:
+        number = f.readline().strip()
+    if not number.isdigit() or xvfb.poll() is not None:
+        stop(xvfb)
+        raise Stop("Xvfb did not start")
+    return xvfb, f":{number}"
+
+
+def stop(proc):
+    if proc is None or proc.poll() is not None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+        proc.wait(5)
+    except (ProcessLookupError, subprocess.TimeoutExpired):
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.wait()
 
 
 def main():
@@ -116,50 +161,80 @@ def main():
     p.add_argument("--steps", default="wait:6 shot:")
     p.add_argument("--env", action="append", default=[], help="extra KEY=VALUE for the app")
     a = p.parse_args()
+    if "/" in a.out or a.out.startswith("."):
+        sys.exit("--out is a file name stem, not a path")
+    extra = dict(kv.partition("=")[::2] for kv in a.env)
+    if PROTECTED & extra.keys():
+        sys.exit(f"--env may not set {sorted(PROTECTED & extra.keys())}")
+    if a.data:
+        source = os.path.realpath(a.data)
+        if any(source == d or source.startswith(d + os.sep) for d in map(os.path.realpath, REAL_DATA)):
+            sys.exit("refusing a real data directory")
+    for tool in ("Xvfb", "xauth", "import"):
+        if not shutil.which(tool):
+            sys.exit(f"{tool} is not installed")
     width, height = (int(v) for v in a.size.lower().split("x"))
     os.makedirs(SHOTS, exist_ok=True)
 
+    signal.signal(signal.SIGTERM, on_signal)
+    signal.signal(signal.SIGINT, on_signal)
+    signal.signal(signal.SIGALRM, on_signal)
     work = tempfile.mkdtemp(prefix="rappel-shot-")
-    data = os.path.join(work, "data")
-    if a.data:
-        shutil.copytree(a.data, data)
-    else:
-        os.makedirs(data, mode=0o700)
-        subprocess.run(["cargo", "run", "-q", "-p", "rappel-core", "--example", "fill_scratch_db", "--", data]
-                       + a.fill.split(), cwd=REPO, check=True, stdout=subprocess.DEVNULL)
-    with open(os.path.join(data, "window-state.ini"), "w") as f:
-        f.write(f"[window]\nwidth={width}\nheight={height}\nmaximized=false\ndeck={a.deck}\n")
-    subprocess.run(["cargo", "build", "-q", "-p", "rappel"], cwd=REPO, check=True)
-
-    display = free_display()
-    if display == os.environ.get("DISPLAY"):
-        sys.exit("refusing: that is the real display")
-    xvfb = subprocess.Popen(["Xvfb", display, "-screen", "0", f"{width}x{height}x24", "-nolisten", "tcp"],
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    time.sleep(1)
-    env = {k: v for k, v in os.environ.items() if k not in ("WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "AT_SPI_BUS_ADDRESS")}
-    env.update(DISPLAY=display, GDK_BACKEND="x11", GSK_RENDERER="cairo", NO_AT_BRIDGE="1",
-               DBUS_SESSION_BUS_ADDRESS="unix:path=/nonexistent/rappel-harness",
-               ADW_DEBUG_COLOR_SCHEME=f"prefer-{a.scheme}", RAPPEL_DATA_DIR=data, GTK_A11Y="none")
-    for kv in a.env:
-        k, _, v = kv.partition("=")
-        env[k] = v
-    log = open(os.path.join(SHOTS, a.out + ".log"), "w")
-    app = subprocess.Popen([os.path.join(REPO, "target", "debug", "rappel")], env=env, stdout=log, stderr=log)
-    x = X(display)
+    xvfb = app = x = log = None
     saved = []
     try:
+        data = os.path.join(work, "data")
+        if a.data:
+            # The database files only, never a -wal or -shm of a running app.
+            shutil.copytree(a.data, data, ignore=shutil.ignore_patterns("*-wal", "*-shm"))
+        else:
+            os.makedirs(data, mode=0o700)
+            subprocess.run(["cargo", "run", "-q", "--locked", "-p", "rappel-core", "--example", "fill_scratch_db",
+                            "--", data] + a.fill.split(), cwd=REPO, check=True, stdout=subprocess.DEVNULL,
+                           timeout=600)
+        with open(os.path.join(data, "window-state.ini"), "w") as f:
+            f.write(f"[window]\nwidth={width}\nheight={height}\nmaximized=false\ndeck={a.deck}\n")
+        subprocess.run(["cargo", "build", "-q", "--locked", "-p", "rappel"], cwd=REPO, check=True, timeout=900)
+
+        # From here on the run is timed: building is not.
+        signal.alarm(RUN_SECONDS)
+        deadline = time.monotonic() + STEP_SECONDS
+        auth = os.path.join(work, "Xauthority")
+        open(auth, "w").close()
+        xvfb, display = start_xvfb(width, height, auth)
+        subprocess.run(["xauth", "-f", auth, "add", display, ".", secrets.token_hex(16)], check=True, timeout=10)
+        os.environ["XAUTHORITY"] = auth  # for this script's own XOpenDisplay and `import`
+        home = os.path.join(work, "home")
+        env = {k: v for k, v in os.environ.items() if k not in PROTECTED}
+        env.update(extra)
+        env.update(DISPLAY=display, XAUTHORITY=auth, GDK_BACKEND="x11", GSK_RENDERER="cairo", NO_AT_BRIDGE="1",
+                   GTK_A11Y="none", DBUS_SESSION_BUS_ADDRESS="unix:path=/nonexistent/rappel-harness",
+                   ADW_DEBUG_COLOR_SCHEME=f"prefer-{a.scheme}", RAPPEL_DATA_DIR=data, HOME=home,
+                   XDG_CONFIG_HOME=f"{home}/.config", XDG_CACHE_HOME=f"{home}/.cache",
+                   XDG_DATA_HOME=f"{home}/.local/share", XDG_STATE_HOME=f"{home}/.local/state",
+                   XDG_RUNTIME_DIR=os.path.join(work, "run"))
+        os.makedirs(env["XDG_RUNTIME_DIR"], mode=0o700)
+        log = open(os.path.join(SHOTS, a.out + ".log"), "w")
+        app = subprocess.Popen([os.path.join(REPO, "target", "debug", "rappel")], env=env, stdout=log, stderr=log,
+                               start_new_session=True)
+        x = X(display)
         for step in a.steps.split():
-            if time.monotonic() > DEADLINE:
-                print("deadline reached", file=sys.stderr)
+            if xvfb.poll() is not None:
+                raise Stop("Xvfb exited")
+            if app.poll() is not None:
+                print(f"the app exited with {app.returncode}; see {log.name}", file=sys.stderr)
+                break
+            left = deadline - time.monotonic()
+            if left <= 0:
+                print("time limit reached", file=sys.stderr)
                 break
             kind, _, arg = step.partition(":")
             arg = arg.replace("%20", " ")
             if kind == "wait":
-                time.sleep(float(arg))
+                time.sleep(min(float(arg), left))
             elif kind == "shot":
                 path = os.path.join(SHOTS, f"{a.out}-{arg}.png" if arg else f"{a.out}.png")
-                subprocess.run(["import", "-display", display, "-window", "root", path], check=True)
+                subprocess.run(["import", "-display", display, "-window", "root", path], check=True, timeout=20)
                 saved.append(path)
             elif kind == "key":
                 x.combo(arg)
@@ -169,18 +244,19 @@ def main():
                 cx, cy = (int(v) for v in arg.split(","))
                 x.click(cx, cy)
             else:
-                sys.exit(f"unknown step {step!r}")
-            if app.poll() is not None:
-                print(f"the app exited with {app.returncode}; see {log.name}", file=sys.stderr)
-                break
+                raise Stop(f"unknown step {step!r}")
+    except Stop as err:
+        print(f"stopped: {err}", file=sys.stderr)
     finally:
-        app.send_signal(signal.SIGTERM)
-        try:
-            app.wait(5)
-        except subprocess.TimeoutExpired:
-            app.kill()
-        xvfb.terminate()
-        xvfb.wait()
+        signal.alarm(0)
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        if x is not None:
+            x.close()
+        stop(app)
+        stop(xvfb)
+        if log is not None:
+            log.close()
         shutil.rmtree(work, ignore_errors=True)
     for path in saved:
         print(path)
