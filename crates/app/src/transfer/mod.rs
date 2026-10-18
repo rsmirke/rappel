@@ -9,6 +9,7 @@
 mod names;
 mod text;
 
+use crate::i18n::{fill, gettext};
 use std::path::PathBuf;
 
 use adw::prelude::*;
@@ -29,7 +30,7 @@ use text::{
 /// Asks where to save, then exports there on a worker thread.
 pub async fn export(window: &RappelWindow, state: &AppState) {
     let (year, month, day) = glib::DateTime::now_local().map_or((0, 0, 0), |now| now.ymd());
-    let dialog = file_dialog("Export Data", &[FILE_EXTENSION]);
+    let dialog = file_dialog(&gettext("Export Data"), &[FILE_EXTENSION]);
     dialog.set_initial_name(Some(&export_file_name(year, month, day)));
     let Some(path) = chosen_path(window, dialog.save_future(Some(window)).await) else {
         return;
@@ -52,15 +53,28 @@ pub async fn export(window: &RappelWindow, state: &AppState) {
             };
             window.add_toast(toast);
         }
-        Ok(Err(err)) => show_error(window, "an export", &format!("The export failed: {err}")),
-        Err(_) => show_error(window, "an export", "The export stopped unexpectedly"),
+        Ok(Err(err)) => show_error(
+            window,
+            "an export",
+            // Translators: a toast: what is before ":" is its title, the
+            // rest is behind Details. {error} is why, in English.
+            &fill(
+                &gettext("The export failed: {error}"),
+                &[("error", &err.to_string())],
+            ),
+        ),
+        Err(_) => show_error(
+            window,
+            "an export",
+            &gettext("The export stopped unexpectedly"),
+        ),
     }
 }
 
 /// Asks for a file, checks it on a worker thread, shows what it would do,
 /// and imports it on a worker thread if the user confirms.
 pub async fn import(window: &RappelWindow, state: &AppState) {
-    let dialog = file_dialog("Import Data", &IMPORT_EXTENSIONS);
+    let dialog = file_dialog(&gettext("Import Data"), &IMPORT_EXTENSIONS);
     let Some(path) = chosen_path(window, dialog.open_future(Some(window)).await) else {
         return;
     };
@@ -85,7 +99,7 @@ pub async fn import(window: &RappelWindow, state: &AppState) {
             show_error(
                 window,
                 "an import check",
-                "Checking the file stopped unexpectedly",
+                &gettext("Checking the file stopped unexpectedly"),
             );
             return;
         }
@@ -116,11 +130,11 @@ async fn confirm(window: &RappelWindow, state: &AppState, summary: &ImportSummar
         return false;
     };
     let view = plan_view(summary);
-    dialog.set_heading(Some(view.heading));
+    dialog.set_heading(Some(&view.heading));
     dialog.set_body(&view.body);
     if !view.can_import {
         dialog.remove_response("import");
-        dialog.set_response_label("cancel", "_Close");
+        dialog.set_response_label("cancel", &gettext("_Close"));
         dialog.set_default_response(Some("cancel"));
     }
     if !summary.conflicts.is_empty() {
@@ -149,7 +163,11 @@ async fn apply(window: &RappelWindow, data_dir: PathBuf, plan: ImportPlan) {
             window.data_changed();
         }
         Ok(Err(err)) => show_error(window, "an import", &import_failed_text(&err)),
-        Err(_) => show_error(window, "an import", "The import stopped unexpectedly"),
+        Err(_) => show_error(
+            window,
+            "an import",
+            &gettext("The import stopped unexpectedly"),
+        ),
     }
 }
 
@@ -158,7 +176,7 @@ async fn apply(window: &RappelWindow, data_dir: PathBuf, plan: ImportPlan) {
 /// Saving offers only `.rappel`, so an old export is not overwritten by accident.
 fn file_dialog(title: &str, extensions: &[&str]) -> gtk::FileDialog {
     let filter = gtk::FileFilter::new();
-    filter.set_name(Some("Rappel Exports"));
+    filter.set_name(Some(&gettext("Rappel Exports")));
     for extension in extensions {
         filter.add_suffix(extension);
     }
@@ -179,7 +197,11 @@ fn chosen_path(window: &RappelWindow, chosen: Result<gio::File, glib::Error>) ->
         Ok(file) => {
             let path = file.path();
             if path.is_none() {
-                show_error(window, "a file choice", "Choose a file on this computer");
+                show_error(
+                    window,
+                    "a file choice",
+                    &gettext("Choose a file on this computer"),
+                );
             }
             path
         }
@@ -195,7 +217,12 @@ fn chosen_path(window: &RappelWindow, chosen: Result<gio::File, glib::Error>) ->
             show_error(
                 window,
                 "a file choice",
-                &format!("The file chooser failed: {err}"),
+                // Translators: a toast: what is before ":" is its title, the
+                // rest is behind Details. {error} is why, in English.
+                &fill(
+                    &gettext("The file chooser failed: {error}"),
+                    &[("error", &err.to_string())],
+                ),
             );
             None
         }

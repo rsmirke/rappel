@@ -10,6 +10,8 @@
 //! selection mode a click opens the editor, and a list view with a
 //! selection model selects on a click instead.
 
+use crate::i18n::gettext;
+use crate::ui::text::with_error;
 use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::{gio, glib};
@@ -358,7 +360,11 @@ impl BrowserPage {
     /// Reads the rows again, after an import.
     pub fn reload_all(&self) {
         if let Err(err) = self.load_filters(None) {
-            self.error_toast(&format!("The decks could not be read: {err}"));
+            // Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+            self.error_toast(&with_error(
+                &gettext("The decks could not be read: {error}"),
+                &err,
+            ));
         }
         self.requery();
     }
@@ -617,11 +623,11 @@ impl BrowserPage {
         imp.quiet.set(true);
         dropdown::set_labels(
             &imp.deck_filter,
-            &labels(text::ALL_DECKS, decks.iter().map(|d| &d.name)),
+            &labels(&text::all_decks(), decks.iter().map(|d| &d.name)),
         );
         dropdown::set_labels(
             &imp.tag_filter,
-            &labels(text::ALL_TAGS, tags.iter().map(|t| &t.name)),
+            &labels(&text::all_tags(), tags.iter().map(|t| &t.name)),
         );
         let position =
             |found: Option<usize>| found.map_or(0, |i| u32::try_from(i + 1).unwrap_or(0));
@@ -671,7 +677,11 @@ impl BrowserPage {
     /// stay chosen if they are still listed.
     pub fn requery(&self) {
         if let Err(err) = self.load_rows() {
-            self.error_toast(&format!("The cards could not be read: {err}"));
+            // Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+            self.error_toast(&with_error(
+                &gettext("The cards could not be read: {error}"),
+                &err,
+            ));
         }
     }
 
@@ -717,10 +727,10 @@ impl BrowserPage {
             None => imp.content_stack.set_visible_child_name("list"),
             Some((icon, title, description)) => {
                 imp.empty_page.set_icon_name(Some(icon));
-                imp.empty_page.set_title(title);
-                imp.empty_page.set_description(Some(description));
-                imp.empty_button.set_label(if empty == Empty::NoCards {
-                    text::GO_TO_DECKS
+                imp.empty_page.set_title(&title);
+                imp.empty_page.set_description(Some(&description));
+                imp.empty_button.set_label(&if empty == Empty::NoCards {
+                    text::go_to_decks()
                 } else {
                     let (searched, filtered) = text::searched_and_filtered(&query);
                     text::clear_label(searched, filtered)
@@ -932,15 +942,15 @@ impl BrowserPage {
         imp.tags_button.set_sensitive(n > 0);
         let choice = text::suspend_choice(chosen.iter().map(BrowseItem::suspended));
         let (label, accessible) = text::suspend_labels(choice);
-        imp.suspend_button.set_tooltip_text(Some(label));
+        imp.suspend_button.set_tooltip_text(Some(&label));
         imp.suspend_button
-            .update_property(&[gtk::accessible::Property::Label(accessible)]);
+            .update_property(&[gtk::accessible::Property::Label(&accessible)]);
         imp.suspend_content.set_icon_name(match choice {
             SuspendChoice::Suspend => "media-playback-pause-symbolic",
             SuspendChoice::Unsuspend => "media-playback-start-symbolic",
         });
         imp.suspend_content
-            .set_label(if self.compact() { "" } else { label });
+            .set_label(if self.compact() { "" } else { &label });
     }
 
     fn suspend_choice(&self) -> SuspendChoice {
@@ -1028,12 +1038,20 @@ impl BrowserPage {
                 }
                 // A new tag may be in the filter's list.
                 if let Err(err) = self.load_filters(None) {
-                    self.error_toast(&format!("The tags could not be read: {err}"));
+                    // Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+                    self.error_toast(&with_error(
+                        &gettext("The tags could not be read: {error}"),
+                        &err,
+                    ));
                 }
             }
             Saved::Added(_) => {
                 if let Err(err) = self.load_filters(None) {
-                    self.error_toast(&format!("The tags could not be read: {err}"));
+                    // Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+                    self.error_toast(&with_error(
+                        &gettext("The tags could not be read: {error}"),
+                        &err,
+                    ));
                 }
                 self.requery();
             }
@@ -1080,8 +1098,14 @@ impl BrowserPage {
             async move {
                 let names: Vec<String> = decks.iter().map(|d| d.name.clone()).collect();
                 let body = text::move_body(ids.len());
-                let Some(i) =
-                    browser_dialogs::choose(&page, "Move Cards", &body, "_Move", &names).await
+                let Some(i) = browser_dialogs::choose(
+                    &page,
+                    &gettext("Move Cards"),
+                    &body,
+                    &gettext("_Move"),
+                    &names,
+                )
+                .await
                 else {
                     return;
                 };
@@ -1150,8 +1174,14 @@ impl BrowserPage {
             async move {
                 let names: Vec<String> = tags.iter().map(|t| t.name.clone()).collect();
                 let body = text::remove_tag_body(ids.len());
-                let Some(i) =
-                    browser_dialogs::choose(&page, "Remove Tag", &body, "_Remove", &names).await
+                let Some(i) = browser_dialogs::choose(
+                    &page,
+                    &gettext("Remove Tag"),
+                    &body,
+                    &gettext("_Remove"),
+                    &names,
+                )
+                .await
                 else {
                     return;
                 };
@@ -1189,7 +1219,11 @@ impl BrowserPage {
                 self.changed();
                 show_toast_from(self, info_toast(&text::stale_text()));
             }
-            Err(err) => self.error_toast(&format!("The cards could not be changed: {err}")),
+            // Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+            Err(err) => self.error_toast(&with_error(
+                &gettext("The cards could not be changed: {error}"),
+                &err,
+            )),
         }
     }
 
@@ -1220,7 +1254,11 @@ impl BrowserPage {
         // The tags in use may have changed (a tag added, taken off, or on
         // deleted cards only), and the tag filter lists those.
         if let Err(err) = self.load_filters(None) {
-            self.error_toast(&format!("The decks and tags could not be read: {err}"));
+            // Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+            self.error_toast(&with_error(
+                &gettext("The decks and tags could not be read: {error}"),
+                &err,
+            ));
         }
         self.requery();
     }
@@ -1280,7 +1318,8 @@ fn undo(
             }
         }
         Err(err) => {
-            let message = format!("The change could not be undone: {err}");
+            // Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+            let message = with_error(&gettext("The change could not be undone: {error}"), &err);
             match window {
                 Some(window) => show_error(&window, "a card operation", &message),
                 None => crate::ui::toast::log_failure("a card operation", &message),

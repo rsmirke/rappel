@@ -127,7 +127,7 @@ fn push(out: &mut Markup, inlines: &[Inline], len: &mut Cursor, math: &mut Budge
             Inline::Audio { content, .. } => {
                 out.markup.push_str("<i>");
                 if content.is_empty() {
-                    out.text("Audio", len);
+                    out.text(&crate::i18n::gettext("Audio"), len);
                 } else {
                     push(out, content, len, math);
                 }

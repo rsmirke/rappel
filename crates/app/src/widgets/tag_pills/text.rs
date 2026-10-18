@@ -1,6 +1,7 @@
 //! What tag pills show and say: the text of a pill, how many pills fit on
 //! one line and the "+N" pill for the rest. Pure, so it is unit-tested.
 
+use crate::i18n::{fill, gettext};
 use crate::ui::text::{group_digits, isolate, name_list};
 
 /// The widest a pill gets, in characters; a longer name ends in "…" and
@@ -49,7 +50,12 @@ pub fn spoken(names: &[String]) -> Option<String> {
     if names.is_empty() {
         None
     } else {
-        Some(format!("tags: {}", name_list(names, str::to_owned)))
+        // Translators: a card's tags for screen readers; {names} is a list
+        // of tags ("maths, easy").
+        Some(fill(
+            &gettext("tags: {names}"),
+            &[("names", &name_list(names, str::to_owned))],
+        ))
     }
 }
 

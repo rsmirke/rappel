@@ -14,9 +14,11 @@ use adw::subclass::prelude::*;
 use gtk::glib;
 use rappel_core::storage::{BackupInfo, Restored};
 
+use crate::i18n::{fill, gettext};
 use crate::startup::{RecoveryReason, data_folder_line};
 use crate::state::AppState;
 use crate::ui::callback::Callback;
+use crate::ui::text::with_error;
 use crate::ui::{dialog, worker};
 use crate::widgets::BackupRow;
 
@@ -221,7 +223,7 @@ impl RecoveryPage {
         // The reason can change after a failed restore or start; the title
         // follows it.
         if let Some(reason) = imp.reason.get() {
-            imp.status.set_title(reason.title());
+            imp.status.set_title(&reason.title());
         }
         let description = match AppState::list_backups(&dir) {
             Ok(backups) if backups.is_empty() => {
@@ -238,8 +240,12 @@ impl RecoveryPage {
             Err(err) => {
                 tracing::error!("cannot list backups: {err}");
                 let mut text = description_text(imp.reason.get(), None);
-                text.push_str("\n\nThe backups could not be listed: ");
-                text.push_str(&err.to_string());
+                text.push_str("\n\n");
+                // Translators: {error} is why, in English.
+                text.push_str(&with_error(
+                    &gettext("The backups could not be listed: {error}"),
+                    &err,
+                ));
                 text
             }
         };
@@ -277,7 +283,7 @@ impl RecoveryPage {
             return;
         };
         let (heading, body) = restore_question(when);
-        dialog.set_heading(Some(heading));
+        dialog.set_heading(Some(&heading));
         dialog.set_body(&body);
         glib::spawn_future_local(glib::clone!(
             #[weak(rename_to = page)]
@@ -331,19 +337,23 @@ impl RecoveryPage {
             }
             Ok(Err(rappel_core::Error::RestoreRefused { source, .. })) => {
                 tracing::warn!("backup refused: {source}");
-                format!("This backup cannot be used: {source}")
+                // Translators: a toast: what is before ":" is its title, the
+                // rest is behind Details. {error} is why, in English.
+                with_error(&gettext("This backup cannot be used: {error}"), &source)
             }
             Ok(Err(err)) => {
                 tracing::error!("restore failed: {err}");
                 // The old database may already be moved aside; say what is
                 // now true on disk. Restoring again finishes it (ADR 0007).
                 imp.reason.set(Some(RecoveryReason::InterruptedRestore));
-                format!("Restore failed: {err}")
+                // Translators: a toast: what is before ":" is its title, the
+                // rest is behind Details. {error} is why, in English.
+                with_error(&gettext("Restore failed: {error}"), &err)
             }
             Err(_) => {
                 tracing::error!("restore worker panicked");
                 imp.reason.set(Some(RecoveryReason::InterruptedRestore));
-                "Restore stopped unexpectedly".to_owned()
+                gettext("Restore stopped unexpectedly")
             }
         };
         self.reload();
@@ -415,7 +425,7 @@ impl RecoveryPage {
             },
             Err(_) => {
                 tracing::error!("finish restore worker panicked");
-                "Finishing the restore stopped unexpectedly".to_owned()
+                gettext("Finishing the restore stopped unexpectedly")
             }
         };
         self.reload();
@@ -427,7 +437,7 @@ impl RecoveryPage {
             return;
         };
         if let Some(body) = start_fresh_body(self.imp().reason.get()) {
-            dialog.set_body(body);
+            dialog.set_body(&body);
         }
         glib::spawn_future_local(glib::clone!(
             #[weak(rename_to = page)]
@@ -468,22 +478,25 @@ impl RecoveryPage {
             Ok(Err(rappel_core::Error::InterruptedRestore(_))) => {
                 tracing::warn!("start fresh refused: a validated restore copy is waiting");
                 imp.reason.set(Some(RecoveryReason::InterruptedRestore));
-                "A restore did not finish. Its copy is kept; use Finish Restore to continue."
-                    .to_owned()
+                gettext(
+                    "A restore did not finish. Its copy is kept; use Finish Restore to continue.",
+                )
             }
             Ok(Err(rappel_core::Error::BackupsAvailable(_))) => {
                 // A backup appeared since the list was shown; reloading
                 // lists it.
                 tracing::warn!("start fresh refused: backups exist");
-                "Backups were found. Restore one of them instead.".to_owned()
+                gettext("Backups were found. Restore one of them instead.")
             }
             Ok(Err(err)) => {
                 tracing::error!("start fresh failed: {err}");
-                format!("Starting fresh failed: {err}")
+                // Translators: a toast: what is before ":" is its title, the
+                // rest is behind Details. {error} is why, in English.
+                with_error(&gettext("Starting fresh failed: {error}"), &err)
             }
             Err(_) => {
                 tracing::error!("start fresh worker panicked");
-                "Starting fresh stopped unexpectedly".to_owned()
+                gettext("Starting fresh stopped unexpectedly")
             }
         };
         self.reload();
@@ -493,13 +506,17 @@ impl RecoveryPage {
 
 /// The heading and body of the question before a restore of the backup
 /// made at `when` (as the row shows it).
-fn restore_question(when: &str) -> (&'static str, String) {
+fn restore_question(when: &str) -> (String, String) {
     (
-        "Restore This Backup?",
-        format!(
-            "The backup from {when} replaces the current database, so changes made after it \
-             will not be in the restored one. The current database is kept in the data \
-             folder, not deleted."
+        gettext("Restore This Backup?"),
+        fill(
+            // Translators: {when} is the date and time the backup was made.
+            &gettext(
+                "The backup from {when} replaces the current database, so changes made after it \
+                 will not be in the restored one. The current database is kept in the data \
+                 folder, not deleted.",
+            ),
+            &[("when", when)],
         ),
     )
 }
@@ -510,19 +527,17 @@ fn restore_question(when: &str) -> (&'static str, String) {
 /// what Start Fresh does, and never asks to restore a backup.
 fn description_text(reason: Option<RecoveryReason>, backups: Option<bool>) -> String {
     if reason == Some(RecoveryReason::UnusableRestoreCopy) && backups == Some(false) {
-        return "A restore was interrupted, and the copy it left waiting is damaged or was not \
-                made by this version of Rappel. There is no backup to restore. Start Fresh sets \
-                the copy aside and starts with no decks; nothing is deleted, and the files stay \
-                in the data folder."
-            .to_owned();
+        return gettext(
+            "A restore was interrupted, and the copy it left waiting is damaged or was not made \
+             by this version of Rappel. There is no backup to restore. Start Fresh sets the copy \
+             aside and starts with no decks; nothing is deleted, and the files stay in the data \
+             folder.",
+        );
     }
-    let mut text = reason
-        .map(RecoveryReason::description)
-        .unwrap_or_default()
-        .to_owned();
+    let mut text = reason.map(RecoveryReason::description).unwrap_or_default();
     if backups == Some(false) {
         text.push_str("\n\n");
-        text.push_str(no_backups_text(reason));
+        text.push_str(&no_backups_text(reason));
     }
     text
 }
@@ -536,17 +551,21 @@ fn only_start_fresh(start_fresh: bool, finish_restore: bool, backups: bool) -> b
 /// the user may be tempted to fix the folder by hand, it warns against
 /// copying database files into it: a copy over `rappel.sqlite3` with an
 /// old `-wal` beside it replays that WAL into the copy (ADR 0007, 0016).
-fn no_backups_text(reason: Option<RecoveryReason>) -> &'static str {
+fn no_backups_text(reason: Option<RecoveryReason>) -> String {
     if offers_start_fresh(reason) {
-        "No backups were found, so there is nothing to restore. You can start with an empty \
-         database instead: the current files stay in the data folder, nothing is deleted. \
-         Don’t copy database files into the data folder yourself: that can damage them."
+        gettext(
+            "No backups were found, so there is nothing to restore. You can start with an empty \
+             database instead: the current files stay in the data folder, nothing is deleted. \
+             Don’t copy database files into the data folder yourself: that can damage them.",
+        )
     } else if offers_finish_restore(reason) {
-        "No backups were found, but the waiting copy can be installed."
+        gettext("No backups were found, but the waiting copy can be installed.")
     } else {
-        "No backups were found, so there is nothing to restore. Leave the files in the data \
-         folder as they are, so they can still be recovered. Don’t copy database files into \
-         the data folder yourself: that can damage them."
+        gettext(
+            "No backups were found, so there is nothing to restore. Leave the files in the data \
+             folder as they are, so they can still be recovered. Don’t copy database files into \
+             the data folder yourself: that can damage them.",
+        )
     }
 }
 
@@ -583,13 +602,15 @@ fn finish_failure(err: &rappel_core::Error) -> FinishFailure {
 /// The body of the question before Start Fresh when it differs from the
 /// one in `data/start_fresh_dialog.blp`: with an unusable waiting copy, that
 /// copy is renamed too. Either way, nothing is deleted.
-fn start_fresh_body(reason: Option<RecoveryReason>) -> Option<&'static str> {
-    (reason == Some(RecoveryReason::UnusableRestoreCopy)).then_some(
-        "The copy the restore left waiting is renamed to “rappel.sqlite3.restore.refused-” \
-         followed by the date and time, and the current database files to \
-         “rappel.sqlite3.replaced-” and the date and time. Both are kept in the data folder. \
-         Nothing is deleted. Rappel then starts with no decks.",
-    )
+fn start_fresh_body(reason: Option<RecoveryReason>) -> Option<String> {
+    (reason == Some(RecoveryReason::UnusableRestoreCopy)).then(|| {
+        gettext(
+            "The copy the restore left waiting is renamed to “rappel.sqlite3.restore.refused-” \
+             followed by the date and time, and the current database files to \
+             “rappel.sqlite3.replaced-” and the date and time. Both are kept in the data folder. \
+             Nothing is deleted. Rappel then starts with no decks.",
+        )
+    })
 }
 
 /// Whether "Finish Restore" is offered: exactly while an interrupted
@@ -602,12 +623,19 @@ fn offers_finish_restore(reason: Option<RecoveryReason>) -> bool {
 fn finish_failure_text(err: &rappel_core::Error) -> String {
     match err {
         rappel_core::Error::NoRestoreWaiting => {
-            "The waiting copy is gone. Restart Rappel to check again.".to_owned()
+            gettext("The waiting copy is gone. Restart Rappel to check again.")
         }
-        rappel_core::Error::RestoreRefused { source, .. } => {
-            format!("The waiting copy could not be checked: {source}. It is kept; try again.")
-        }
-        err => format!("Finishing the restore failed: {err}"),
+        rappel_core::Error::RestoreRefused { source, .. } => with_error(
+            // Translators: a toast; {error} is why, in English.
+            &gettext("The waiting copy could not be checked: {error}. It is kept; try again."),
+            source,
+        ),
+        err => with_error(
+            // Translators: a toast: what is before ":" is its title, the
+            // rest is behind Details. {error} is why, in English.
+            &gettext("Finishing the restore failed: {error}"),
+            err,
+        ),
     }
 }
 
@@ -820,7 +848,7 @@ pub(crate) mod tests {
         assert!(!with.contains("Start Fresh"));
         // Other reasons keep their explanation and the no-backup note.
         let damaged = description_text(Some(RecoveryReason::Damaged), Some(false));
-        assert!(damaged.ends_with(no_backups_text(Some(RecoveryReason::Damaged))));
+        assert!(damaged.ends_with(&no_backups_text(Some(RecoveryReason::Damaged))));
         assert_eq!(
             description_text(Some(RecoveryReason::Damaged), None),
             RecoveryReason::Damaged.description()

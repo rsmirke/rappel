@@ -2,6 +2,7 @@
 //! which forward to a page action with the row's id as a string, so menu
 //! models stay static and live in Blueprint.
 
+use crate::i18n::{fill, gettext};
 use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::glib;
@@ -32,9 +33,10 @@ pub fn forward_id(row: &impl IsA<gtk::Widget>, action: &str, id: &str) {
 /// Every row has a menu button; its accessible label says which item it
 /// is for: "Actions for {name}".
 pub fn label_menu_button(button: &gtk::MenuButton, name: &str) {
-    button.update_property(&[gtk::accessible::Property::Label(&format!(
-        "Actions for {name}"
-    ))]);
+    // Translators: the accessible name of a row's menu button; {name} is
+    // a deck's name or a card's front.
+    let label = fill(&gettext("Actions for {name}"), &[("name", name)]);
+    button.update_property(&[gtk::accessible::Property::Label(&label)]);
 }
 
 /// Gives `button` its menu `model` only when the menu first opens, for rows

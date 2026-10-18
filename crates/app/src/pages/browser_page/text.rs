@@ -5,18 +5,23 @@
 use rappel_core::domain::{Tag, name_key};
 use rappel_core::storage::{BrowseQuery, CardStatus, StateFilter};
 
-use crate::ui::text::{count, group_digits, isolate, one_line};
+use crate::i18n::{fill, gettext, ngettext};
+use crate::ui::text::{counted, group_digits, isolate, one_line};
 use crate::ui::time::relative_due;
 
 /// A card's status as a short phrase: "New", "Learning", "Due now",
 /// "Overdue by 2 days", "Due in 3 days", "Suspended".
 pub fn status_text(status: CardStatus, now: i64) -> String {
     match status {
-        CardStatus::New => "New".to_owned(),
-        CardStatus::Learning(_) => "Learning".to_owned(),
-        CardStatus::Suspended => "Suspended".to_owned(),
+        CardStatus::New => gettext("New"),
+        CardStatus::Learning(_) => gettext("Learning"),
+        CardStatus::Suspended => gettext("Suspended"),
         CardStatus::Due(due) => capitalised(&relative_due(due, now)),
-        CardStatus::Scheduled(due) => format!("Due {}", relative_due(due, now)),
+        CardStatus::Scheduled(due) => fill(
+            // Translators: a card's status; {when} is "in 3 days".
+            &gettext("Due {when}"),
+            &[("when", &relative_due(due, now))],
+        ),
     }
 }
 
@@ -33,7 +38,12 @@ fn capitalised(text: &str) -> String {
 pub fn caption(deck: &str, status: &str) -> String {
     // Isolated, so a right-to-left deck name or an open bidi override
     // cannot reorder the status after it.
-    format!("{} · {status}", isolate(&one_line(deck)))
+    fill(
+        // Translators: under a card in All Cards: {deck} is its deck's name,
+        // {status} "Due in 3 days".
+        &gettext("{deck} · {status}"),
+        &[("deck", &isolate(&one_line(deck))), ("status", status)],
+    )
 }
 
 /// What a screen reader says for an All Cards row: the card as the deck
@@ -42,10 +52,24 @@ pub fn caption(deck: &str, status: &str) -> String {
 /// cards, whether the row is chosen: "2 + 2, back: 4, deck: Maths, Due in
 /// 3 days, selected".
 pub fn row_label(card: &str, deck: &str, status: &str, selected: Option<bool>) -> String {
-    let base = format!("{card}, deck: {}, {status}", one_line(deck));
+    let base = fill(
+        // Translators: what a screen reader says for a card in All Cards:
+        // {card} is the card ("2 + 2, back: 4"), {deck} its deck's name,
+        // {status} "Due in 3 days".
+        &gettext("{card}, deck: {deck}, {status}"),
+        &[
+            ("card", card),
+            ("deck", &one_line(deck)),
+            ("status", status),
+        ],
+    );
     match selected {
-        Some(true) => format!("{base}, selected"),
-        Some(false) => format!("{base}, not selected"),
+        // Translators: {row} is a card as a screen reader says it, while
+        // cards are being chosen.
+        Some(true) => fill(&gettext("{row}, selected"), &[("row", &base)]),
+        // Translators: {row} is a card as a screen reader says it, while
+        // cards are being chosen.
+        Some(false) => fill(&gettext("{row}, not selected"), &[("row", &base)]),
         None => base,
     }
 }
@@ -53,9 +77,9 @@ pub fn row_label(card: &str, deck: &str, status: &str, selected: Option<bool>) -
 /// "1,234 cards", "1 card", "No cards".
 pub fn count_text(n: usize) -> String {
     if n == 0 {
-        "No cards".to_owned()
+        gettext("No cards")
     } else {
-        count(n, "card", "cards")
+        cards(n)
     }
 }
 
@@ -64,9 +88,11 @@ pub fn count_text(n: usize) -> String {
 /// Cards" before the first.
 pub fn selection_title(n: usize) -> String {
     if n == 0 {
-        "Select Cards".to_owned()
+        gettext("Select Cards")
     } else {
-        format!("{} Selected", group_digits(n))
+        // Translators: the title while cards are being chosen; {count} is
+        // how many are.
+        counted(&ngettext("{count} Selected", "{count} Selected", n), n)
     }
 }
 
@@ -103,9 +129,9 @@ pub fn reset_offered(is_new: impl IntoIterator<Item = bool>) -> bool {
 /// The note when a reset of `n` cards found them all new already.
 pub fn no_progress_text(n: usize) -> String {
     if n == 1 {
-        "This card has no progress to reset".to_owned()
+        gettext("This card has no progress to reset")
     } else {
-        "These cards have no progress to reset".to_owned()
+        gettext("These cards have no progress to reset")
     }
 }
 
@@ -123,33 +149,35 @@ pub enum Empty {
 
 /// The status page of an [`Empty`] state: icon, title and its one
 /// sentence.
-pub fn empty_page(empty: Empty) -> Option<(&'static str, &'static str, &'static str)> {
+pub fn empty_page(empty: Empty) -> Option<(&'static str, String, String)> {
     match empty {
         Empty::No => None,
         Empty::NoCards => Some((
             "document-new-symbolic",
-            "No Cards Yet",
-            "Cards you add to your decks will show up here",
+            gettext("No Cards Yet"),
+            gettext("Cards you add to your decks will show up here"),
         )),
         Empty::NoResults => Some((
             "edit-find-symbolic",
-            "No Results Found",
-            "Try a different search or other filters",
+            gettext("No Results Found"),
+            gettext("Try a different search or other filters"),
         )),
     }
 }
 
 /// The button of the "No Cards Yet" state: back to the deck list, where
 /// decks are made and cards added.
-pub const GO_TO_DECKS: &str = "_Go to Decks";
+pub fn go_to_decks() -> String {
+    gettext("_Go to Decks")
+}
 
 /// The button of the "No Results Found" state, naming what it clears:
 /// "Clear Search", "Clear Filters" or "Clear Search and Filters".
-pub fn clear_label(searched: bool, filtered: bool) -> &'static str {
+pub fn clear_label(searched: bool, filtered: bool) -> String {
     match (searched, filtered) {
-        (true, false) => "_Clear Search",
-        (false, true) => "_Clear Filters",
-        _ => "_Clear Search and Filters",
+        (true, false) => gettext("_Clear Search"),
+        (false, true) => gettext("_Clear Filters"),
+        _ => gettext("_Clear Search and Filters"),
     }
 }
 
@@ -349,70 +377,114 @@ pub fn is_filtered(query: &BrowseQuery) -> bool {
 
 /// The note after an action found that a card of the list was gone.
 pub fn stale_text() -> String {
-    "The list was out of date; nothing was changed".to_owned()
+    gettext("The list was out of date; nothing was changed")
 }
 
-/// The first entry of the deck and tag drop-downs.
-pub const ALL_DECKS: &str = "All Decks";
-pub const ALL_TAGS: &str = "All Tags";
+/// The first entry of the deck drop-down.
+pub fn all_decks() -> String {
+    gettext("All Decks")
+}
+
+/// The first entry of the tag drop-down.
+pub fn all_tags() -> String {
+    gettext("All Tags")
+}
 
 /// The Suspend button's word (also its tooltip, like the other action
 /// buttons') and accessible label for `choice`.
-pub fn suspend_labels(choice: SuspendChoice) -> (&'static str, &'static str) {
+pub fn suspend_labels(choice: SuspendChoice) -> (String, String) {
     match choice {
-        SuspendChoice::Suspend => ("Suspend", "Suspend selected cards"),
-        SuspendChoice::Unsuspend => ("Unsuspend", "Unsuspend selected cards"),
+        SuspendChoice::Suspend => (gettext("Suspend"), gettext("Suspend selected cards")),
+        SuspendChoice::Unsuspend => (gettext("Unsuspend"), gettext("Unsuspend selected cards")),
     }
 }
 
 /// The body of the Move dialog.
 pub fn move_body(n: usize) -> String {
-    format!("Choose the deck to move {} to.", count_text(n))
+    counted(
+        // Translators: {count} is the number of cards chosen.
+        &ngettext(
+            "Choose the deck to move {count} card to.",
+            "Choose the deck to move {count} cards to.",
+            n,
+        ),
+        n,
+    )
 }
 
 /// The body of the Add Tags dialog: what it does, and how a tag is ended
 /// (the card editor's Tags group says the same).
 pub fn add_tags_body(n: usize) -> String {
-    format!(
-        "Choose the tags to put on {}. Press Enter or type a comma after each one.",
-        count_text(n)
+    counted(
+        // Translators: {count} is the number of cards chosen.
+        &ngettext(
+            "Choose the tags to put on {count} card. Press Enter or type a comma after each one.",
+            "Choose the tags to put on {count} cards. Press Enter or type a comma after each one.",
+            n,
+        ),
+        n,
     )
 }
 
 /// The body of the Remove Tag dialog.
 pub fn remove_tag_body(n: usize) -> String {
-    format!("Choose the tag to take off {}.", count_text(n))
+    counted(
+        // Translators: {count} is the number of cards chosen.
+        &ngettext(
+            "Choose the tag to take off {count} card.",
+            "Choose the tag to take off {count} cards.",
+            n,
+        ),
+        n,
+    )
 }
 
 /// The notice when the chosen cards have no tag to take off.
 pub fn no_tags_text() -> String {
-    "The chosen cards have no tags".to_owned()
+    gettext("The chosen cards have no tags")
 }
 
 /// "3 cards" / "1 card".
 fn cards(n: usize) -> String {
-    count(n, "card", "cards")
+    // Translators: {count} is a number of cards.
+    counted(&ngettext("{count} card", "{count} cards", n), n)
 }
 
 pub fn moved_text(n: usize) -> String {
     // The deck was just chosen; short, so it fits beside Undo (ADR 0058).
-    format!("{} moved", cards(n))
+    // Translators: an Undo toast, at most 24 characters with 99,999 cards
+    // (it must fit beside Undo on a phone); {count} is a number of cards.
+    counted(&ngettext("{count} card moved", "{count} cards moved", n), n)
 }
 
 /// The Undo toast after Add Tags put tags on `n` cards. Short, so it fits
 /// beside Undo at 360 px (ADR 0058): the names were just typed.
 pub fn tags_added_text(n: usize) -> String {
-    format!("{} tagged", cards(n))
+    // Translators: an Undo toast, at most 24 characters with 99,999 cards
+    // (it must fit beside Undo on a phone); {count} is a number of cards.
+    counted(
+        &ngettext("{count} card tagged", "{count} cards tagged", n),
+        n,
+    )
 }
 
 /// The note after Add Tags left out `full` cards that would have had more
 /// than `limit` tags, or `None`.
 pub fn tags_left_out_text(full: usize, limit: usize) -> Option<String> {
     (full > 0).then(|| {
-        format!(
-            "{} left out. A card can have at most {} tags",
-            cards(full),
-            group_digits(limit)
+        fill(
+            // Translators: a toast: its first sentence is its title, the
+            // rest is behind Details. {count} is a number of cards,
+            // {limit} the most tags a card can have (100).
+            &ngettext(
+                "{count} card left out. A card can have at most {limit} tags",
+                "{count} cards left out. A card can have at most {limit} tags",
+                full,
+            ),
+            &[
+                ("count", &group_digits(full)),
+                ("limit", &group_digits(limit)),
+            ],
         )
     })
 }
@@ -420,48 +492,79 @@ pub fn tags_left_out_text(full: usize, limit: usize) -> Option<String> {
 /// The notice when Add Tags changed no card because each would have had
 /// more than `limit` tags.
 pub fn no_room_text(limit: usize) -> String {
-    format!(
-        "No tags added; a card can have at most {} tags",
-        group_digits(limit)
+    fill(
+        // Translators: a toast: what is before ";" is its title, the rest
+        // is behind Details. {limit} is the most tags a card can have (100).
+        &gettext("No tags added; a card can have at most {limit} tags"),
+        &[("limit", &group_digits(limit))],
     )
 }
 
 pub fn tag_removed_text(n: usize) -> String {
     // The tag was just chosen; short, so it fits beside Undo (ADR 0058).
-    format!("{} untagged", cards(n))
+    // Translators: an Undo toast, at most 24 characters with 99,999 cards
+    // (it must fit beside Undo on a phone); {count} is a number of cards.
+    counted(
+        &ngettext("{count} card untagged", "{count} cards untagged", n),
+        n,
+    )
 }
 
 pub fn suspended_text(n: usize, suspended: bool) -> String {
-    let what = if suspended {
-        "suspended"
+    if suspended {
+        // Translators: an Undo toast, at most 24 characters with 99,999
+        // cards (it must fit beside Undo on a phone).
+        counted(
+            &ngettext("{count} card suspended", "{count} cards suspended", n),
+            n,
+        )
     } else {
-        "unsuspended"
-    };
-    format!("{} {what}", cards(n))
+        // Translators: an Undo toast, at most 24 characters with 99,999
+        // cards (it must fit beside Undo on a phone).
+        counted(
+            &ngettext("{count} card unsuspended", "{count} cards unsuspended", n),
+            n,
+        )
+    }
 }
 
 pub fn reset_text(n: usize) -> String {
     // Short, so it fits beside Undo at 360 px (ADR 0058).
-    format!("{} reset", cards(n))
+    // Translators: an Undo toast after Reset Progress, at most 24
+    // characters with 99,999 cards (it must fit beside Undo on a phone).
+    counted(&ngettext("{count} card reset", "{count} cards reset", n), n)
 }
 
 pub fn deleted_text(n: usize) -> String {
-    format!("{} deleted", cards(n))
+    // Translators: an Undo toast, at most 24 characters with 99,999 cards
+    // (it must fit beside Undo on a phone).
+    counted(
+        &ngettext("{count} card deleted", "{count} cards deleted", n),
+        n,
+    )
 }
 
 /// What an action did when every card was already as asked.
 pub fn unchanged_text() -> String {
-    "Nothing changed; the cards were already like that".to_owned()
+    gettext("Nothing changed; the cards were already like that")
 }
 
 /// The note after an Undo that could not change every card (`done` of
 /// `total`), or `None` if it did.
 pub fn partial_undo_text(done: usize, total: usize) -> Option<String> {
     (done < total).then(|| {
-        format!(
-            "{} of {} restored; the others changed since",
-            group_digits(done),
-            cards(total)
+        fill(
+            // Translators: a toast: what is before ";" is its title, the
+            // rest is behind Details. {done} of {count} cards came back.
+            &ngettext(
+                "{done} of {count} card restored; the others changed since",
+                "{done} of {count} cards restored; the others changed since",
+                total,
+            ),
+            &[
+                ("done", &group_digits(done)),
+                ("count", &group_digits(total)),
+            ],
         )
     })
 }
@@ -572,7 +675,7 @@ mod tests {
         let (_, title, body) = empty_page(Empty::NoResults).unwrap();
         assert_eq!(title, "No Results Found");
         assert_eq!(body, "Try a different search or other filters");
-        assert_eq!(GO_TO_DECKS, "_Go to Decks");
+        assert_eq!(go_to_decks(), "_Go to Decks");
     }
 
     #[test]
@@ -740,7 +843,10 @@ mod tests {
         );
         assert_eq!(
             suspend_labels(SuspendChoice::Unsuspend),
-            ("Unsuspend", "Unsuspend selected cards")
+            (
+                "Unsuspend".to_owned(),
+                "Unsuspend selected cards".to_owned()
+            )
         );
     }
 
@@ -767,21 +873,9 @@ mod tests {
         assert_eq!(reset_text(1_000), "1,000 cards reset");
         assert_eq!(deleted_text(1), "1 card deleted");
         // Each Undo toast's title fits beside Undo at 360 px (ADR 0058),
-        // up to 99,999 cards.
-        for title in [
-            moved_text(99_999),
-            tags_added_text(99_999),
-            tag_removed_text(99_999),
-            suspended_text(99_999, false),
-            suspended_text(99_999, true),
-            reset_text(99_999),
-            deleted_text(99_999),
-        ] {
-            assert!(
-                title.chars().count() <= crate::ui::toast::TOAST_FITS_WITH_BUTTON,
-                "{title}"
-            );
-        }
+        // up to 99,999 cards, in English and in French.
+        undo_titles_fit();
+        crate::i18n::tests::in_french(undo_titles_fit);
         assert_eq!(
             unchanged_text(),
             "Nothing changed; the cards were already like that"
@@ -799,5 +893,58 @@ mod tests {
             partial_undo_text(0, 1).as_deref(),
             Some("0 of 1 card restored; the others changed since")
         );
+    }
+
+    fn undo_titles_fit() {
+        for n in [1, 2, 99_999] {
+            for title in [
+                moved_text(n),
+                tags_added_text(n),
+                tag_removed_text(n),
+                suspended_text(n, false),
+                suspended_text(n, true),
+                reset_text(n),
+                deleted_text(n),
+            ] {
+                assert!(
+                    title.chars().count() <= crate::ui::toast::TOAST_FITS_WITH_BUTTON,
+                    "{title}"
+                );
+            }
+        }
+        // The notes with Details keep their own titles.
+        for text in [
+            tags_left_out_text(99_999, 100).unwrap_or_default(),
+            no_room_text(100),
+            unchanged_text(),
+            stale_text(),
+        ] {
+            if let crate::ui::toast::ToastText::Detailed { title, .. } =
+                crate::ui::toast::toast_text(&text)
+            {
+                assert_ne!(title, crate::ui::toast::fallback_title(), "{text}");
+            }
+        }
+    }
+
+    #[test]
+    fn statuses_and_rows_read_in_french() {
+        crate::i18n::tests::in_french(|| {
+            assert_eq!(status_text(CardStatus::New, NOW), "Nouvelle");
+            assert_eq!(
+                status_text(CardStatus::Due(NOW - 1), NOW),
+                "À revoir maintenant"
+            );
+            assert_eq!(
+                status_text(
+                    CardStatus::Scheduled(NOW + 3 * crate::ui::time::DAY_MS),
+                    NOW
+                ),
+                "À revoir dans 3\u{a0}jours"
+            );
+            assert_eq!(count_text(5_000), "5\u{202f}000 cartes");
+            assert_eq!(count_text(0), "Aucune carte");
+            assert_eq!(moved_text(1), "1 carte déplacée");
+        });
     }
 }

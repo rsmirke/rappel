@@ -33,6 +33,12 @@ unicode-segmentation = "1.13"
 # (glycin-loaders 2.x). MPL-2.0 OR LGPL-2.1-or-later.
 glycin = { version = "3.1", features = ["gdk4"] }
 
+# Translation (app, ADR 0059): safe bindings to the C library's gettext
+# (`bindtextdomain`, `textdomain`, `gettext`, `ngettext`, `pgettext`). The
+# `gettext-system` feature links glibc's libintl instead of building GNU
+# gettext from the bundled sources. MIT.
+gettext-rs = { version = "0.8", features = ["gettext-system"] }
+
 # Window state (app): the O_NOFOLLOW and O_NONBLOCK flags for opening an
 # untrusted file without following a link or blocking on a pipe (ADR 0050,
 # row 33). Constants only; already in the tree through GLib's bindings.

@@ -10,8 +10,10 @@ use adw::prelude::*;
 use rappel_core::content::plain_summary;
 
 use self::text::{History, Memory};
+use crate::i18n::gettext;
 use crate::state::AppState;
 use crate::ui::dialog;
+use crate::ui::text::with_error;
 use crate::ui::time::date_time;
 use crate::ui::toast::show_error;
 use crate::widgets::HistoryRow;
@@ -62,7 +64,12 @@ pub fn open(
         Err(Failure::Read(err)) => show_error(
             parent,
             "reading a card's information",
-            &format!("The card's information could not be read: {err}"),
+            // Translators: a toast: what is before ":" is its title, the
+            // rest is behind Details. {error} is why, in English.
+            &with_error(
+                &gettext("The card’s information could not be read: {error}"),
+                &err,
+            ),
         ),
     }
 }
@@ -179,7 +186,7 @@ fn build(state: &AppState, card_id: &str, now: i64) -> Result<Built, Failure> {
         scheduled,
     } = text::memory(&info, now, &date_time);
     status.set_visible(new_status.is_some());
-    status.set_subtitle(new_status.unwrap_or(""));
+    status.set_subtitle(new_status.as_deref().unwrap_or(""));
     reviews.set_subtitle(&reviews_text);
     pass_rate.set_subtitle(&pass_rate_text);
     lapses.set_subtitle(&lapses_text);
@@ -206,11 +213,11 @@ fn fill_history(list: &gtk::ListBox, note: &gtk::Label, history: &History) {
         list.append(&HistoryRow::new(
             line.mark.icon(),
             line.mark.css_class(),
-            line.title,
+            &line.title,
             &line.subtitle,
         ));
     }
-    if let Some(empty) = history.empty {
+    if let Some(empty) = history.empty.as_deref() {
         list.append(&HistoryRow::new("", "", empty, ""));
     }
     note.set_label(history.note.as_deref().unwrap_or(""));

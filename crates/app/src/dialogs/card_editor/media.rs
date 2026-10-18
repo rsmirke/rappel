@@ -6,7 +6,9 @@
 use rappel_core::Error;
 use rappel_core::media::{AUDIO_MAX_BYTES, IMAGE_MAX_BYTES, MediaKind, MediaProblem, MediaRef};
 
+use crate::i18n::{fill, gettext};
 use crate::state::{Accept, AddMediaError};
+use rappel_core::domain::CardSide;
 
 /// The MIME types the Insert Image… chooser offers: the image kinds of the
 /// media store (no SVG). The chooser's filter is a convenience; the file's
@@ -144,73 +146,98 @@ pub fn without_local_file(has_picture: bool, has_text: bool) -> WithoutLocal {
 /// in words.
 pub fn add_failed_text(err: &AddMediaError, accept: Accept) -> String {
     let too_large = |kind: Option<MediaKind>| match kind {
-        Some(kind) if !kind.is_image() => format!(
-            "This audio file is larger than {}",
-            megabytes(AUDIO_MAX_BYTES)
+        Some(kind) if !kind.is_image() => fill(
+            // Translators: {size} is the limit ("20 MB").
+            &gettext("This audio file is larger than {size}"),
+            &[("size", &megabytes(AUDIO_MAX_BYTES))],
         ),
-        _ => format!("This image is larger than {}", megabytes(IMAGE_MAX_BYTES)),
+        _ => fill(
+            // Translators: {size} is the limit ("10 MB").
+            &gettext("This image is larger than {size}"),
+            &[("size", &megabytes(IMAGE_MAX_BYTES))],
+        ),
     };
     let not_of_its_kind = |accept| match accept {
-        Accept::Image => "This file is not a PNG, JPEG, WebP or GIF image",
-        Accept::Audio => "This file is not an Ogg, MP3, M4A or WAV audio file",
-        Accept::Any => "This file is not an image or audio file of a supported kind",
+        Accept::Image => gettext("This file is not a PNG, JPEG, WebP or GIF image"),
+        Accept::Audio => gettext("This file is not an Ogg, MP3, M4A or WAV audio file"),
+        Accept::Any => gettext("This file is not an image or audio file of a supported kind"),
     };
     match err {
-        AddMediaError::NotLocal => "Only files on this computer can be added".to_owned(),
-        AddMediaError::NotAFile => "This is not a file".to_owned(),
+        AddMediaError::NotLocal => gettext("Only files on this computer can be added"),
+        AddMediaError::NotAFile => gettext("This is not a file"),
         // Only a picture's bytes are counted before the store.
         AddMediaError::TooLarge => too_large(None),
         AddMediaError::Store(Error::MediaRefused(MediaProblem::TooLarge { kind, .. })) => {
             too_large(Some(*kind))
         }
         AddMediaError::Store(Error::MediaRefused(MediaProblem::NotMedia)) => {
-            not_of_its_kind(accept).to_owned()
+            not_of_its_kind(accept)
         }
         AddMediaError::Store(Error::MediaRefused(MediaProblem::NotImage)) => {
-            not_of_its_kind(Accept::Image).to_owned()
+            not_of_its_kind(Accept::Image)
         }
         AddMediaError::Store(Error::MediaRefused(MediaProblem::NotAudio)) => {
-            not_of_its_kind(Accept::Audio).to_owned()
+            not_of_its_kind(Accept::Audio)
         }
         AddMediaError::Store(Error::MediaRefused(MediaProblem::Malformed)) => {
-            "This audio file is damaged".to_owned()
+            gettext("This audio file is damaged")
         }
         AddMediaError::Store(Error::MediaRefused(MediaProblem::NotPlainAudio)) => {
-            "This audio file holds more than plain audio, so Rappel does not take it".to_owned()
+            gettext("This audio file holds more than plain audio, so Rappel does not take it")
         }
         AddMediaError::Store(Error::MediaRefused(MediaProblem::Empty)) => {
-            "This file is empty".to_owned()
+            gettext("This file is empty")
         }
         AddMediaError::Unreadable(_) | AddMediaError::Store(Error::MediaRead(_)) => {
-            "The file could not be read".to_owned()
+            gettext("The file could not be read")
         }
-        AddMediaError::Store(other) => format!("{}: {other}", could_not_add(accept)),
+        AddMediaError::Store(other) => fill(
+            // Translators: a toast: what is before ":" is its title, the
+            // rest is behind Details. {what} is "The image could not be
+            // added" or the like, {error} why, in English.
+            &gettext("{what}: {error}"),
+            &[
+                ("what", &could_not_add(accept)),
+                ("error", &other.to_string()),
+            ],
+        ),
     }
 }
 
 /// "The image could not be added" and its kin, for `accept`.
-pub fn could_not_add(accept: Accept) -> &'static str {
+pub fn could_not_add(accept: Accept) -> String {
     match accept {
-        Accept::Image => "The image could not be added",
-        Accept::Audio => "The audio file could not be added",
-        Accept::Any => "The file could not be added",
+        Accept::Image => gettext("The image could not be added"),
+        Accept::Audio => gettext("The audio file could not be added"),
+        Accept::Any => gettext("The file could not be added"),
     }
 }
 
 /// `bytes` as whole megabytes ("10 MB"), the unit the limit is set in.
 fn megabytes(bytes: u64) -> String {
-    format!("{} MB", bytes / 1_000_000)
+    let n = usize::try_from(bytes / 1_000_000).unwrap_or(usize::MAX);
+    // Translators: a size in megabytes ("10 MB").
+    fill(
+        &gettext("{count} MB"),
+        &[("count", &crate::ui::text::group_digits(n))],
+    )
 }
 
 /// The accessible label of a side's Insert Image… button, which names the
 /// side (the two buttons look alike).
-pub fn insert_label(side: &str) -> String {
-    format!("Insert Image in {side}")
+pub fn insert_label(side: CardSide) -> String {
+    match side {
+        CardSide::Front => gettext("Insert Image in Front"),
+        CardSide::Back => gettext("Insert Image in Back"),
+    }
 }
 
 /// The accessible label of a side's Insert Audio… button.
-pub fn insert_audio_label(side: &str) -> String {
-    format!("Insert Audio in {side}")
+pub fn insert_audio_label(side: CardSide) -> String {
+    match side {
+        CardSide::Front => gettext("Insert Audio in Front"),
+        CardSide::Back => gettext("Insert Audio in Back"),
+    }
 }
 
 #[cfg(test)]
@@ -378,8 +405,8 @@ mod tests {
 
     #[test]
     fn the_buttons_name_their_side() {
-        assert_eq!(insert_label("Front"), "Insert Image in Front");
-        assert_eq!(insert_audio_label("Back"), "Insert Audio in Back");
+        assert_eq!(insert_label(CardSide::Front), "Insert Image in Front");
+        assert_eq!(insert_audio_label(CardSide::Back), "Insert Audio in Back");
         for mime in AUDIO_MIME_TYPES {
             assert!(mime.starts_with("audio/"), "{mime}");
         }

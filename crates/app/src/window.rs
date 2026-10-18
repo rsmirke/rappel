@@ -9,6 +9,7 @@ use rappel_core::domain::{Card, SettingKey};
 use rappel_core::storage::Restored;
 
 use crate::dialogs::card_editor::CardEditor;
+use crate::i18n::{fill, gettext};
 use crate::pages::{BrowserPage, DeckPage, DecksPage, Recovered};
 use crate::startup::{Problem, data_folder_line, setting_reset_text, too_new_text};
 use crate::state::AppState;
@@ -433,7 +434,12 @@ impl RappelWindow {
             crate::ui::toast::show_error(
                 self,
                 "opening All Cards",
-                &format!("The cards could not be read: {err}"),
+                // Translators: a toast: what is before ":" is its title, the
+                // rest is behind Details. {error} is why, in English.
+                &crate::ui::text::with_error(
+                    &gettext("The cards could not be read: {error}"),
+                    &err,
+                ),
             );
         }
     }
@@ -473,7 +479,7 @@ impl RappelWindow {
     fn decks_unreadable(&self, err: &rappel_core::Error, data_dir: &Path) {
         tracing::error!("cannot list decks: {err}");
         self.show_problem(Problem::Failed {
-            message: "The decks could not be read.".to_owned(),
+            message: gettext("The decks could not be read."),
             details: err.to_string(),
             data_dir: Some(data_dir.to_path_buf()),
         });
@@ -623,21 +629,31 @@ fn recovered_message(how: Recovered, replaced: Option<&Path>, set_aside: Option<
     // The first sentence is the toast's title when the paths make the text
     // too long for it, so it is short (`ui::toast::toast_text`).
     let (done, short) = match how {
-        Recovered::Backup => ("Backup restored", "Backup restored"),
-        Recovered::Finished => ("Restore finished", "Restore finished"),
-        Recovered::Fresh => ("Started with an empty database", "Started fresh"),
+        Recovered::Backup => (gettext("Backup restored"), gettext("Backup restored")),
+        Recovered::Finished => (gettext("Restore finished"), gettext("Restore finished")),
+        Recovered::Fresh => (
+            gettext("Started with an empty database"),
+            gettext("Started fresh"),
+        ),
     };
     let mut message = match replaced {
-        Some(path) => format!(
-            "{short}. The previous database was kept as {}",
-            path.display()
+        Some(path) => fill(
+            // Translators: a toast: its first sentence is its title, the
+            // rest is behind Details. {title} is "Backup restored" or the
+            // like, {path} a file's path.
+            &gettext("{title}. The previous database was kept as {path}"),
+            &[("title", &short), ("path", &path.display().to_string())],
         ),
-        None if set_aside.is_some() => short.to_owned(),
-        None => done.to_owned(),
+        None if set_aside.is_some() => short,
+        None => done,
     };
     if let Some(path) = set_aside {
-        message.push_str(". The copy an earlier restore left waiting was kept as ");
-        message.push_str(&path.display().to_string());
+        message = fill(
+            // Translators: a toast's text goes on: {message} is what came
+            // before ("Backup restored"), {path} a file's path.
+            &gettext("{message}. The copy an earlier restore left waiting was kept as {path}"),
+            &[("message", &message), ("path", &path.display().to_string())],
+        );
     }
     message
 }
@@ -759,19 +775,24 @@ mod tests {
              /data/rappel.sqlite3.replaced-20261015-120000. The copy an earlier restore left \
              waiting was kept as /data/rappel.sqlite3.restore.set-aside-20261015-120000"
         );
-        // Each fits a toast whole, or starts with a title that does.
-        for how in [Recovered::Backup, Recovered::Finished, Recovered::Fresh] {
-            for replaced in [None, Some(kept)] {
-                for set_aside in [None, Some(aside)] {
-                    let text = recovered_message(how, replaced, set_aside);
-                    if let crate::ui::toast::ToastText::Detailed { title, .. } =
-                        crate::ui::toast::toast_text(&text)
-                    {
-                        assert_ne!(title, crate::ui::toast::FALLBACK_TITLE, "{text}");
+        // Each fits a toast whole, or starts with a title that does, in
+        // English and in French.
+        let check = || {
+            for how in [Recovered::Backup, Recovered::Finished, Recovered::Fresh] {
+                for replaced in [None, Some(kept)] {
+                    for set_aside in [None, Some(aside)] {
+                        let text = recovered_message(how, replaced, set_aside);
+                        if let crate::ui::toast::ToastText::Detailed { title, .. } =
+                            crate::ui::toast::toast_text(&text)
+                        {
+                            assert_ne!(title, crate::ui::toast::fallback_title(), "{text}");
+                        }
                     }
                 }
             }
-        }
+        };
+        check();
+        crate::i18n::tests::in_french(check);
     }
 
     /// A damaged stored setting at startup shows "A Setting Is Damaged" with

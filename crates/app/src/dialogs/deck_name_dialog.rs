@@ -10,6 +10,7 @@ use adw::prelude::*;
 use gtk::glib;
 use rappel_core::domain::{Deck, MAX_DECK_NAME_BYTES, deck_name_fits, deck_name_key};
 
+use crate::i18n::{fill, gettext};
 use crate::ui::dialog;
 use crate::ui::text::group_digits;
 
@@ -55,10 +56,15 @@ pub fn check_deck_name(input: &str, decks: &[Deck], exclude: Option<&str>) -> Na
 /// The error shown under the entry, if any.
 pub fn name_error(check: &NameCheck) -> Option<String> {
     match check {
-        NameCheck::Duplicate(name) => Some(format!("A deck named “{name}” already exists")),
-        NameCheck::TooLong => Some(format!(
-            "The name is too long (the limit is {} bytes)",
-            group_digits(MAX_DECK_NAME_BYTES)
+        NameCheck::Duplicate(name) => Some(fill(
+            // Translators: {name} is the name of one of the user's decks.
+            &gettext("A deck named “{name}” already exists"),
+            &[("name", name)],
+        )),
+        NameCheck::TooLong => Some(fill(
+            // Translators: {limit} is a number of bytes (1,024).
+            &gettext("The name is too long (the limit is {limit} bytes)"),
+            &[("limit", &group_digits(MAX_DECK_NAME_BYTES))],
         )),
         NameCheck::Empty | NameCheck::Valid => None,
     }
@@ -89,12 +95,12 @@ pub async fn ask(
 
     let exclude = match &purpose {
         Purpose::Create => {
-            dialog.set_heading(Some("New Deck"));
+            dialog.set_heading(Some(&gettext("New Deck")));
             None
         }
         Purpose::Rename(deck) => {
-            dialog.set_heading(Some("Rename Deck"));
-            dialog.set_response_label("confirm", "_Rename");
+            dialog.set_heading(Some(&gettext("Rename Deck")));
+            dialog.set_response_label("confirm", &gettext("_Rename"));
             entry.set_text(&deck.name);
             Some(deck.id.clone())
         }

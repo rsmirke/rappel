@@ -12,9 +12,11 @@ use gtk::glib;
 use rappel_core::domain::SettingKey;
 use rappel_core::storage::{AfterReset, SettingReset, Store};
 
+use crate::i18n::gettext;
 use crate::startup::{damaged_setting_text, data_folder_line, setting_reset_text};
 use crate::state::AppState;
 use crate::ui::callback::Callback;
+use crate::ui::text::with_error;
 use crate::ui::toast::{info_toast, show_toast_from};
 use crate::ui::worker;
 
@@ -186,11 +188,12 @@ impl SettingPage {
             }
             Ok(Err(err)) => {
                 tracing::error!("resetting the setting failed: {err}");
-                format!("The setting could not be reset: {err}")
+                // Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+                with_error(&gettext("The setting could not be reset: {error}"), &err)
             }
             Err(_) => {
                 tracing::error!("reset setting worker panicked");
-                "Resetting the setting stopped unexpectedly".to_owned()
+                gettext("Resetting the setting stopped unexpectedly")
             }
         };
         self.set_busy(false);

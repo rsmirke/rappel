@@ -4,6 +4,7 @@
 //! in `data/chart_card.blp`; what it shows is a [`ChartModel`] made by the
 //! statistics page's pure code.
 
+use crate::i18n::gettext;
 use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::glib;
@@ -11,7 +12,9 @@ use gtk::glib;
 use super::bar_chart::{BarChart, ChartBar, StyleWatch, paint_swatch};
 
 /// Said under the chart while no day is selected.
-const HINT: &str = "Select a day to see its values";
+fn hint() -> String {
+    gettext("Select a day to see its values")
+}
 
 /// Everything one chart shows.
 #[derive(Debug, Clone, PartialEq)]
@@ -26,7 +29,7 @@ pub struct ChartModel {
     pub first_day: String,
     pub last_day: String,
     /// Said instead of the chart when there is nothing to show.
-    pub empty: Option<&'static str>,
+    pub empty: Option<String>,
     /// An extra line under the chart, if any.
     pub note: Option<String>,
 }
@@ -112,12 +115,15 @@ impl ChartCard {
         imp.title_label.set_label(title);
         imp.chart.set_data(model.bars.clone(), model.ceiling);
         imp.chart.describe(title, &model.summary);
+        let hint = hint();
         imp.chart.connect_selected(glib::clone!(
             #[weak(rename_to = caption)]
             imp.caption_label,
-            move |selected| caption.set_label(selected.unwrap_or(HINT))
+            #[strong]
+            hint,
+            move |selected| caption.set_label(selected.unwrap_or(&hint))
         ));
-        imp.caption_label.set_label(HINT);
+        imp.caption_label.set_label(&hint);
         imp.scale_label.set_label(&model.scale);
         imp.first_day_label.set_label(&model.first_day);
         imp.last_day_label.set_label(&model.last_day);
@@ -125,7 +131,7 @@ impl ChartCard {
             .set_label(model.note.as_deref().unwrap_or(""));
         imp.note_label.set_visible(model.note.is_some());
 
-        let empty = model.empty;
+        let empty = model.empty.as_deref();
         imp.empty_label.set_label(empty.unwrap_or(""));
         imp.empty_label.set_visible(empty.is_some());
         imp.chart_box.set_visible(empty.is_none());

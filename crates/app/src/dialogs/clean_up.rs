@@ -12,9 +12,10 @@ use adw::prelude::*;
 use gtk::glib;
 use rappel_core::media::{CleanedUp, PURGE_AFTER_DAYS, UnusedMedia};
 
+use crate::i18n::{fill, gettext, ngettext};
 use crate::state::AppState;
 use crate::ui::dialog;
-use crate::ui::text::count;
+use crate::ui::text::{counted, group_digits, with_error};
 use crate::ui::toast::{ErrorSlot, undo_toast};
 use crate::ui::worker;
 
@@ -28,29 +29,51 @@ pub fn size_text(bytes: u64) -> String {
 /// or "No unused files".
 pub fn unused_text(unused: UnusedMedia) -> String {
     if unused.files == 0 {
-        return "No unused files".to_owned();
+        return gettext("No unused files");
     }
-    format!(
-        "{}, {}",
-        count(unused.files, "unused file", "unused files"),
-        size_text(unused.bytes)
+    fill(
+        // Translators: {count} is a number of media files no card uses,
+        // {size} their size ("4.3 MB").
+        &ngettext(
+            "{count} unused file, {size}",
+            "{count} unused files, {size}",
+            unused.files,
+        ),
+        &[
+            ("count", &group_digits(unused.files)),
+            ("size", &size_text(unused.bytes)),
+        ],
     )
 }
 
 /// The row's subtitle while the files are counted.
-pub const COUNTING_TEXT: &str = "Looking for files no card uses…";
+pub fn counting_text() -> String {
+    gettext("Looking for files no card uses…")
+}
 
 /// The row's subtitle when they could not be counted.
-pub const COUNT_FAILED_TEXT: &str = "Unused files could not be counted";
+pub fn count_failed_text() -> String {
+    gettext("Unused files could not be counted")
+}
 
 /// The question's body: what moves where, and for how long it can be
 /// brought back.
 pub fn question_text(unused: UnusedMedia) -> String {
-    let files = count(unused.files, "media file", "media files");
-    format!(
-        "{files} that no card uses ({}) will move to the trash in Rappel’s data folder. \
-         After {PURGE_AFTER_DAYS} days they are deleted, except those a backup still uses.",
-        size_text(unused.bytes)
+    fill(
+        // Translators: {count} is a number of media files, {size} their
+        // size ("4.3 MB"), {days} a number of days (30).
+        &ngettext(
+            "{count} media file that no card uses ({size}) will move to the trash in Rappel’s \
+             data folder. After {days} days they are deleted, except those a backup still uses.",
+            "{count} media files that no card uses ({size}) will move to the trash in Rappel’s \
+             data folder. After {days} days they are deleted, except those a backup still uses.",
+            unused.files,
+        ),
+        &[
+            ("count", &group_digits(unused.files)),
+            ("size", &size_text(unused.bytes)),
+            ("days", &PURGE_AFTER_DAYS.to_string()),
+        ],
     )
 }
 
@@ -60,7 +83,14 @@ pub fn question_text(unused: UnusedMedia) -> String {
 /// (`ui::toast::TOAST_FITS_WITH_BUTTON`, ADR 0058); the size was in the
 /// question, and the row counts again.
 pub fn moved_text(files: usize) -> Option<String> {
-    (files > 0).then(|| format!("{} trashed", count(files, "file", "files")))
+    (files > 0).then(|| {
+        // Translators: an Undo toast, at most 24 characters with 99,999
+        // files (it must fit beside Undo on a phone).
+        counted(
+            &ngettext("{count} file trashed", "{count} files trashed", files),
+            files,
+        )
+    })
 }
 
 /// Whether the row's button can start a clean-up: only with something to
@@ -148,7 +178,7 @@ pub fn connect(
         }
     ));
     // At once, so the row never shows an old count while the worker runs.
-    row.set_subtitle(COUNTING_TEXT);
+    row.set_subtitle(&counting_text());
     button.set_sensitive(false);
     glib::spawn_future_local(async move { refresh(&ctx).await });
 }
@@ -161,7 +191,7 @@ async fn refresh(ctx: &Context) {
     ctx.busy.set(true);
     ctx.unused.set(None);
     ctx.update();
-    ctx.set_subtitle(COUNTING_TEXT);
+    ctx.set_subtitle(&counting_text());
     let data_dir = ctx.state.data_dir().to_path_buf();
     let result = worker::run(&dialog, move || AppState::unused_media_on_worker(&data_dir)).await;
     drop(dialog);
@@ -172,11 +202,11 @@ async fn refresh(ctx: &Context) {
             ctx.set_subtitle(&unused_text(unused));
         }
         Ok(Err(err)) => {
-            ctx.set_subtitle(COUNT_FAILED_TEXT);
+            ctx.set_subtitle(&count_failed_text());
             crate::ui::toast::log_failure("counting unused media", &err.to_string());
         }
         Err(_) => {
-            ctx.set_subtitle(COUNT_FAILED_TEXT);
+            ctx.set_subtitle(&count_failed_text());
             crate::ui::toast::log_failure("counting unused media", "the worker stopped");
         }
     }
@@ -237,11 +267,16 @@ async fn ask_and_clean_up(ctx: &Context) {
         }
         Ok(Err(err)) => ctx.show_error(
             "cleaning up media",
-            &format!("The unused files were not moved: {err}"),
+            // Translators: a toast: what is before ":" is its title, the
+            // rest is behind Details. {error} is why, in English.
+            &with_error(&gettext("The unused files were not moved: {error}"), &err),
         ),
         Err(_) => ctx.show_error(
             "cleaning up media",
-            "Cleaning up stopped unexpectedly; the unused files are where they were or in the trash",
+            &gettext(
+                "Cleaning up stopped unexpectedly; the unused files are where they were or in the \
+                 trash",
+            ),
         ),
     }
     refresh(ctx).await;
@@ -264,11 +299,13 @@ async fn undo(ctx: &Context, cleaned: CleanedUp) {
         Ok(Ok(_)) => {}
         Ok(Err(err)) => ctx.show_error(
             "undoing a media clean-up",
-            &format!("The files were not all put back: {err}"),
+            // Translators: a toast: what is before ":" is its title, the
+            // rest is behind Details. {error} is why, in English.
+            &with_error(&gettext("The files were not all put back: {error}"), &err),
         ),
         Err(_) => ctx.show_error(
             "undoing a media clean-up",
-            "Putting the files back stopped unexpectedly",
+            &gettext("Putting the files back stopped unexpectedly"),
         ),
     }
     refresh(ctx).await;
@@ -327,6 +364,14 @@ mod tests {
         assert_eq!(moved_text(0), None, "no toast for nothing");
         let most = moved_text(99_999).unwrap_or_default();
         assert!(most.chars().count() <= crate::ui::toast::TOAST_FITS_WITH_BUTTON);
+        crate::i18n::tests::in_french(|| {
+            let most = moved_text(99_999).unwrap_or_default();
+            assert!(
+                most.chars().count() <= crate::ui::toast::TOAST_FITS_WITH_BUTTON,
+                "{most}"
+            );
+            assert!(question_text(unused(12, 4_300_000)).starts_with("12 fichiers multimédias"));
+        });
     }
 
     /// The row counts on a worker when connected, then shows the count and
@@ -344,9 +389,9 @@ mod tests {
             let button = gtk::Button::with_label("Clean Up…");
             button.set_sensitive(false);
             connect(&dialog, &row, &button, &state, &Rc::default());
-            assert_eq!(row.subtitle().as_deref(), Some(COUNTING_TEXT));
+            assert_eq!(row.subtitle().as_deref(), Some(counting_text().as_str()));
             let counted = crate::testing::settle_until(
-                || row.subtitle().as_deref() != Some(COUNTING_TEXT),
+                || row.subtitle().as_deref() != Some(counting_text().as_str()),
                 std::time::Duration::from_secs(10),
             );
             assert!(counted, "the count arrives");

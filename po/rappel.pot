@@ -1,0 +1,2614 @@
+# Rappel's messages, for translators.
+# This file is distributed under the same licence as Rappel (GPL-3.0-or-later).
+# Made by the tests from the sources; do not edit it by hand (README.md).
+msgid ""
+msgstr ""
+"Project-Id-Version: rappel\n"
+"Report-Msgid-Bugs-To: https://github.com/rsmirke/rappel/issues\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=INTEGER; plural=EXPRESSION;\n"
+
+#: crates/app/data/backup_row.blp
+#: crates/app/data/restore_dialog.blp
+msgid "_Restore"
+msgstr ""
+
+#: crates/app/data/browser_dialogs.blp
+#: crates/app/data/browser_page.blp
+#: crates/app/data/card_editor.blp
+#: crates/app/data/clean_up_media_dialog.blp
+#: crates/app/data/deck_name_dialog.blp
+#: crates/app/data/delete_card_dialog.blp
+#: crates/app/data/import_dialog.blp
+#: crates/app/data/restore_dialog.blp
+#: crates/app/data/retention_dialog.blp
+#: crates/app/data/start_fresh_dialog.blp
+msgid "_Cancel"
+msgstr ""
+
+#: crates/app/data/browser_dialogs.blp
+msgid "_OK"
+msgstr ""
+
+#: crates/app/data/browser_dialogs.blp
+msgid "Add Tags"
+msgstr ""
+
+#: crates/app/data/browser_dialogs.blp
+msgid "_Add"
+msgstr ""
+
+#: crates/app/data/browser_page.blp
+#: crates/app/data/shortcuts-dialog.blp
+msgid "All Cards"
+msgstr ""
+
+#: crates/app/data/browser_page.blp
+msgid "Search cards"
+msgstr ""
+
+#: crates/app/data/browser_page.blp
+#: crates/app/data/shortcuts-dialog.blp
+msgid "Select All"
+msgstr ""
+
+#: crates/app/data/browser_page.blp
+msgid "Select _All"
+msgstr ""
+
+#: crates/app/data/browser_page.blp
+#: crates/app/src/pages/browser_page/text.rs
+msgid "Select Cards"
+msgstr ""
+
+#: crates/app/data/browser_page.blp
+msgid "Deck"
+msgstr ""
+
+#: crates/app/data/browser_page.blp
+msgid "Tag"
+msgstr ""
+
+#: crates/app/data/browser_page.blp
+msgid "State"
+msgstr ""
+
+#: crates/app/data/browser_page.blp
+msgid "Any State"
+msgstr ""
+
+#: crates/app/data/browser_page.blp
+#: crates/app/src/pages/browser_page/text.rs
+msgid "New"
+msgstr ""
+
+#: crates/app/data/browser_page.blp
+#: crates/app/src/pages/browser_page/text.rs
+msgid "Learning"
+msgstr ""
+
+#: crates/app/data/browser_page.blp
+msgid "Due"
+msgstr ""
+
+#: crates/app/data/browser_page.blp
+#: crates/app/data/card_row.blp
+#: crates/app/src/pages/browser_page/text.rs
+msgid "Suspended"
+msgstr ""
+
+#: crates/app/data/browser_page.blp
+#: crates/app/data/deck_page.blp
+msgid "Cards"
+msgstr ""
+
+#: crates/app/data/browser_page.blp
+msgid "Move to Deck"
+msgstr ""
+
+#: crates/app/data/browser_page.blp
+msgid "Move selected cards to a deck"
+msgstr ""
+
+#: crates/app/data/browser_page.blp
+msgid "Move…"
+msgstr ""
+
+#: crates/app/data/browser_page.blp
+#: crates/app/data/card_editor.blp
+#: crates/app/data/card_info_dialog.blp
+#: crates/app/data/shortcuts-dialog.blp
+#: crates/app/src/widgets/tag_entry.rs
+msgid "Tags"
+msgstr ""
+
+#: crates/app/data/browser_page.blp
+msgid "Tags of selected cards"
+msgstr ""
+
+#: crates/app/data/browser_page.blp
+#: crates/app/src/pages/browser_page/text.rs
+msgid "Suspend"
+msgstr ""
+
+#: crates/app/data/browser_page.blp
+#: crates/app/src/pages/browser_page/text.rs
+msgid "Suspend selected cards"
+msgstr ""
+
+#: crates/app/data/browser_page.blp
+msgid "Delete"
+msgstr ""
+
+#: crates/app/data/browser_page.blp
+msgid "Delete selected cards"
+msgstr ""
+
+#: crates/app/data/browser_page.blp
+msgid "Reset Progress"
+msgstr ""
+
+#: crates/app/data/browser_page.blp
+msgid "Reset progress of selected cards"
+msgstr ""
+
+#: crates/app/data/browser_page.blp
+msgid "Reset"
+msgstr ""
+
+#: crates/app/data/browser_page.blp
+msgid "_Add Tags…"
+msgstr ""
+
+#: crates/app/data/browser_page.blp
+msgid "_Remove Tag…"
+msgstr ""
+
+#: crates/app/data/card_editor.blp
+msgid "_Save"
+msgstr ""
+
+#: crates/app/data/card_editor.blp
+msgid "Save (Ctrl+Enter)"
+msgstr ""
+
+#: crates/app/data/card_editor.blp
+msgid "Front"
+msgstr ""
+
+#: crates/app/data/card_editor.blp
+msgid "Insert Image…"
+msgstr ""
+
+#: crates/app/data/card_editor.blp
+#: crates/app/src/dialogs/card_editor/media.rs
+msgid "Insert Image in Front"
+msgstr ""
+
+#: crates/app/data/card_editor.blp
+msgid "Insert Audio…"
+msgstr ""
+
+#: crates/app/data/card_editor.blp
+#: crates/app/src/dialogs/card_editor/media.rs
+msgid "Insert Audio in Front"
+msgstr ""
+
+#: crates/app/data/card_editor.blp
+msgid "Back"
+msgstr ""
+
+#: crates/app/data/card_editor.blp
+#: crates/app/src/dialogs/card_editor/media.rs
+msgid "Insert Image in Back"
+msgstr ""
+
+#: crates/app/data/card_editor.blp
+#: crates/app/src/dialogs/card_editor/media.rs
+msgid "Insert Audio in Back"
+msgstr ""
+
+#: crates/app/data/card_editor.blp
+msgid "Press Enter or type a comma after each tag"
+msgstr ""
+
+#: crates/app/data/card_editor.blp
+msgid "to save"
+msgstr ""
+
+#: crates/app/data/card_editor.blp
+msgid "Preview"
+msgstr ""
+
+#: crates/app/data/card_editor.blp
+msgid "_Edit"
+msgstr ""
+
+#: crates/app/data/card_editor.blp
+msgid "_Preview"
+msgstr ""
+
+#: crates/app/data/card_info_dialog.blp
+#: crates/app/data/shortcuts-dialog.blp
+msgid "Card Information"
+msgstr ""
+
+#: crates/app/data/card_info_dialog.blp
+msgid "Card"
+msgstr ""
+
+#: crates/app/data/card_info_dialog.blp
+msgid "Created"
+msgstr ""
+
+#: crates/app/data/card_info_dialog.blp
+msgid "Edited"
+msgstr ""
+
+#: crates/app/data/card_info_dialog.blp
+#: crates/app/data/preferences_dialog.blp
+msgid "Memory"
+msgstr ""
+
+#: crates/app/data/card_info_dialog.blp
+msgid "Counted since the card was last reset"
+msgstr ""
+
+#: crates/app/data/card_info_dialog.blp
+msgid "Status"
+msgstr ""
+
+#: crates/app/data/card_info_dialog.blp
+msgid "Reviews"
+msgstr ""
+
+#: crates/app/data/card_info_dialog.blp
+msgid "Pass Rate"
+msgstr ""
+
+#: crates/app/data/card_info_dialog.blp
+msgid "Lapses"
+msgstr ""
+
+#: crates/app/data/card_info_dialog.blp
+msgid "Stability"
+msgstr ""
+
+#: crates/app/data/card_info_dialog.blp
+msgid "Difficulty"
+msgstr ""
+
+#: crates/app/data/card_info_dialog.blp
+msgid "Recall Now"
+msgstr ""
+
+#: crates/app/data/card_info_dialog.blp
+msgid "Next Due"
+msgstr ""
+
+#: crates/app/data/card_info_dialog.blp
+msgid "History"
+msgstr ""
+
+#: crates/app/data/card_row.blp
+msgid "Card Actions"
+msgstr ""
+
+#: crates/app/data/card_row.blp
+msgid "_Edit…"
+msgstr ""
+
+#: crates/app/data/card_row.blp
+#: crates/app/data/review_page.blp
+msgid "Card _Information"
+msgstr ""
+
+#: crates/app/data/card_row.blp
+msgid "_Suspend"
+msgstr ""
+
+#: crates/app/data/card_row.blp
+msgid "_Unsuspend"
+msgstr ""
+
+#: crates/app/data/card_row.blp
+msgid "_Reset Progress"
+msgstr ""
+
+#: crates/app/data/card_row.blp
+#: crates/app/data/deck_row.blp
+#: crates/app/data/delete_card_dialog.blp
+msgid "_Delete"
+msgstr ""
+
+#: crates/app/data/chart_card.blp
+#: crates/app/src/dialogs/card_info/text.rs
+msgid "Passed"
+msgstr ""
+
+#: crates/app/data/chart_card.blp
+#: crates/app/src/dialogs/card_info/text.rs
+msgid "Failed"
+msgstr ""
+
+#: crates/app/data/clean_up_media_dialog.blp
+msgid "Clean Up Media?"
+msgstr ""
+
+#: crates/app/data/clean_up_media_dialog.blp
+msgid "Clean _Up"
+msgstr ""
+
+#: crates/app/data/deck_name_dialog.blp
+msgid "_Create"
+msgstr ""
+
+#: crates/app/data/deck_name_dialog.blp
+msgid "Name"
+msgstr ""
+
+#: crates/app/data/deck_page.blp
+msgid "_Study"
+msgstr ""
+
+#: crates/app/data/deck_page.blp
+#: crates/app/src/dialogs/card_editor/mod.rs
+msgid "New Card"
+msgstr ""
+
+#: crates/app/data/deck_page.blp
+msgid "Deck Menu"
+msgstr ""
+
+#: crates/app/data/deck_page.blp
+#: crates/app/src/pages/browser_page/text.rs
+msgid "No Cards Yet"
+msgstr ""
+
+#: crates/app/data/deck_page.blp
+msgid "Add a card to start learning"
+msgstr ""
+
+#: crates/app/data/deck_page.blp
+msgid "_Add Card"
+msgstr ""
+
+#: crates/app/data/deck_page.blp
+#: crates/app/data/preferences_dialog.blp
+#: crates/app/data/review_page.blp
+msgid "Study"
+msgstr ""
+
+#: crates/app/data/deck_page.blp
+#: crates/app/data/decks_page.blp
+msgid "_Statistics"
+msgstr ""
+
+#: crates/app/data/deck_row.blp
+msgid "Deck Actions"
+msgstr ""
+
+#: crates/app/data/deck_row.blp
+msgid "_Rename…"
+msgstr ""
+
+#: crates/app/data/decks_page.blp
+#: crates/app/data/window.blp
+msgid "Rappel"
+msgstr ""
+
+#: crates/app/data/decks_page.blp
+#: crates/app/src/dialogs/deck_name_dialog.rs
+msgid "New Deck"
+msgstr ""
+
+#: crates/app/data/decks_page.blp
+#: crates/app/data/shortcuts-dialog.blp
+msgid "Main Menu"
+msgstr ""
+
+#: crates/app/data/decks_page.blp
+#: crates/app/data/shortcuts-dialog.blp
+msgid "Search All Cards"
+msgstr ""
+
+#: crates/app/data/decks_page.blp
+msgid "No Decks Yet"
+msgstr ""
+
+#: crates/app/data/decks_page.blp
+msgid "Create a deck to start adding cards"
+msgstr ""
+
+#: crates/app/data/decks_page.blp
+msgid "_Create Deck"
+msgstr ""
+
+#: crates/app/data/decks_page.blp
+msgid "Decks"
+msgstr ""
+
+#: crates/app/data/decks_page.blp
+msgid "_Export…"
+msgstr ""
+
+#: crates/app/data/decks_page.blp
+msgid "_Import…"
+msgstr ""
+
+#: crates/app/data/decks_page.blp
+msgid "_Preferences"
+msgstr ""
+
+#: crates/app/data/decks_page.blp
+msgid "_Keyboard Shortcuts"
+msgstr ""
+
+#: crates/app/data/decks_page.blp
+msgid "_About Rappel"
+msgstr ""
+
+#: crates/app/data/delete_card_dialog.blp
+msgid "Delete Card?"
+msgstr ""
+
+#: crates/app/data/delete_card_dialog.blp
+msgid "The card is removed from its deck and its review history is kept. You can bring it back with Undo."
+msgstr ""
+
+#: crates/app/data/discard_dialog.blp
+msgid "Discard Changes?"
+msgstr ""
+
+#: crates/app/data/discard_dialog.blp
+msgid "The text you typed will be lost."
+msgstr ""
+
+#: crates/app/data/discard_dialog.blp
+msgid "_Keep Editing"
+msgstr ""
+
+#: crates/app/data/discard_dialog.blp
+msgid "_Discard"
+msgstr ""
+
+#: crates/app/data/import_dialog.blp
+msgid "_Import"
+msgstr ""
+
+#: crates/app/data/preferences_dialog.blp
+#: crates/app/data/shortcuts-dialog.blp
+msgid "Preferences"
+msgstr ""
+
+#: crates/app/data/preferences_dialog.blp
+msgid "Limits count for each deck separately"
+msgstr ""
+
+#: crates/app/data/preferences_dialog.blp
+#: crates/app/src/startup.rs
+msgid "New Cards per Day"
+msgstr ""
+
+#: crates/app/data/preferences_dialog.blp
+msgid "The most new cards a deck introduces in a day"
+msgstr ""
+
+#: crates/app/data/preferences_dialog.blp
+#: crates/app/src/pages/stats_page/text.rs
+#: crates/app/src/startup.rs
+msgid "Reviews per Day"
+msgstr ""
+
+#: crates/app/data/preferences_dialog.blp
+msgid "The most due cards a deck shows in a day; the rest wait for the next day"
+msgstr ""
+
+#: crates/app/data/preferences_dialog.blp
+#: crates/app/src/startup.rs
+msgid "Day Starts At"
+msgstr ""
+
+#: crates/app/data/preferences_dialog.blp
+msgid "Studying before this time still counts toward the previous day"
+msgstr ""
+
+#: crates/app/data/preferences_dialog.blp
+#: crates/app/data/retention_dialog.blp
+#: crates/app/src/startup.rs
+msgid "Desired Retention"
+msgstr ""
+
+#: crates/app/data/preferences_dialog.blp
+msgid "How much you want to remember when a card comes due; higher means more reviews"
+msgstr ""
+
+#: crates/app/data/preferences_dialog.blp
+msgid "Data"
+msgstr ""
+
+#: crates/app/data/preferences_dialog.blp
+msgid "Rappel backs up your data each day it opens, before an update converts it, and before an import changes it"
+msgstr ""
+
+#: crates/app/data/preferences_dialog.blp
+msgid "Open Backup Folder"
+msgstr ""
+
+#: crates/app/data/preferences_dialog.blp
+msgid "Storage"
+msgstr ""
+
+#: crates/app/data/preferences_dialog.blp
+msgid "Clean Up Media"
+msgstr ""
+
+#: crates/app/data/preferences_dialog.blp
+#: crates/app/src/dialogs/clean_up.rs
+msgid "Looking for files no card uses…"
+msgstr ""
+
+#: crates/app/data/preferences_dialog.blp
+msgid "Clean _Up…"
+msgstr ""
+
+#: crates/app/data/preferences_dialog.blp
+msgid "Move the media files no card uses to the trash"
+msgstr ""
+
+#: crates/app/data/recovery_page.blp
+msgid "_Finish Restore"
+msgstr ""
+
+#: crates/app/data/recovery_page.blp
+msgid "Backups"
+msgstr ""
+
+#: crates/app/data/recovery_page.blp
+#: crates/app/data/start_fresh_dialog.blp
+msgid "_Start Fresh"
+msgstr ""
+
+#: crates/app/data/retention_dialog.blp
+msgid "Change Desired Retention?"
+msgstr ""
+
+#: crates/app/data/retention_dialog.blp
+msgid "Every card’s due date will be recalculated from your review history, so cards may come due sooner or later than now. Your review history itself is not changed."
+msgstr ""
+
+#: crates/app/data/retention_dialog.blp
+msgid "C_hange"
+msgstr ""
+
+#: crates/app/data/retention_dialog.blp
+msgid "Percent of cards you expect to remember when they come due"
+msgstr ""
+
+#: crates/app/data/review_page.blp
+msgid "Undo Last Answer (Ctrl+Z)"
+msgstr ""
+
+#: crates/app/data/review_page.blp
+#: crates/app/data/shortcuts-dialog.blp
+msgid "Undo Last Answer"
+msgstr ""
+
+#: crates/app/data/review_page.blp
+msgid "Card Menu"
+msgstr ""
+
+#: crates/app/data/review_page.blp
+msgid "Edit Card (E)"
+msgstr ""
+
+#: crates/app/data/review_page.blp
+#: crates/app/data/shortcuts-dialog.blp
+#: crates/app/src/dialogs/card_editor/mod.rs
+msgid "Edit Card"
+msgstr ""
+
+#: crates/app/data/review_page.blp
+#: crates/app/src/pages/review_page.rs
+msgid "This card is long: only its start is shown. Edit it to see all of it."
+msgstr ""
+
+#: crates/app/data/review_page.blp
+msgid "Session Complete"
+msgstr ""
+
+#: crates/app/data/review_page.blp
+#: crates/app/src/pages/stats_page/text.rs
+msgid "_Back to Deck"
+msgstr ""
+
+#: crates/app/data/review_page.blp
+msgid "_Show Answer"
+msgstr ""
+
+#: crates/app/data/review_page.blp
+msgid "Press Space"
+msgstr ""
+
+#. Translators: the name of the Space key, shown under Show Answer.
+#: crates/app/data/review_page.blp
+msgid "Space"
+msgstr ""
+
+#: crates/app/data/review_page.blp
+msgid "_Fail"
+msgstr ""
+
+#: crates/app/data/review_page.blp
+msgid "Press 1"
+msgstr ""
+
+#. Translators: the key that answers Fail; keep it as it is.
+#: crates/app/data/review_page.blp
+msgid "1"
+msgstr ""
+
+#: crates/app/data/review_page.blp
+msgid "_Pass"
+msgstr ""
+
+#: crates/app/data/review_page.blp
+msgid "Press 2 or Space"
+msgstr ""
+
+#. Translators: the key that answers Pass; keep it as it is.
+#: crates/app/data/review_page.blp
+msgid "2"
+msgstr ""
+
+#: crates/app/data/review_page.blp
+msgid "_Suspend Card"
+msgstr ""
+
+#: crates/app/data/review_page.blp
+msgid "_Delete Card…"
+msgstr ""
+
+#: crates/app/data/setting_page.blp
+msgid "A Setting Is Damaged"
+msgstr ""
+
+#: crates/app/data/setting_page.blp
+msgid "_Reset This Setting"
+msgstr ""
+
+#: crates/app/data/shortcuts-dialog.blp
+msgid "General"
+msgstr ""
+
+#: crates/app/data/shortcuts-dialog.blp
+msgid "On the deck list"
+msgstr ""
+
+#: crates/app/data/shortcuts-dialog.blp
+msgid "Keyboard Shortcuts"
+msgstr ""
+
+#: crates/app/data/shortcuts-dialog.blp
+msgid "New Deck or Card"
+msgstr ""
+
+#: crates/app/data/shortcuts-dialog.blp
+msgid "Go Back"
+msgstr ""
+
+#: crates/app/data/shortcuts-dialog.blp
+msgid "Studying"
+msgstr ""
+
+#: crates/app/data/shortcuts-dialog.blp
+msgid "Show Answer"
+msgstr ""
+
+#: crates/app/data/shortcuts-dialog.blp
+msgid "Fail"
+msgstr ""
+
+#: crates/app/data/shortcuts-dialog.blp
+msgid "Pass"
+msgstr ""
+
+#: crates/app/data/shortcuts-dialog.blp
+msgid "Suspend Card"
+msgstr ""
+
+#: crates/app/data/shortcuts-dialog.blp
+msgid "Delete Card"
+msgstr ""
+
+#: crates/app/data/shortcuts-dialog.blp
+msgid "Play Audio"
+msgstr ""
+
+#: crates/app/data/shortcuts-dialog.blp
+msgid "From the start"
+msgstr ""
+
+#: crates/app/data/shortcuts-dialog.blp
+msgid "Card Editor"
+msgstr ""
+
+#: crates/app/data/shortcuts-dialog.blp
+msgid "Save"
+msgstr ""
+
+#: crates/app/data/shortcuts-dialog.blp
+msgid "Save and Add Another"
+msgstr ""
+
+#: crates/app/data/shortcuts-dialog.blp
+msgid "Bold"
+msgstr ""
+
+#: crates/app/data/shortcuts-dialog.blp
+msgid "Italic"
+msgstr ""
+
+#: crates/app/data/shortcuts-dialog.blp
+msgid "Edit or Preview"
+msgstr ""
+
+#: crates/app/data/shortcuts-dialog.blp
+msgid "When the window is narrow"
+msgstr ""
+
+#: crates/app/data/shortcuts-dialog.blp
+msgid "Close"
+msgstr ""
+
+#: crates/app/data/shortcuts-dialog.blp
+msgid "Add Tag"
+msgstr ""
+
+#: crates/app/data/shortcuts-dialog.blp
+msgid "The typed name, or the highlighted suggestion"
+msgstr ""
+
+#: crates/app/data/shortcuts-dialog.blp
+msgid "Previous or Next Suggestion"
+msgstr ""
+
+#: crates/app/data/shortcuts-dialog.blp
+msgid "While tags are suggested"
+msgstr ""
+
+#: crates/app/data/shortcuts-dialog.blp
+msgid "Accept Suggestion"
+msgstr ""
+
+#: crates/app/data/shortcuts-dialog.blp
+msgid "The highlighted one, or else the first"
+msgstr ""
+
+#: crates/app/data/shortcuts-dialog.blp
+msgid "Close Suggestions"
+msgstr ""
+
+#: crates/app/data/shortcuts-dialog.blp
+msgid "Go to the Last Tag"
+msgstr ""
+
+#: crates/app/data/shortcuts-dialog.blp
+msgid "In an empty tag field"
+msgstr ""
+
+#: crates/app/data/shortcuts-dialog.blp
+#: crates/app/src/pages/browser_page.rs
+msgid "Remove Tag"
+msgstr ""
+
+#: crates/app/data/shortcuts-dialog.blp
+msgid "On a tag’s remove button"
+msgstr ""
+
+#: crates/app/data/shortcuts-dialog.blp
+msgid "Go to the Card List"
+msgstr ""
+
+#: crates/app/data/shortcuts-dialog.blp
+msgid "From the search field"
+msgstr ""
+
+#: crates/app/data/shortcuts-dialog.blp
+msgid "Open Card"
+msgstr ""
+
+#: crates/app/data/shortcuts-dialog.blp
+msgid "Select or Deselect Card"
+msgstr ""
+
+#: crates/app/data/shortcuts-dialog.blp
+msgid "While selecting cards"
+msgstr ""
+
+#: crates/app/data/shortcuts-dialog.blp
+msgid "Stop Selecting or Clear the Search"
+msgstr ""
+
+#: crates/app/data/shortcuts-dialog.blp
+#: crates/app/data/stats_page.blp
+msgid "Statistics"
+msgstr ""
+
+#: crates/app/data/shortcuts-dialog.blp
+msgid "Previous or Next Day"
+msgstr ""
+
+#: crates/app/data/shortcuts-dialog.blp
+msgid "On a chart"
+msgstr ""
+
+#: crates/app/data/shortcuts-dialog.blp
+msgid "First or Last Day"
+msgstr ""
+
+#: crates/app/data/start_fresh_dialog.blp
+msgid "Start With an Empty Database?"
+msgstr ""
+
+#: crates/app/data/start_fresh_dialog.blp
+msgid "The current database is renamed to “rappel.sqlite3.replaced-” followed by the date and time, and kept in the data folder. Nothing is deleted. Rappel then starts with no decks."
+msgstr ""
+
+#: crates/app/data/stats_page.blp
+msgid "No Statistics Yet"
+msgstr ""
+
+#: crates/app/data/stats_page.blp
+msgid "Study some cards to see your progress here"
+msgstr ""
+
+#: crates/app/data/tag_suggestions.blp
+msgid "Tag suggestions"
+msgstr ""
+
+#: crates/app/data/window.blp
+msgid "Update Rappel to Continue"
+msgstr ""
+
+#: crates/app/data/window.blp
+msgid "Rappel Could Not Start"
+msgstr ""
+
+#: crates/app/src/dialogs/about.rs
+msgid "KaTeX Fonts"
+msgstr ""
+
+#: crates/app/src/dialogs/about.rs
+msgid "These fonts are licensed under the <a href=\"https://openfontlicense.org\">SIL Open Font License, Version 1.1</a>. They are data shipped with Rappel, not part of its code."
+msgstr ""
+
+#. Translators: put your name here (one per line, with an e-mail address in <> if you like); libadwaita lists it under Translated by.
+#: crates/app/src/dialogs/about.rs
+msgid "translator-credits"
+msgstr ""
+
+#: crates/app/src/dialogs/about.rs
+msgid "Built With"
+msgstr ""
+
+#: crates/app/src/dialogs/card_editor/insert.rs
+#: crates/app/src/render/audio.rs
+#: crates/app/src/render/markup.rs
+msgid "Audio"
+msgstr ""
+
+#: crates/app/src/dialogs/card_editor/insert.rs
+msgid "Insert Audio"
+msgstr ""
+
+#: crates/app/src/dialogs/card_editor/insert.rs
+msgid "Images"
+msgstr ""
+
+#: crates/app/src/dialogs/card_editor/insert.rs
+msgid "Insert Image"
+msgstr ""
+
+#. Translators: {size} is the limit ("20 MB").
+#: crates/app/src/dialogs/card_editor/media.rs
+msgid "This audio file is larger than {size}"
+msgstr ""
+
+#. Translators: {size} is the limit ("10 MB").
+#: crates/app/src/dialogs/card_editor/media.rs
+msgid "This image is larger than {size}"
+msgstr ""
+
+#: crates/app/src/dialogs/card_editor/media.rs
+msgid "This file is not a PNG, JPEG, WebP or GIF image"
+msgstr ""
+
+#: crates/app/src/dialogs/card_editor/media.rs
+msgid "This file is not an Ogg, MP3, M4A or WAV audio file"
+msgstr ""
+
+#: crates/app/src/dialogs/card_editor/media.rs
+msgid "This file is not an image or audio file of a supported kind"
+msgstr ""
+
+#: crates/app/src/dialogs/card_editor/media.rs
+msgid "Only files on this computer can be added"
+msgstr ""
+
+#: crates/app/src/dialogs/card_editor/media.rs
+msgid "This is not a file"
+msgstr ""
+
+#: crates/app/src/dialogs/card_editor/media.rs
+msgid "This audio file is damaged"
+msgstr ""
+
+#: crates/app/src/dialogs/card_editor/media.rs
+msgid "This audio file holds more than plain audio, so Rappel does not take it"
+msgstr ""
+
+#: crates/app/src/dialogs/card_editor/media.rs
+msgid "This file is empty"
+msgstr ""
+
+#: crates/app/src/dialogs/card_editor/media.rs
+msgid "The file could not be read"
+msgstr ""
+
+#. Translators: a toast: what is before ":" is its title, the rest is behind Details. {what} is "The image could not be added" or the like, {error} why, in English.
+#: crates/app/src/dialogs/card_editor/media.rs
+msgid "{what}: {error}"
+msgstr ""
+
+#: crates/app/src/dialogs/card_editor/media.rs
+msgid "The image could not be added"
+msgstr ""
+
+#: crates/app/src/dialogs/card_editor/media.rs
+msgid "The audio file could not be added"
+msgstr ""
+
+#: crates/app/src/dialogs/card_editor/media.rs
+msgid "The file could not be added"
+msgstr ""
+
+#. Translators: a size in megabytes ("10 MB").
+#: crates/app/src/dialogs/card_editor/media.rs
+msgid "{count} MB"
+msgstr ""
+
+#: crates/app/src/dialogs/card_editor/mod.rs
+msgid "The tags could not be read, so they are left as they are."
+msgstr ""
+
+#. Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+#: crates/app/src/dialogs/card_editor/mod.rs
+msgid "The card’s tags could not be read: {error}"
+msgstr ""
+
+#: crates/app/src/dialogs/card_editor/mod.rs
+msgid "This card is long: only its start is previewed."
+msgstr ""
+
+#. Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+#: crates/app/src/dialogs/card_editor/mod.rs
+msgid "The card could not be saved: {error}"
+msgstr ""
+
+#: crates/app/src/dialogs/card_editor/mod.rs
+msgid "Card added"
+msgstr ""
+
+#: crates/app/src/dialogs/card_editor/mod.rs
+msgid "Card saved"
+msgstr ""
+
+#. Translators: {limit} is a number of bytes (1,048,576).
+#: crates/app/src/dialogs/card_editor/mod.rs
+msgid "The front is too long (the limit is {limit} bytes)"
+msgstr ""
+
+#. Translators: {limit} is a number of bytes (1,048,576).
+#: crates/app/src/dialogs/card_editor/mod.rs
+msgid "The back is too long (the limit is {limit} bytes)"
+msgstr ""
+
+#. Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+#: crates/app/src/dialogs/card_info.rs
+msgid "The card’s information could not be read: {error}"
+msgstr ""
+
+#. Translators: {list} is a list of names, {count} how many more names there are after them ("maths, physics and 4,980 more").
+#: crates/app/src/dialogs/card_info/text.rs
+#: crates/app/src/ui/text.rs
+msgid "{list} and {count} more"
+msgid_plural "{list} and {count} more"
+msgstr[0] ""
+msgstr[1] ""
+
+#. Translators: a card's stability, in days, maybe with a decimal ("12.4 days").
+#. Translators: an interval in days ("3 days").
+#: crates/app/src/dialogs/card_info/text.rs
+#: crates/app/src/ui/text.rs
+#: crates/app/src/widgets/deck_row/text.rs
+msgid "{count} day"
+msgid_plural "{count} days"
+msgstr[0] ""
+msgstr[1] ""
+
+#. Translators: a card's difficulty, between 1 and 10 ("5.3 of 10").
+#: crates/app/src/dialogs/card_info/text.rs
+msgid "{value} of 10"
+msgstr ""
+
+#. Translators: when a card is due: {date} is a date and time, {relative} "in 3 days".
+#: crates/app/src/dialogs/card_info/text.rs
+msgid "{date} · {relative}"
+msgstr ""
+
+#: crates/app/src/dialogs/card_info/text.rs
+msgid "New card"
+msgstr ""
+
+#. Translators: a review in a card's history: {date} is when, {time} how long the answer took ("4 s"), {interval} when the card came due again ("3 days").
+#: crates/app/src/dialogs/card_info/text.rs
+msgid "{date} · {time} · next in {interval}"
+msgstr ""
+
+#: crates/app/src/dialogs/card_info/text.rs
+msgid "Progress Reset"
+msgstr ""
+
+#. Translators: a reset in a card's history; {date} is when.
+#: crates/app/src/dialogs/card_info/text.rs
+msgid "{date} · counts start again from here"
+msgstr ""
+
+#: crates/app/src/dialogs/card_info/text.rs
+msgid "Not studied yet"
+msgstr ""
+
+#. Translators: under a card's history; {count} is how many older entries are left out.
+#: crates/app/src/dialogs/card_info/text.rs
+msgid "{count} older entry not shown"
+msgid_plural "{count} older entries not shown"
+msgstr[0] ""
+msgstr[1] ""
+
+#: crates/app/src/dialogs/clean_up.rs
+msgid "No unused files"
+msgstr ""
+
+#. Translators: {count} is a number of media files no card uses, {size} their size ("4.3 MB").
+#: crates/app/src/dialogs/clean_up.rs
+msgid "{count} unused file, {size}"
+msgid_plural "{count} unused files, {size}"
+msgstr[0] ""
+msgstr[1] ""
+
+#: crates/app/src/dialogs/clean_up.rs
+msgid "Unused files could not be counted"
+msgstr ""
+
+#. Translators: {count} is a number of media files, {size} their size ("4.3 MB"), {days} a number of days (30).
+#: crates/app/src/dialogs/clean_up.rs
+msgid "{count} media file that no card uses ({size}) will move to the trash in Rappel’s data folder. After {days} days they are deleted, except those a backup still uses."
+msgid_plural "{count} media files that no card uses ({size}) will move to the trash in Rappel’s data folder. After {days} days they are deleted, except those a backup still uses."
+msgstr[0] ""
+msgstr[1] ""
+
+#. Translators: an Undo toast, at most 24 characters with 99,999 files (it must fit beside Undo on a phone).
+#: crates/app/src/dialogs/clean_up.rs
+msgid "{count} file trashed"
+msgid_plural "{count} files trashed"
+msgstr[0] ""
+msgstr[1] ""
+
+#. Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+#: crates/app/src/dialogs/clean_up.rs
+msgid "The unused files were not moved: {error}"
+msgstr ""
+
+#: crates/app/src/dialogs/clean_up.rs
+msgid "Cleaning up stopped unexpectedly; the unused files are where they were or in the trash"
+msgstr ""
+
+#. Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+#: crates/app/src/dialogs/clean_up.rs
+msgid "The files were not all put back: {error}"
+msgstr ""
+
+#: crates/app/src/dialogs/clean_up.rs
+msgid "Putting the files back stopped unexpectedly"
+msgstr ""
+
+#. Translators: {name} is the name of one of the user's decks.
+#: crates/app/src/dialogs/deck_name_dialog.rs
+msgid "A deck named “{name}” already exists"
+msgstr ""
+
+#. Translators: {limit} is a number of bytes (1,024).
+#: crates/app/src/dialogs/deck_name_dialog.rs
+msgid "The name is too long (the limit is {limit} bytes)"
+msgstr ""
+
+#: crates/app/src/dialogs/deck_name_dialog.rs
+msgid "Rename Deck"
+msgstr ""
+
+#: crates/app/src/dialogs/deck_name_dialog.rs
+msgid "_Rename"
+msgstr ""
+
+#. Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+#: crates/app/src/dialogs/preferences.rs
+msgid "The settings could not be read: {error}"
+msgstr ""
+
+#. Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+#: crates/app/src/dialogs/preferences.rs
+msgid "The setting was not saved: {error}"
+msgstr ""
+
+#: crates/app/src/dialogs/preferences.rs
+msgid "Recalculating…"
+msgstr ""
+
+#. Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+#: crates/app/src/dialogs/preferences.rs
+msgid "The desired retention was not changed: {error}"
+msgstr ""
+
+#: crates/app/src/dialogs/preferences.rs
+msgid "Changing the desired retention stopped unexpectedly"
+msgstr ""
+
+#. Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+#: crates/app/src/dialogs/preferences.rs
+msgid "The backup folder could not be created: {error}"
+msgstr ""
+
+#. Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+#: crates/app/src/dialogs/preferences.rs
+msgid "The backup folder could not be opened: {error}"
+msgstr ""
+
+#. Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+#: crates/app/src/pages/browser_page.rs
+#: crates/app/src/pages/decks_page.rs
+msgid "The decks could not be read: {error}"
+msgstr ""
+
+#. Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+#: crates/app/src/pages/browser_page.rs
+#: crates/app/src/pages/deck_page.rs
+#: crates/app/src/pages/decks_page.rs
+#: crates/app/src/window.rs
+msgid "The cards could not be read: {error}"
+msgstr ""
+
+#. Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+#: crates/app/src/pages/browser_page.rs
+msgid "The tags could not be read: {error}"
+msgstr ""
+
+#: crates/app/src/pages/browser_page.rs
+msgid "Move Cards"
+msgstr ""
+
+#: crates/app/src/pages/browser_page.rs
+msgid "_Move"
+msgstr ""
+
+#: crates/app/src/pages/browser_page.rs
+msgid "_Remove"
+msgstr ""
+
+#. Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+#: crates/app/src/pages/browser_page.rs
+msgid "The cards could not be changed: {error}"
+msgstr ""
+
+#. Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+#: crates/app/src/pages/browser_page.rs
+msgid "The decks and tags could not be read: {error}"
+msgstr ""
+
+#. Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+#: crates/app/src/pages/browser_page.rs
+#: crates/app/src/pages/deck_page.rs
+msgid "The change could not be undone: {error}"
+msgstr ""
+
+#. Translators: a card's status; {when} is "in 3 days".
+#: crates/app/src/pages/browser_page/text.rs
+msgid "Due {when}"
+msgstr ""
+
+#. Translators: under a card in All Cards: {deck} is its deck's name, {status} "Due in 3 days".
+#: crates/app/src/pages/browser_page/text.rs
+msgid "{deck} · {status}"
+msgstr ""
+
+#. Translators: what a screen reader says for a card in All Cards: {card} is the card ("2 + 2, back: 4"), {deck} its deck's name, {status} "Due in 3 days".
+#: crates/app/src/pages/browser_page/text.rs
+msgid "{card}, deck: {deck}, {status}"
+msgstr ""
+
+#. Translators: {row} is a card as a screen reader says it, while cards are being chosen.
+#: crates/app/src/pages/browser_page/text.rs
+msgid "{row}, selected"
+msgstr ""
+
+#. Translators: {row} is a card as a screen reader says it, while cards are being chosen.
+#: crates/app/src/pages/browser_page/text.rs
+msgid "{row}, not selected"
+msgstr ""
+
+#: crates/app/src/pages/browser_page/text.rs
+msgid "No cards"
+msgstr ""
+
+#. Translators: the title while cards are being chosen; {count} is how many are.
+#: crates/app/src/pages/browser_page/text.rs
+msgid "{count} Selected"
+msgid_plural "{count} Selected"
+msgstr[0] ""
+msgstr[1] ""
+
+#: crates/app/src/pages/browser_page/text.rs
+#: crates/app/src/pages/deck_page.rs
+msgid "This card has no progress to reset"
+msgstr ""
+
+#: crates/app/src/pages/browser_page/text.rs
+msgid "These cards have no progress to reset"
+msgstr ""
+
+#: crates/app/src/pages/browser_page/text.rs
+msgid "Cards you add to your decks will show up here"
+msgstr ""
+
+#: crates/app/src/pages/browser_page/text.rs
+msgid "No Results Found"
+msgstr ""
+
+#: crates/app/src/pages/browser_page/text.rs
+msgid "Try a different search or other filters"
+msgstr ""
+
+#: crates/app/src/pages/browser_page/text.rs
+msgid "_Go to Decks"
+msgstr ""
+
+#: crates/app/src/pages/browser_page/text.rs
+msgid "_Clear Search"
+msgstr ""
+
+#: crates/app/src/pages/browser_page/text.rs
+msgid "_Clear Filters"
+msgstr ""
+
+#: crates/app/src/pages/browser_page/text.rs
+msgid "_Clear Search and Filters"
+msgstr ""
+
+#: crates/app/src/pages/browser_page/text.rs
+msgid "The list was out of date; nothing was changed"
+msgstr ""
+
+#: crates/app/src/pages/browser_page/text.rs
+#: crates/app/src/pages/stats_page.rs
+msgid "All Decks"
+msgstr ""
+
+#: crates/app/src/pages/browser_page/text.rs
+msgid "All Tags"
+msgstr ""
+
+#: crates/app/src/pages/browser_page/text.rs
+msgid "Unsuspend"
+msgstr ""
+
+#: crates/app/src/pages/browser_page/text.rs
+msgid "Unsuspend selected cards"
+msgstr ""
+
+#. Translators: {count} is the number of cards chosen.
+#: crates/app/src/pages/browser_page/text.rs
+msgid "Choose the deck to move {count} card to."
+msgid_plural "Choose the deck to move {count} cards to."
+msgstr[0] ""
+msgstr[1] ""
+
+#. Translators: {count} is the number of cards chosen.
+#: crates/app/src/pages/browser_page/text.rs
+msgid "Choose the tags to put on {count} card. Press Enter or type a comma after each one."
+msgid_plural "Choose the tags to put on {count} cards. Press Enter or type a comma after each one."
+msgstr[0] ""
+msgstr[1] ""
+
+#. Translators: {count} is the number of cards chosen.
+#: crates/app/src/pages/browser_page/text.rs
+msgid "Choose the tag to take off {count} card."
+msgid_plural "Choose the tag to take off {count} cards."
+msgstr[0] ""
+msgstr[1] ""
+
+#: crates/app/src/pages/browser_page/text.rs
+msgid "The chosen cards have no tags"
+msgstr ""
+
+#. Translators: {count} is a number of cards.
+#: crates/app/src/pages/browser_page/text.rs
+#: crates/app/src/ui/text.rs
+msgid "{count} card"
+msgid_plural "{count} cards"
+msgstr[0] ""
+msgstr[1] ""
+
+#. Translators: an Undo toast, at most 24 characters with 99,999 cards (it must fit beside Undo on a phone); {count} is a number of cards.
+#: crates/app/src/pages/browser_page/text.rs
+msgid "{count} card moved"
+msgid_plural "{count} cards moved"
+msgstr[0] ""
+msgstr[1] ""
+
+#. Translators: an Undo toast, at most 24 characters with 99,999 cards (it must fit beside Undo on a phone); {count} is a number of cards.
+#: crates/app/src/pages/browser_page/text.rs
+msgid "{count} card tagged"
+msgid_plural "{count} cards tagged"
+msgstr[0] ""
+msgstr[1] ""
+
+#. Translators: a toast: its first sentence is its title, the rest is behind Details. {count} is a number of cards, {limit} the most tags a card can have (100).
+#: crates/app/src/pages/browser_page/text.rs
+msgid "{count} card left out. A card can have at most {limit} tags"
+msgid_plural "{count} cards left out. A card can have at most {limit} tags"
+msgstr[0] ""
+msgstr[1] ""
+
+#. Translators: a toast: what is before ";" is its title, the rest is behind Details. {limit} is the most tags a card can have (100).
+#: crates/app/src/pages/browser_page/text.rs
+msgid "No tags added; a card can have at most {limit} tags"
+msgstr ""
+
+#. Translators: an Undo toast, at most 24 characters with 99,999 cards (it must fit beside Undo on a phone); {count} is a number of cards.
+#: crates/app/src/pages/browser_page/text.rs
+msgid "{count} card untagged"
+msgid_plural "{count} cards untagged"
+msgstr[0] ""
+msgstr[1] ""
+
+#. Translators: an Undo toast, at most 24 characters with 99,999 cards (it must fit beside Undo on a phone).
+#: crates/app/src/pages/browser_page/text.rs
+msgid "{count} card suspended"
+msgid_plural "{count} cards suspended"
+msgstr[0] ""
+msgstr[1] ""
+
+#. Translators: an Undo toast, at most 24 characters with 99,999 cards (it must fit beside Undo on a phone).
+#: crates/app/src/pages/browser_page/text.rs
+msgid "{count} card unsuspended"
+msgid_plural "{count} cards unsuspended"
+msgstr[0] ""
+msgstr[1] ""
+
+#. Translators: an Undo toast after Reset Progress, at most 24 characters with 99,999 cards (it must fit beside Undo on a phone).
+#: crates/app/src/pages/browser_page/text.rs
+msgid "{count} card reset"
+msgid_plural "{count} cards reset"
+msgstr[0] ""
+msgstr[1] ""
+
+#. Translators: an Undo toast, at most 24 characters with 99,999 cards (it must fit beside Undo on a phone).
+#: crates/app/src/pages/browser_page/text.rs
+msgid "{count} card deleted"
+msgid_plural "{count} cards deleted"
+msgstr[0] ""
+msgstr[1] ""
+
+#: crates/app/src/pages/browser_page/text.rs
+msgid "Nothing changed; the cards were already like that"
+msgstr ""
+
+#. Translators: a toast: what is before ";" is its title, the rest is behind Details. {done} of {count} cards came back.
+#: crates/app/src/pages/browser_page/text.rs
+msgid "{done} of {count} card restored; the others changed since"
+msgid_plural "{done} of {count} cards restored; the others changed since"
+msgstr[0] ""
+msgstr[1] ""
+
+#. Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+#: crates/app/src/pages/deck_page.rs
+msgid "What to study could not be read: {error}"
+msgstr ""
+
+#. Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+#: crates/app/src/pages/deck_page.rs
+msgid "The session could not start: {error}"
+msgstr ""
+
+#. Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+#: crates/app/src/pages/deck_page.rs
+#: crates/app/src/pages/decks_page.rs
+msgid "The statistics could not be read: {error}"
+msgstr ""
+
+#. Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+#: crates/app/src/pages/deck_page.rs
+msgid "The card could not be deleted: {error}"
+msgstr ""
+
+#: crates/app/src/pages/deck_page.rs
+#: crates/app/src/pages/review_page.rs
+msgid "Card deleted"
+msgstr ""
+
+#: crates/app/src/pages/deck_page.rs
+msgid "Progress reset"
+msgstr ""
+
+#. Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+#: crates/app/src/pages/deck_page.rs
+#: crates/app/src/pages/review_page.rs
+msgid "The card could not be changed: {error}"
+msgstr ""
+
+#: crates/app/src/pages/deck_page.rs
+#: crates/app/src/pages/review_page.rs
+msgid "Card suspended"
+msgstr ""
+
+#: crates/app/src/pages/deck_page.rs
+msgid "Card unsuspended"
+msgstr ""
+
+#. Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+#: crates/app/src/pages/deck_page.rs
+#: crates/app/src/pages/review_page.rs
+msgid "The card could not be read: {error}"
+msgstr ""
+
+#. Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+#: crates/app/src/pages/deck_page.rs
+msgid "The progress could not be reset: {error}"
+msgstr ""
+
+#: crates/app/src/pages/deck_page.rs
+msgid "The reset can no longer be undone"
+msgstr ""
+
+#. Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+#: crates/app/src/pages/deck_page.rs
+msgid "The reset could not be undone: {error}"
+msgstr ""
+
+#. Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+#: crates/app/src/pages/deck_page.rs
+#: crates/app/src/pages/review_page.rs
+msgid "The card could not be restored: {error}"
+msgstr ""
+
+#: crates/app/src/pages/deck_page.rs
+#: crates/app/src/widgets/deck_row/text.rs
+msgid "Nothing to study"
+msgstr ""
+
+#. Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+#: crates/app/src/pages/decks_page.rs
+msgid "The deck could not be read: {error}"
+msgstr ""
+
+#. Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+#: crates/app/src/pages/decks_page.rs
+msgid "The deck could not be created: {error}"
+msgstr ""
+
+#. Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+#: crates/app/src/pages/decks_page.rs
+msgid "The deck could not be renamed: {error}"
+msgstr ""
+
+#. Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+#: crates/app/src/pages/decks_page.rs
+msgid "The deck could not be deleted: {error}"
+msgstr ""
+
+#: crates/app/src/pages/decks_page.rs
+msgid "Deck deleted"
+msgstr ""
+
+#. Translators: a toast: what is before ":" is its title, the rest is behind Details. {name} is a deck's name, {error} why, in English.
+#: crates/app/src/pages/decks_page.rs
+msgid "“{name}” could not be restored: {error}"
+msgstr ""
+
+#. Translators: {error} is why, in English.
+#: crates/app/src/pages/recovery_page.rs
+msgid "The backups could not be listed: {error}"
+msgstr ""
+
+#. Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+#: crates/app/src/pages/recovery_page.rs
+msgid "This backup cannot be used: {error}"
+msgstr ""
+
+#. Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+#: crates/app/src/pages/recovery_page.rs
+msgid "Restore failed: {error}"
+msgstr ""
+
+#: crates/app/src/pages/recovery_page.rs
+msgid "Restore stopped unexpectedly"
+msgstr ""
+
+#: crates/app/src/pages/recovery_page.rs
+msgid "Finishing the restore stopped unexpectedly"
+msgstr ""
+
+#: crates/app/src/pages/recovery_page.rs
+msgid "A restore did not finish. Its copy is kept; use Finish Restore to continue."
+msgstr ""
+
+#: crates/app/src/pages/recovery_page.rs
+msgid "Backups were found. Restore one of them instead."
+msgstr ""
+
+#. Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+#: crates/app/src/pages/recovery_page.rs
+msgid "Starting fresh failed: {error}"
+msgstr ""
+
+#: crates/app/src/pages/recovery_page.rs
+msgid "Starting fresh stopped unexpectedly"
+msgstr ""
+
+#: crates/app/src/pages/recovery_page.rs
+msgid "Restore This Backup?"
+msgstr ""
+
+#. Translators: {when} is the date and time the backup was made.
+#: crates/app/src/pages/recovery_page.rs
+msgid "The backup from {when} replaces the current database, so changes made after it will not be in the restored one. The current database is kept in the data folder, not deleted."
+msgstr ""
+
+#: crates/app/src/pages/recovery_page.rs
+msgid "A restore was interrupted, and the copy it left waiting is damaged or was not made by this version of Rappel. There is no backup to restore. Start Fresh sets the copy aside and starts with no decks; nothing is deleted, and the files stay in the data folder."
+msgstr ""
+
+#: crates/app/src/pages/recovery_page.rs
+msgid "No backups were found, so there is nothing to restore. You can start with an empty database instead: the current files stay in the data folder, nothing is deleted. Don’t copy database files into the data folder yourself: that can damage them."
+msgstr ""
+
+#: crates/app/src/pages/recovery_page.rs
+msgid "No backups were found, but the waiting copy can be installed."
+msgstr ""
+
+#: crates/app/src/pages/recovery_page.rs
+msgid "No backups were found, so there is nothing to restore. Leave the files in the data folder as they are, so they can still be recovered. Don’t copy database files into the data folder yourself: that can damage them."
+msgstr ""
+
+#: crates/app/src/pages/recovery_page.rs
+msgid "The copy the restore left waiting is renamed to “rappel.sqlite3.restore.refused-” followed by the date and time, and the current database files to “rappel.sqlite3.replaced-” and the date and time. Both are kept in the data folder. Nothing is deleted. Rappel then starts with no decks."
+msgstr ""
+
+#: crates/app/src/pages/recovery_page.rs
+msgid "The waiting copy is gone. Restart Rappel to check again."
+msgstr ""
+
+#. Translators: a toast; {error} is why, in English.
+#: crates/app/src/pages/recovery_page.rs
+msgid "The waiting copy could not be checked: {error}. It is kept; try again."
+msgstr ""
+
+#. Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+#: crates/app/src/pages/recovery_page.rs
+msgid "Finishing the restore failed: {error}"
+msgstr ""
+
+#. Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+#: crates/app/src/pages/review_page.rs
+msgid "A card could not be read and was skipped: {error}"
+msgstr ""
+
+#: crates/app/src/pages/review_page.rs
+msgid "The card was already suspended"
+msgstr ""
+
+#: crates/app/src/pages/review_page.rs
+msgid "The card was already gone"
+msgstr ""
+
+#: crates/app/src/pages/review_page.rs
+msgid "This answer can no longer be undone"
+msgstr ""
+
+#. Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+#: crates/app/src/pages/review_page.rs
+msgid "The answer could not be undone: {error}"
+msgstr ""
+
+#. Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+#: crates/app/src/pages/review_page.rs
+msgid "The answer could not be saved: {error}"
+msgstr ""
+
+#. Translators: the subtitle while studying; {count} is the number of cards left in the session.
+#: crates/app/src/pages/review_page.rs
+msgid "{count} left"
+msgid_plural "{count} left"
+msgstr[0] ""
+msgstr[1] ""
+
+#: crates/app/src/pages/review_page.rs
+msgid "No cards were reviewed"
+msgstr ""
+
+#. Translators: the caption under the number of cards reviewed in a session's summary.
+#: crates/app/src/pages/review_page.rs
+msgid "Card reviewed"
+msgid_plural "Cards reviewed"
+msgstr[0] ""
+msgstr[1] ""
+
+#. Translators: what a screen reader says for a headline figure: {caption} is "Pass rate", {value} "91%".
+#. Translators: what a screen reader says for a headline figure: {caption} is "Pass rate, last 30 days", {value} "91%".
+#: crates/app/src/pages/review_page.rs
+#: crates/app/src/pages/stats_page/text.rs
+msgid "{caption}: {value}"
+msgstr ""
+
+#: crates/app/src/pages/review_page.rs
+msgid "Pass rate"
+msgstr ""
+
+#: crates/app/src/pages/review_page.rs
+msgid "Time"
+msgstr ""
+
+#. Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+#: crates/app/src/pages/setting_page.rs
+msgid "The setting could not be reset: {error}"
+msgstr ""
+
+#: crates/app/src/pages/setting_page.rs
+msgid "Resetting the setting stopped unexpectedly"
+msgstr ""
+
+#: crates/app/src/pages/stats_page/text.rs
+msgid "Time Studied per Day"
+msgstr ""
+
+#: crates/app/src/pages/stats_page/text.rs
+msgid "Due Forecast"
+msgstr ""
+
+#: crates/app/src/pages/stats_page/text.rs
+msgid "_Back to Decks"
+msgstr ""
+
+#: crates/app/src/pages/stats_page/text.rs
+msgid "Expected retention"
+msgstr ""
+
+#: crates/app/src/pages/stats_page/text.rs
+msgid "no reviewed cards"
+msgstr ""
+
+#: crates/app/src/pages/stats_page/text.rs
+msgid "Pass rate, last 30 days"
+msgstr ""
+
+#: crates/app/src/pages/stats_page/text.rs
+msgid "no reviews"
+msgstr ""
+
+#: crates/app/src/pages/stats_page/text.rs
+msgid "Time studied, last 30 days"
+msgstr ""
+
+#. Translators: {count} is a number of reviews (answers given to cards).
+#: crates/app/src/pages/stats_page/text.rs
+#: crates/app/src/ui/text.rs
+msgid "{count} review"
+msgid_plural "{count} reviews"
+msgstr[0] ""
+msgstr[1] ""
+
+#. Translators: the top of a chart's scale; {value} is a number.
+#: crates/app/src/pages/stats_page/text.rs
+msgid "Up to {value}"
+msgstr ""
+
+#. Translators: a chart's day; {day} is "Tue 14 Oct".
+#: crates/app/src/pages/stats_page/text.rs
+msgid "{day}: no reviews"
+msgstr ""
+
+#. Translators: a chart's day; {day} is "Tue 14 Oct", {reviews} "12 reviews", {passed} and {failed} numbers.
+#: crates/app/src/pages/stats_page/text.rs
+msgid "{day}: {reviews}, {passed} passed, {failed} failed"
+msgstr ""
+
+#: crates/app/src/pages/stats_page/text.rs
+msgid "Last 30 days: no reviews."
+msgstr ""
+
+#. Translators: a chart's summary for screen readers: {reviews} is "120 reviews", {passed} a number, {day} "14 October", {most} a number of reviews.
+#: crates/app/src/pages/stats_page/text.rs
+msgid "Last 30 days: {reviews}, {passed} passed, busiest day {day} with {most}."
+msgstr ""
+
+#: crates/app/src/pages/stats_page/text.rs
+msgid "Today"
+msgstr ""
+
+#: crates/app/src/pages/stats_page/text.rs
+msgid "No reviews in the last 30 days"
+msgstr ""
+
+#. Translators: a chart's day; {day} is "Tue 14 Oct".
+#: crates/app/src/pages/stats_page/text.rs
+msgid "{day}: no time studied"
+msgstr ""
+
+#. Translators: a chart's day; {day} is "Tue 14 Oct", {time} "12 min".
+#: crates/app/src/pages/stats_page/text.rs
+msgid "{day}: {time} studied"
+msgstr ""
+
+#: crates/app/src/pages/stats_page/text.rs
+msgid "Last 30 days: no time studied."
+msgstr ""
+
+#. Translators: a chart's summary for screen readers: {time} is "3 h 12 min", {day} "14 October", {most} "25 min".
+#: crates/app/src/pages/stats_page/text.rs
+msgid "Last 30 days: {time} studied, longest day {day} with {most}."
+msgstr ""
+
+#. Translators: the top of a chart's scale; {value} is a number of minutes.
+#: crates/app/src/pages/stats_page/text.rs
+msgid "Up to {value} min"
+msgstr ""
+
+#: crates/app/src/pages/stats_page/text.rs
+msgid "No time studied in the last 30 days"
+msgstr ""
+
+#. Translators: {count} is a number of cards due on a day.
+#: crates/app/src/pages/stats_page/text.rs
+msgid "{count} card due"
+msgid_plural "{count} cards due"
+msgstr[0] ""
+msgstr[1] ""
+
+#. Translators: a chart's day; {day} is "Tue 14 Oct".
+#: crates/app/src/pages/stats_page/text.rs
+msgid "{day}: nothing due"
+msgstr ""
+
+#. Translators: a chart's day; {day} is "Today", {cards} "12 cards due", {overdue} a number.
+#: crates/app/src/pages/stats_page/text.rs
+msgid "{day}: {cards}, {overdue} of them overdue"
+msgstr ""
+
+#. Translators: a chart's day; {day} is "Tue 14 Oct", {cards} "12 cards due".
+#: crates/app/src/pages/stats_page/text.rs
+msgid "{day}: {cards}"
+msgstr ""
+
+#: crates/app/src/pages/stats_page/text.rs
+msgid "Next 14 days: nothing due."
+msgstr ""
+
+#: crates/app/src/pages/stats_page/text.rs
+msgid "today"
+msgstr ""
+
+#. Translators: a chart's summary for screen readers: {cards} is "40 cards due", {overdue} a number, {day} "today" or "14 October", {most} a number of cards.
+#: crates/app/src/pages/stats_page/text.rs
+msgid "Next 14 days: {cards}, {overdue} of them overdue, busiest day {day} with {most}."
+msgstr ""
+
+#. Translators: a chart's summary for screen readers: {cards} is "40 cards due", {day} "today" or "14 October", {most} a number of cards.
+#: crates/app/src/pages/stats_page/text.rs
+msgid "Next 14 days: {cards}, busiest day {day} with {most}."
+msgstr ""
+
+#: crates/app/src/pages/stats_page/text.rs
+msgid "Nothing due in the next 14 days"
+msgstr ""
+
+#. Translators: under the forecast chart; {count} is a number of cards.
+#: crates/app/src/pages/stats_page/text.rs
+msgid "{count} overdue card is counted under Today"
+msgid_plural "{count} overdue cards are counted under Today"
+msgstr[0] ""
+msgstr[1] ""
+
+#: crates/app/src/render/audio.rs
+msgid "Play"
+msgstr ""
+
+#: crates/app/src/render/audio.rs
+msgid "Pause"
+msgstr ""
+
+#: crates/app/src/render/audio.rs
+msgid "Audio not available"
+msgstr ""
+
+#: crates/app/src/render/audio.rs
+msgid "GStreamer’s base plugins are not installed"
+msgstr ""
+
+#: crates/app/src/render/audio.rs
+msgid "Audio could not be played"
+msgstr ""
+
+#: crates/app/src/render/audio.rs
+msgid "Audio not available: too many on this side"
+msgstr ""
+
+#: crates/app/src/render/audio.rs
+msgid "Could not be played"
+msgstr ""
+
+#: crates/app/src/render/audio.rs
+msgid "Audio playback is not available on this system"
+msgstr ""
+
+#: crates/app/src/render/audio.rs
+msgid "Pause audio"
+msgstr ""
+
+#: crates/app/src/render/audio.rs
+msgid "Play audio"
+msgstr ""
+
+#. Translators: a sound's button for screen readers; {words} is its link's words.
+#: crates/app/src/render/audio.rs
+msgid "Pause audio: {words}"
+msgstr ""
+
+#. Translators: a sound's button for screen readers; {words} is its link's words.
+#: crates/app/src/render/audio.rs
+msgid "Play audio: {words}"
+msgstr ""
+
+#: crates/app/src/render/images.rs
+msgid "Image"
+msgstr ""
+
+#: crates/app/src/render/images.rs
+msgid "Image not available"
+msgstr ""
+
+#: crates/app/src/render/images.rs
+msgid "Image could not be shown"
+msgstr ""
+
+#: crates/app/src/render/images.rs
+msgid "Image not shown: too many images on this side"
+msgstr ""
+
+#: crates/app/src/render/images.rs
+msgid "Image not shown: the images on this side are too large"
+msgstr ""
+
+#. Translators: what a screen reader says for an image that is not shown: {why} is "Image not available" or the like, {alt} the image's description from the card.
+#: crates/app/src/render/images.rs
+msgid "{why}: {alt}"
+msgstr ""
+
+#: crates/app/src/render/images.rs
+msgid "Opens the image at full size"
+msgstr ""
+
+#: crates/app/src/startup.rs
+msgid "Database Is Damaged"
+msgstr ""
+
+#: crates/app/src/startup.rs
+msgid "Not a Rappel Database"
+msgstr ""
+
+#: crates/app/src/startup.rs
+msgid "Database File Is Missing"
+msgstr ""
+
+#: crates/app/src/startup.rs
+msgid "Restore Did Not Finish"
+msgstr ""
+
+#: crates/app/src/startup.rs
+msgid "Restore Copy Cannot Be Used"
+msgstr ""
+
+#: crates/app/src/startup.rs
+msgid "Rappel found damage in its database and did not open it, so nothing in it was changed. Restore a backup to continue. The damaged database is kept in the data folder, not deleted."
+msgstr ""
+
+#: crates/app/src/startup.rs
+msgid "The database file was not made by Rappel, so Rappel did not open it. Restore a backup to continue. The file is kept in the data folder, not deleted."
+msgstr ""
+
+#: crates/app/src/startup.rs
+msgid "The database file is missing but its journal is still there, so Rappel did not start an empty database. Restore a backup to continue. The journal is kept in the data folder, not deleted."
+msgstr ""
+
+#: crates/app/src/startup.rs
+msgid "A restore was interrupted before it finished. Its checked copy is waiting in the data folder: Finish Restore installs it, or you can restore a backup instead. The previous database is kept in the data folder, not deleted."
+msgstr ""
+
+#: crates/app/src/startup.rs
+msgid "A restore was interrupted, and the copy it left waiting is damaged or was not made by this version of Rappel. Restore a backup to continue; the copy and the previous database stay in the data folder."
+msgstr ""
+
+#. Translators: {folder} is the path of Rappel's data folder.
+#: crates/app/src/startup.rs
+msgid "Data folder: {folder}"
+msgstr ""
+
+#. Translators: {found} and {supported} are database version numbers.
+#: crates/app/src/startup.rs
+msgid "This database was made by a newer version of Rappel (database version {found}; this version supports up to {supported}). Update Rappel to open it. The database has not been changed."
+msgstr ""
+
+#. Translators: {setting} is a setting's name as Preferences shows it ("Desired Retention"), {default} its default value ("90%").
+#: crates/app/src/startup.rs
+msgid "The stored value of “{setting}” in Preferences cannot be read, so Rappel did not open the database. Reset This Setting makes a backup first, then sets it back to its default, {default}. Your decks, cards and review history are not changed."
+msgstr ""
+
+#. Translators: a toast: its first sentence is its title, the rest is behind Details. {setting} is a setting's name, {default} its default value.
+#: crates/app/src/startup.rs
+msgid "Setting reset. “{setting}” was reset to {default}; a backup was made first."
+msgstr ""
+
+#. Translators: a toast: its first sentence is its title, the rest is behind Details. {setting} is a setting's name.
+#: crates/app/src/startup.rs
+msgid "Setting not changed. “{setting}” can be read again."
+msgstr ""
+
+#: crates/app/src/startup.rs
+msgid "This debug build refused to use the data folder of an installed Rappel (or of Cards, its former name)."
+msgstr ""
+
+#: crates/app/src/startup.rs
+msgid "The data folder could not be created."
+msgstr ""
+
+#: crates/app/src/startup.rs
+msgid "The data folder path points to a file, not a folder."
+msgstr ""
+
+#: crates/app/src/startup.rs
+msgid "RAPPEL_DATA_DIR must be an absolute path."
+msgstr ""
+
+#: crates/app/src/startup.rs
+msgid "The data folder could not be found."
+msgstr ""
+
+#: crates/app/src/startup.rs
+msgid "The data folder could not be used."
+msgstr ""
+
+#: crates/app/src/startup.rs
+msgid "The database could not be opened."
+msgstr ""
+
+#: crates/app/src/transfer/mod.rs
+msgid "Export Data"
+msgstr ""
+
+#. Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+#: crates/app/src/transfer/mod.rs
+msgid "The export failed: {error}"
+msgstr ""
+
+#: crates/app/src/transfer/mod.rs
+msgid "The export stopped unexpectedly"
+msgstr ""
+
+#: crates/app/src/transfer/mod.rs
+msgid "Import Data"
+msgstr ""
+
+#: crates/app/src/transfer/mod.rs
+msgid "Checking the file stopped unexpectedly"
+msgstr ""
+
+#: crates/app/src/transfer/mod.rs
+#: crates/app/src/ui/toast.rs
+msgid "_Close"
+msgstr ""
+
+#: crates/app/src/transfer/mod.rs
+msgid "The import stopped unexpectedly"
+msgstr ""
+
+#: crates/app/src/transfer/mod.rs
+msgid "Rappel Exports"
+msgstr ""
+
+#: crates/app/src/transfer/mod.rs
+msgid "Choose a file on this computer"
+msgstr ""
+
+#. Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+#: crates/app/src/transfer/mod.rs
+msgid "The file chooser failed: {error}"
+msgstr ""
+
+#: crates/app/src/transfer/text.rs
+msgid "Export done"
+msgstr ""
+
+#. Translators: {name} is the name of the file written.
+#: crates/app/src/transfer/text.rs
+msgid "Exported to “{name}”"
+msgstr ""
+
+#. Translators: a toast: its first sentence is its title, the rest is behind Details. {name} is the file's name, {count} a number of media files (images, sounds).
+#: crates/app/src/transfer/text.rs
+msgid "Media file left out. Exported to “{name}”, without {count} media file that is missing or damaged"
+msgid_plural "Media files left out. Exported to “{name}”, without {count} media files that are missing or damaged"
+msgstr[0] ""
+msgstr[1] ""
+
+#: crates/app/src/transfer/text.rs
+msgid "Early test version. This file was made by an early test version of Rappel and cannot be imported"
+msgstr ""
+
+#. Translators: a toast: what is before ":" is its title, the rest is behind Details. {reason} is why, in English.
+#: crates/app/src/transfer/text.rs
+msgid "Cannot import this file: {reason}"
+msgstr ""
+
+#: crates/app/src/transfer/text.rs
+msgid "File changed. It changed while it was being checked; import it again."
+msgstr ""
+
+#. Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+#: crates/app/src/transfer/text.rs
+msgid "Cannot check the file: {error}"
+msgstr ""
+
+#: crates/app/src/transfer/text.rs
+msgid "Nothing was imported. Your data changed while the file was being checked; import it again."
+msgstr ""
+
+#: crates/app/src/transfer/text.rs
+msgid "Nothing was imported. The file changed since it was checked; import it again."
+msgstr ""
+
+#. Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+#: crates/app/src/transfer/text.rs
+msgid "The import failed: nothing was imported; {error}"
+msgstr ""
+
+#: crates/app/src/transfer/text.rs
+msgid "Import done"
+msgstr ""
+
+#. Translators: {added} and {revived} are lists of counts ("1 deck and 2 cards").
+#: crates/app/src/transfer/text.rs
+msgid "Imported {added}, and brought back {revived}"
+msgstr ""
+
+#. Translators: {added} is a list of counts ("1 deck and 2 cards").
+#. Translators: {added} is a list of "tags", "media files" and "settings".
+#: crates/app/src/transfer/text.rs
+msgid "Imported {added}"
+msgstr ""
+
+#. Translators: {revived} is a list of counts ("1 deck and 2 cards") of things deleted earlier and back now.
+#: crates/app/src/transfer/text.rs
+msgid "Brought back {revived}"
+msgstr ""
+
+#: crates/app/src/transfer/text.rs
+msgid "tags"
+msgstr ""
+
+#: crates/app/src/transfer/text.rs
+msgid "media files"
+msgstr ""
+
+#: crates/app/src/transfer/text.rs
+msgid "settings"
+msgstr ""
+
+#: crates/app/src/transfer/text.rs
+msgid "Nothing was imported: everything was already here"
+msgstr ""
+
+#: crates/app/src/transfer/text.rs
+msgid "Cannot Import"
+msgstr ""
+
+#. Translators: {count} is the number of differences between the file and the user's data.
+#: crates/app/src/transfer/text.rs
+msgid "This file disagrees with your data in {count} place. Nothing is imported, and your data stays as it is."
+msgid_plural "This file disagrees with your data in {count} places. Nothing is imported, and your data stays as it is."
+msgstr[0] ""
+msgstr[1] ""
+
+#: crates/app/src/transfer/text.rs
+msgid "Nothing to Import"
+msgstr ""
+
+#: crates/app/src/transfer/text.rs
+msgid "Everything in this file is already here."
+msgstr ""
+
+#. Translators: {new} is a list of counts ("12 decks, 840 cards and 5,210 reviews").
+#: crates/app/src/transfer/text.rs
+msgid "This adds {new}."
+msgstr ""
+
+#. Translators: {count} is a number of new tags.
+#: crates/app/src/transfer/text.rs
+msgid "This adds {count} tag."
+msgid_plural "This adds {count} tags."
+msgstr[0] ""
+msgstr[1] ""
+
+#. Translators: {count} is how many tags the import puts on cards.
+#: crates/app/src/transfer/text.rs
+msgid "This puts {count} tag on cards."
+msgid_plural "This puts {count} tags on cards."
+msgstr[0] ""
+msgstr[1] ""
+
+#. Translators: {count} is a number of media files (images, sounds).
+#: crates/app/src/transfer/text.rs
+msgid "This adds {count} media file."
+msgid_plural "This adds {count} media files."
+msgstr[0] ""
+msgstr[1] ""
+
+#. Translators: {revived} is a list of counts ("2 decks and 30 cards") of things the user deleted.
+#: crates/app/src/transfer/text.rs
+msgid "This brings back {revived} you deleted."
+msgstr ""
+
+#: crates/app/src/transfer/text.rs
+msgid "Your settings are replaced by the file’s."
+msgstr ""
+
+#: crates/app/src/transfer/text.rs
+msgid "Your settings stay as they are."
+msgstr ""
+
+#: crates/app/src/transfer/text.rs
+msgid "Your data is backed up first."
+msgstr ""
+
+#. Translators: what separates two sentences in a dialog's text.
+#: crates/app/src/transfer/text.rs
+msgctxt "sentence separator"
+msgid " "
+msgstr ""
+
+#: crates/app/src/transfer/text.rs
+msgid "Import Data?"
+msgstr ""
+
+#. Translators: {present} is a list of counts ("2 decks and 3 cards"); the plural follows their total.
+#: crates/app/src/transfer/text.rs
+msgid "{present} is already here and will be skipped."
+msgid_plural "{present} are already here and will be skipped."
+msgstr[0] ""
+msgstr[1] ""
+
+#. Translators: {name} is the name of one of the user's decks.
+#: crates/app/src/transfer/text.rs
+msgid "The deck “{name}” is different in the file"
+msgstr ""
+
+#: crates/app/src/transfer/text.rs
+msgid "A deleted deck is different in the file"
+msgstr ""
+
+#: crates/app/src/transfer/text.rs
+msgid "A deck is different in the file"
+msgstr ""
+
+#. Translators: {front} is the start of the front of one of the user's cards.
+#: crates/app/src/transfer/text.rs
+msgid "The card “{front}” is different in the file"
+msgstr ""
+
+#: crates/app/src/transfer/text.rs
+msgid "A deleted card is different in the file"
+msgstr ""
+
+#: crates/app/src/transfer/text.rs
+msgid "A card is different in the file"
+msgstr ""
+
+#: crates/app/src/transfer/text.rs
+msgid "A review is recorded differently in the file"
+msgstr ""
+
+#. Translators: {name} is the name of one of the user's decks.
+#: crates/app/src/transfer/text.rs
+msgid "The file has another deck named “{name}”"
+msgstr ""
+
+#: crates/app/src/transfer/text.rs
+msgid "The file has another deck with the name of one of yours"
+msgstr ""
+
+#: crates/app/src/transfer/text.rs
+msgid "A tag has another name in the file"
+msgstr ""
+
+#: crates/app/src/transfer/text.rs
+msgid "A media file is different in the file"
+msgstr ""
+
+#: crates/app/src/transfer/text.rs
+msgid "The file undoes a review or reset that is already undone here"
+msgstr ""
+
+#. Translators: after a list of differences, one per line; {count} is how many more there are.
+#: crates/app/src/transfer/text.rs
+msgid "and {count} more"
+msgid_plural "and {count} more"
+msgstr[0] ""
+msgstr[1] ""
+
+#. Translators: the accessible name of a row's menu button; {name} is a deck's name or a card's front.
+#: crates/app/src/ui/rows.rs
+msgid "Actions for {name}"
+msgstr ""
+
+#. Translators: what separates the items of a list of names ("maths, physics, history"); keep the space if your language has one.
+#: crates/app/src/ui/text.rs
+msgctxt "list separator"
+msgid ", "
+msgstr ""
+
+#. Translators: the end of a list: {list} is its first items ("12 decks, 840 cards"), {last} its last one ("5,210 reviews").
+#: crates/app/src/ui/text.rs
+msgid "{list} and {last}"
+msgstr ""
+
+#. Translators: the thousands separator of numbers ("5,210"); French uses U+202F NARROW NO-BREAK SPACE. Leave it as it is if your language does not group digits.
+#: crates/app/src/ui/text.rs
+msgctxt "thousands separator"
+msgid ","
+msgstr ""
+
+#. Translators: the decimal separator of numbers ("1.5 years"); French uses a comma.
+#: crates/app/src/ui/text.rs
+msgctxt "decimal separator"
+msgid "."
+msgstr ""
+
+#. Translators: {count} is a number of cards to review now ("12 due"), shown under a deck's name.
+#: crates/app/src/ui/text.rs
+msgid "{count} due"
+msgid_plural "{count} due"
+msgstr[0] ""
+msgstr[1] ""
+
+#. Translators: {count} is a number of new cards to learn today ("5 new"), shown under a deck's name.
+#: crates/app/src/ui/text.rs
+msgid "{count} new"
+msgid_plural "{count} new"
+msgstr[0] ""
+msgstr[1] ""
+
+#. Translators: {due} is "12 due", {new} is "5 new", on one line.
+#: crates/app/src/ui/text.rs
+msgid "{due} · {new}"
+msgstr ""
+
+#. Translators: {count} is a number of decks.
+#: crates/app/src/ui/text.rs
+msgid "{count} deck"
+msgid_plural "{count} decks"
+msgstr[0] ""
+msgstr[1] ""
+
+#. Translators: a time in seconds ("45 s").
+#: crates/app/src/ui/text.rs
+msgid "{seconds} s"
+msgstr ""
+
+#. Translators: a time in minutes and seconds ("4 min 10 s").
+#: crates/app/src/ui/text.rs
+msgid "{minutes} min {seconds} s"
+msgstr ""
+
+#. Translators: a time in hours and minutes ("3 h 12 min").
+#: crates/app/src/ui/text.rs
+msgid "{hours} h {minutes} min"
+msgstr ""
+
+#. Translators: a time in minutes ("12 min").
+#: crates/app/src/ui/text.rs
+msgid "{minutes} min"
+msgstr ""
+
+#. Translators: a percentage; {percent} is a whole number ("91%"). French writes "{percent} %" with U+202F NARROW NO-BREAK SPACE.
+#: crates/app/src/ui/text.rs
+msgctxt "percent"
+msgid "{percent}%"
+msgstr ""
+
+#. Translators: an interval in minutes ("10 min").
+#: crates/app/src/ui/text.rs
+#: crates/app/src/widgets/deck_row/text.rs
+msgid "{count} min"
+msgid_plural "{count} min"
+msgstr[0] ""
+msgstr[1] ""
+
+#. Translators: an interval in hours ("5 h").
+#: crates/app/src/ui/text.rs
+#: crates/app/src/widgets/deck_row/text.rs
+msgid "{count} h"
+msgid_plural "{count} h"
+msgstr[0] ""
+msgstr[1] ""
+
+#. Translators: an interval in months ("2 months").
+#: crates/app/src/ui/text.rs
+msgid "{count} month"
+msgid_plural "{count} months"
+msgstr[0] ""
+msgstr[1] ""
+
+#. Translators: an interval in years, at least 2, maybe with a decimal ("2.7 years").
+#: crates/app/src/ui/text.rs
+msgid "{count} year"
+msgid_plural "{count} years"
+msgstr[0] ""
+msgstr[1] ""
+
+#: crates/app/src/ui/time.rs
+msgid "Unknown date"
+msgstr ""
+
+#. Translators: a date and time, as GLib's g_date_time_format() takes it: %x is the date in your locale's own way, %R the time as 14:05.
+#: crates/app/src/ui/time.rs
+msgctxt "date format"
+msgid "%x %R"
+msgstr ""
+
+#. Translators: a date and time with seconds, for g_date_time_format(): %x is the date in your locale's own way, %X the time with seconds.
+#: crates/app/src/ui/time.rs
+msgctxt "date format"
+msgid "%x %X"
+msgstr ""
+
+#. Translators: a day under a chart's bar, for g_date_time_format(): %-d is the day of the month, %b the short month name ("17 Sep").
+#: crates/app/src/ui/time.rs
+msgctxt "date format"
+msgid "%-d %b"
+msgstr ""
+
+#. Translators: a day in a chart's summary, for g_date_time_format(): %-d is the day of the month, %B the month name ("14 October").
+#: crates/app/src/ui/time.rs
+msgctxt "date format"
+msgid "%-d %B"
+msgstr ""
+
+#. Translators: the day chosen on a chart, for g_date_time_format(): %a is the short weekday, %-d the day of the month, %b the short month name ("Tue 14 Oct").
+#: crates/app/src/ui/time.rs
+msgctxt "date format"
+msgid "%a %-d %b"
+msgstr ""
+
+#. Translators: when a card is due; {interval} is "3 days", "10 min".
+#. Translators: when something comes; {interval} is "25 min", "3 days".
+#: crates/app/src/ui/time.rs
+#: crates/app/src/widgets/deck_row/text.rs
+msgid "in {interval}"
+msgstr ""
+
+#: crates/app/src/ui/time.rs
+msgid "due now"
+msgstr ""
+
+#. Translators: a card that should have been reviewed {count} days ago.
+#: crates/app/src/ui/time.rs
+msgid "overdue by {count} day"
+msgid_plural "overdue by {count} days"
+msgstr[0] ""
+msgstr[1] ""
+
+#: crates/app/src/ui/toast.rs
+msgid "Something went wrong"
+msgstr ""
+
+#: crates/app/src/ui/toast.rs
+msgid "_Details"
+msgstr ""
+
+#: crates/app/src/ui/toast.rs
+msgid "_Undo"
+msgstr ""
+
+#. Translators: a toast; its first sentence is its title, the rest is behind Details. {error} is the reason, in English.
+#: crates/app/src/ui/toast.rs
+msgid "Daily backup failed. Today’s backup could not be made: {error}"
+msgstr ""
+
+#. Translators: a toast; its first sentence is its title, the rest is behind Details. {error} is the reason, in English.
+#: crates/app/src/ui/toast.rs
+msgid "Backups not tidied. Old backups could not be removed: {error}"
+msgstr ""
+
+#. Translators: a Restore button's name for screen readers; {when} is the date and time the backup was made.
+#: crates/app/src/widgets/backup_row.rs
+msgid "Restore backup from {when}"
+msgstr ""
+
+#: crates/app/src/widgets/card_row/text.rs
+msgid "empty front"
+msgstr ""
+
+#. Translators: a card's back for screen readers ("back: 4").
+#: crates/app/src/widgets/card_row/text.rs
+msgid "back: {back}"
+msgstr ""
+
+#: crates/app/src/widgets/card_row/text.rs
+msgid "suspended"
+msgstr ""
+
+#: crates/app/src/widgets/chart_card.rs
+msgid "Select a day to see its values"
+msgstr ""
+
+#. Translators: a deck row for screen readers: {name} is the deck's name, {line} "12 due, 5 new".
+#: crates/app/src/widgets/deck_row/text.rs
+msgid "{name}, {line}"
+msgstr ""
+
+#: crates/app/src/widgets/deck_row/text.rs
+msgid "No cards yet"
+msgstr ""
+
+#: crates/app/src/widgets/deck_row/text.rs
+msgid "no cards yet"
+msgstr ""
+
+#: crates/app/src/widgets/deck_row/text.rs
+msgid "All cards suspended"
+msgstr ""
+
+#: crates/app/src/widgets/deck_row/text.rs
+msgid "all cards suspended"
+msgstr ""
+
+#. Translators: under a deck's name; {when} is "in 25 min", "tomorrow" or "in 4 days".
+#: crates/app/src/widgets/deck_row/text.rs
+msgid "Next review {when}"
+msgstr ""
+
+#. Translators: the same for screen readers; {when} is "in 25 minutes", "tomorrow" or "in 4 days".
+#: crates/app/src/widgets/deck_row/text.rs
+msgid "next review {when}"
+msgstr ""
+
+#: crates/app/src/widgets/deck_row/text.rs
+msgid "nothing to study"
+msgstr ""
+
+#: crates/app/src/widgets/deck_row/text.rs
+msgid "Done for today"
+msgstr ""
+
+#: crates/app/src/widgets/deck_row/text.rs
+msgid "done for today"
+msgstr ""
+
+#. Translators: an interval in minutes, in words for screen readers ("25 minutes").
+#: crates/app/src/widgets/deck_row/text.rs
+msgid "{count} minute"
+msgid_plural "{count} minutes"
+msgstr[0] ""
+msgstr[1] ""
+
+#. Translators: an interval in hours, in words for screen readers ("3 hours").
+#: crates/app/src/widgets/deck_row/text.rs
+msgid "{count} hour"
+msgid_plural "{count} hours"
+msgstr[0] ""
+msgstr[1] ""
+
+#: crates/app/src/widgets/deck_row/text.rs
+msgid "tomorrow"
+msgstr ""
+
+#: crates/app/src/widgets/tag_entry.rs
+msgid "Add a tag"
+msgstr ""
+
+#. Translators: {limit} is the most tags a card can have (100).
+#: crates/app/src/widgets/tag_entry/field.rs
+msgid "A card can have at most {limit} tags"
+msgstr ""
+
+#. Translators: said by a screen reader on a tag suggestion: {name} is the tag, {position} its place in the list, {count} the number of suggestions.
+#: crates/app/src/widgets/tag_entry/keys.rs
+msgid "{name}, suggestion {position} of {count}"
+msgstr ""
+
+#. Translators: said by a screen reader when tag suggestions appear; {count} is how many there are.
+#: crates/app/src/widgets/tag_entry/keys.rs
+msgid "{count} suggestion: Tab takes the first, the arrow keys choose, Escape keeps what you typed"
+msgid_plural "{count} suggestions: Tab takes the first, the arrow keys choose, Escape keeps what you typed"
+msgstr[0] ""
+msgstr[1] ""
+
+#. Translators: said by a screen reader; {name} is a tag.
+#: crates/app/src/widgets/tag_entry/keys.rs
+msgid "Tag {name} added"
+msgstr ""
+
+#. Translators: said by a screen reader; {names} is a list of tags.
+#: crates/app/src/widgets/tag_entry/keys.rs
+msgid "Tags {names} added"
+msgstr ""
+
+#. Translators: said by a screen reader; {name} is a tag.
+#: crates/app/src/widgets/tag_entry/keys.rs
+msgid "Tag {name} removed"
+msgstr ""
+
+#. Translators: a button's name for screen readers; {name} is a tag.
+#: crates/app/src/widgets/tag_entry/keys.rs
+msgid "Remove tag {name}"
+msgstr ""
+
+#: crates/app/src/widgets/tag_pills.rs
+msgctxt "tag pill"
+msgid "Remove Tag"
+msgstr ""
+
+#. Translators: a card's tags for screen readers; {names} is a list of tags ("maths, easy").
+#: crates/app/src/widgets/tag_pills/text.rs
+msgid "tags: {names}"
+msgstr ""
+
+#: crates/app/src/window.rs
+msgid "The decks could not be read."
+msgstr ""
+
+#: crates/app/src/window.rs
+msgid "Backup restored"
+msgstr ""
+
+#: crates/app/src/window.rs
+msgid "Restore finished"
+msgstr ""
+
+#: crates/app/src/window.rs
+msgid "Started with an empty database"
+msgstr ""
+
+#: crates/app/src/window.rs
+msgid "Started fresh"
+msgstr ""
+
+#. Translators: a toast: its first sentence is its title, the rest is behind Details. {title} is "Backup restored" or the like, {path} a file's path.
+#: crates/app/src/window.rs
+msgid "{title}. The previous database was kept as {path}"
+msgstr ""
+
+#. Translators: a toast's text goes on: {message} is what came before ("Backup restored"), {path} a file's path.
+#: crates/app/src/window.rs
+msgid "{message}. The copy an earlier restore left waiting was kept as {path}"
+msgstr ""

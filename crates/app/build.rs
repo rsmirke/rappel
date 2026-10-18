@@ -1,5 +1,7 @@
 //! Compiles Blueprint files to `GtkBuilder` XML, then bundles them into a
-//! gresource that `main.rs` embeds in the binary.
+//! gresource that `main.rs` embeds in the binary; and compiles each
+//! language of `po/LINGUAS` to `<OUT_DIR>/locale/<lang>/LC_MESSAGES/rappel.mo`,
+//! where a debug build finds its translations (ADR 0059).
 //!
 //! Every input is a tracked build input (#62): each `data/*.blp`, the
 //! `data` directory itself (so a new or deleted file counts), and every file
@@ -24,9 +26,22 @@ use std::{
     process::Command,
 };
 
+// The `.po` reader and `.mo` writer, shared with the app's tests (ADR 0059).
+#[path = "src/i18n/po.rs"]
+#[expect(
+    dead_code,
+    reason = "the build only compiles catalogs; the comment fields and the .po writer serve \
+              the tests"
+)]
+mod po;
+
 const DATA_DIR: &str = "data";
 const MANIFEST: &str = "data/resources.gresource.xml";
 const TARGET: &str = "rappel.gresource";
+/// The translations, at the repository's root (GNOME's layout).
+const PO_DIR: &str = "../../po";
+/// The gettext domain (`i18n::DOMAIN`).
+const DOMAIN: &str = "rappel";
 
 fn main() {
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("cargo always sets OUT_DIR"));
@@ -68,6 +83,33 @@ fn main() {
         if !input.starts_with(&out_dir) {
             println!("cargo:rerun-if-changed={}", input.display());
         }
+    }
+
+    compile_catalogs(&out_dir.join("locale"));
+}
+
+/// Compiles `po/<lang>.po` for each language of `po/LINGUAS` into
+/// `<locale_dir>/<lang>/LC_MESSAGES/rappel.mo`, as `msgfmt` would (without
+/// GNU gettext's tools, which are not needed to build Rappel).
+fn compile_catalogs(locale_dir: &Path) {
+    let po_dir = Path::new(PO_DIR);
+    println!("cargo:rerun-if-changed={PO_DIR}");
+    let linguas = po_dir.join("LINGUAS");
+    println!("cargo:rerun-if-changed={}", linguas.display());
+    let languages = fs::read_to_string(&linguas).expect("po/LINGUAS is part of the source tree");
+    for language in languages
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+    {
+        let source = po_dir.join(format!("{language}.po"));
+        println!("cargo:rerun-if-changed={}", source.display());
+        let text =
+            fs::read_to_string(&source).unwrap_or_else(|err| panic!("{}: {err}", source.display()));
+        let entries = po::parse(&text).unwrap_or_else(|err| panic!("{}: {err}", source.display()));
+        let dir = locale_dir.join(language).join("LC_MESSAGES");
+        fs::create_dir_all(&dir).expect("OUT_DIR is writable");
+        fs::write(dir.join(format!("{DOMAIN}.mo")), po::mo(&entries)).expect("OUT_DIR is writable");
     }
 }
 

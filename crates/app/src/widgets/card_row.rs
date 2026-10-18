@@ -238,7 +238,7 @@ impl CardRow {
         // Without a back or tags, the line is left out.
         imp.detail_box
             .set_visible(!back.is_empty() || !tags.is_empty());
-        rows::label_menu_button(&imp.menu_button, text::spoken_front(front));
+        rows::label_menu_button(&imp.menu_button, &text::spoken_front(front));
         imp.suspended_icon.set_visible(suspended);
         // Rows are recycled, so this is set on every bind. The `row.*`
         // actions are widget actions installed in `class_init`;

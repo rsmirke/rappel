@@ -25,8 +25,8 @@ use gtk::{gdk, gio, glib};
 use rappel_core::media::MediaRef;
 
 use super::images::{
-    CACHE_BYTES, Failure, OPEN_DESCRIPTION, PixelBudget, TextureCache, accepted_mime, image_name,
-    placeholder_label, read_image_file, texture_cost, within_limits,
+    CACHE_BYTES, Failure, PixelBudget, TextureCache, accepted_mime, image_name, placeholder_label,
+    read_image_file, texture_cost, within_limits,
 };
 use crate::ui::dialog;
 
@@ -221,7 +221,7 @@ impl CardImage {
             Failure::OverBudget,
         ]
         .into_iter()
-        .find(|f| text.starts_with(super::images::placeholder_text(*f)))
+        .find(|f| text.starts_with(&super::images::placeholder_text(*f)))
     }
 
     /// Joins the decode of `path` already running, or starts it.
@@ -305,7 +305,7 @@ impl CardImage {
         button.set_overflow(gtk::Overflow::Hidden);
         button.update_property(&[
             gtk::accessible::Property::Label(&name),
-            gtk::accessible::Property::Description(OPEN_DESCRIPTION),
+            gtk::accessible::Property::Description(&super::images::open_description()),
         ]);
         let shown = texture.clone();
         button.connect_clicked(move |button| open_full_size(button, &shown, &name));
