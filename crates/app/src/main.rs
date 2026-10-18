@@ -63,7 +63,11 @@ fn main() -> glib::ExitCode {
     // GtkSourceView (the card editor) needs GTK initialised first. `startup`
     // is a GApplication RUN_FIRST signal, so GtkApplication's own handler,
     // which initialises GTK, runs before this one (gio's GApplication docs).
-    app.connect_startup(|_| sourceview5::init());
+    app.connect_startup(|_| {
+        sourceview5::init();
+        // Before any layout is built (`widgets::register_types`).
+        widgets::register_types();
+    });
     for (action, accel) in ACCELS {
         app.set_accels_for_action(action, &[accel]);
     }

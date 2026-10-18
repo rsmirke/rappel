@@ -12,8 +12,11 @@ pub fn resource_path(file: &str) -> String {
     format!("{RESOURCE_PREFIX}{file}")
 }
 
-/// A builder over the bundled `file`, e.g. `"restore_dialog.ui"`.
+/// A builder over the bundled `file`, e.g. `"restore_dialog.ui"`. The
+/// app's widget types are registered first, since a file may name one
+/// (`widgets::register_types`).
 pub fn builder(file: &str) -> gtk::Builder {
+    crate::widgets::register_types();
     gtk::Builder::from_resource(&resource_path(file))
 }
 

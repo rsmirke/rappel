@@ -1116,6 +1116,35 @@ mod tests {
     }
 
     #[test]
+    fn screen_readers_get_the_card_from_the_card_area_and_the_note_once() {
+        crate::testing::with_widgets(|| {
+            let page: ReviewPage = glib::Object::new();
+            let imp = page.imp();
+            // A generic role (a box's default) has no name or description
+            // for screen readers; a group has both.
+            assert_eq!(imp.card_area.accessible_role(), gtk::AccessibleRole::Group);
+            assert!(imp.card_area.is_focusable());
+            // The note is in the card area's name or description
+            // (`with_cut_note`); the label itself is not exposed.
+            assert_eq!(
+                imp.cut_note.accessible_role(),
+                gtk::AccessibleRole::Presentation
+            );
+            page.show_front(&"word ".repeat(9_000));
+            assert!(imp.cut_note.is_visible());
+            // Only that a label is set: GTK has no public getter for its
+            // value (`gtk_test_accessible_check_property` is only in
+            // gtk4-sys, variadic and unsafe), so the text with the note is
+            // checked in `with_cut_note`'s tests and was read over AT-SPI
+            // (ADR 0051).
+            assert!(gtk::test_accessible_has_property(
+                &*imp.card_area,
+                gtk::AccessibleProperty::Label
+            ));
+        });
+    }
+
+    #[test]
     fn the_cut_note_matches_the_blueprint() {
         crate::testing::with_widgets(|| {
             let page: ReviewPage = glib::Object::new();

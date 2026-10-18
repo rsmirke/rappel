@@ -124,11 +124,27 @@ pub fn breakable(text: &str) -> Cow<'_, str> {
     Cow::Owned(out)
 }
 
+/// `text` without any [`BREAK`]: what screen readers get (ADR 0025 row 3,
+/// ADR 0051). A zero-width space the card had itself goes too; it is not
+/// read anyway.
+pub fn without_breaks(text: &str) -> String {
+    text.chars().filter(|&c| c != BREAK).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use proptest::prelude::*;
 
     use super::*;
+
+    #[test]
+    fn screen_readers_get_the_text_without_the_breaks() {
+        let long = format!("{} end", "0123456789abcdef".repeat(10));
+        let shown = breakable(&long);
+        assert!(shown.contains(BREAK));
+        assert_eq!(without_breaks(&shown), long);
+        assert_eq!(without_breaks("no breaks"), "no breaks");
+    }
 
     /// The longest run without a break opportunity, in characters.
     fn longest_run(text: &str) -> usize {

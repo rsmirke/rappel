@@ -23,6 +23,7 @@ use crate::ui::focus::index_after_removal;
 use crate::ui::text::one_line;
 use crate::ui::toast::{info_toast, show_error, show_toast_from, undo_toast};
 use crate::ui::{breakpoint, dropdown, init_once, nav};
+use crate::widgets::tag_entry::field::MAX_TAGS_PER_CARD;
 use crate::widgets::{BrowseItem, CardRow, card_row};
 use crate::window::RappelWindow;
 
@@ -148,7 +149,9 @@ mod imp {
             rows::install_id_action(klass, "browser.select-card", super::BrowserPage::press);
             // The action bar.
             klass.install_action("browser.move", None, |page, _, _| page.move_selected());
-            klass.install_action("browser.add-tag", None, |page, _, _| page.add_tag());
+            klass.install_action("browser.add-tags", None, |page, _, _| {
+                page.add_tags();
+            });
             klass.install_action("browser.remove-tag", None, |page, _, _| page.remove_tag());
             klass.install_action("browser.suspend-selected", None, |page, _, _| {
                 page.suspend_selected();
@@ -206,7 +209,7 @@ glib::wrapper! {
 enum Bulk {
     Suspend(bool),
     Move { deck_id: String, deck_name: String },
-    AddTag(String),
+    AddTags(Vec<String>),
     RemoveTag(Tag),
     Reset,
     Delete,
@@ -223,13 +226,14 @@ struct Done {
     undo: UndoFn,
 }
 
-/// Does `action` on `ids`. `None` if every card was already as asked.
+/// Does `action` on `ids`. `Err` with the notice to show if no card
+/// changed: every card was already as asked, or (Add Tags) had no room.
 fn perform(
     state: &AppState,
     ids: &[String],
     action: Bulk,
     now: i64,
-) -> rappel_core::Result<Option<Done>> {
+) -> rappel_core::Result<Result<Done, String>> {
     let done = match action {
         Bulk::Suspend(suspended) => {
             let changed = state.set_suspended(ids, suspended)?;
@@ -247,12 +251,30 @@ fn perform(
                 undo: Box::new(move |s| s.unmove_cards(&moved)),
             }
         }
-        Bulk::AddTag(name) => {
-            let (tag, changed) = state.add_tag_to_cards(ids, &name)?;
+        Bulk::AddTags(names) => {
+            let limit = MAX_TAGS_PER_CARD;
+            let added = state.add_tags_to_cards(ids, &names, limit)?;
+            if added.cards.is_empty() {
+                return Ok(Err(if added.full.is_empty() {
+                    text::unchanged_text()
+                } else {
+                    text::no_room_text(limit)
+                }));
+            }
+            // Only the tags that went on some card are named.
+            let linked: std::collections::HashSet<&str> =
+                added.links.iter().map(|(_, id)| id.as_str()).collect();
+            let put: Vec<String> = added
+                .tags
+                .iter()
+                .filter(|t| linked.contains(t.id.as_str()))
+                .map(|t| t.name.clone())
+                .collect();
+            let links = added.links;
             Done {
-                text: text::tag_added_text(changed.len(), &tag.name),
-                total: changed.len(),
-                undo: Box::new(move |s| s.release_tag_from_cards(&changed, &tag.id)),
+                text: text::tags_added_text(&put, added.cards.len(), added.full.len(), limit),
+                total: added.cards.len(),
+                undo: Box::new(move |s| s.release_tags(&links)),
             }
         }
         Bulk::RemoveTag(tag) => {
@@ -284,7 +306,11 @@ fn perform(
             }
         }
     };
-    Ok((done.total > 0).then_some(done))
+    Ok(if done.total > 0 {
+        Ok(done)
+    } else {
+        Err(text::unchanged_text())
+    })
 }
 
 impl BrowserPage {
@@ -877,7 +903,7 @@ impl BrowserPage {
         imp.selection_title.set_title(&text::selection_title(n));
         for action in [
             "browser.move",
-            "browser.add-tag",
+            "browser.add-tags",
             "browser.remove-tag",
             "browser.suspend-selected",
             "browser.reset-selected",
@@ -1052,20 +1078,27 @@ impl BrowserPage {
         ));
     }
 
-    fn add_tag(&self) {
+    /// Asks for tags in the card editor's tag entry, with every tag as a
+    /// suggestion (the tag filter's list, read again on every change), and
+    /// puts them on the chosen cards (ADR 0051). Returns the dialog (tests
+    /// answer it).
+    fn add_tags(&self) -> Option<adw::AlertDialog> {
         let ids = self.chosen_ids();
         if ids.is_empty() {
-            return;
+            return None;
         }
-        glib::spawn_future_local(glib::clone!(
-            #[weak(rename_to = page)]
+        let all = self.imp().tags.borrow().clone();
+        let body = text::add_tags_body(ids.len());
+        browser_dialogs::add_tags(
             self,
-            async move {
-                if let Some(name) = browser_dialogs::ask_tag_name(&page).await {
-                    page.run(&ids, Bulk::AddTag(name));
-                }
-            }
-        ));
+            &body,
+            all,
+            glib::clone!(
+                #[weak(rename_to = page)]
+                self,
+                move |names| page.run(&ids, Bulk::AddTags(names))
+            ),
+        )
     }
 
     fn remove_tag(&self) {
@@ -1115,13 +1148,13 @@ impl BrowserPage {
         let first = ids.first().and_then(|id| self.position(id));
         let first_id = ids.first().cloned();
         match perform(&state, ids, action, rappel_core::time::now_ms()) {
-            Ok(Some(done)) => {
+            Ok(Ok(done)) => {
                 self.choose_mode(false);
                 self.changed();
                 self.refocus(first, first_id.as_deref());
                 self.offer_undo(state, done);
             }
-            Ok(None) => show_toast_from(self, info_toast(&text::unchanged_text())),
+            Ok(Err(notice)) => show_toast_from(self, info_toast(&notice)),
             Err(rappel_core::Error::CardNotFound(_) | rappel_core::Error::DeckNotFound(_)) => {
                 // Another window or an import removed a card or a deck: the
                 // list shown is old. Nothing was written (the write is all or
@@ -1317,10 +1350,12 @@ mod tests {
         assert_eq!((done.undo)(&state).unwrap(), 3);
         assert_eq!(rows(&state), before);
         // Already as asked: nothing to tell.
-        assert!(
+        assert_eq!(
             perform(&state, &ids, Bulk::Suspend(false), now)
                 .unwrap()
-                .is_none()
+                .err()
+                .as_deref(),
+            Some("Nothing changed; the cards were already like that")
         );
 
         // Move.
@@ -1335,11 +1370,19 @@ mod tests {
         assert_eq!(state.card(&ids[0]).unwrap().deck_id, maths);
 
         // Add a tag, take a tag off.
-        let done = perform(&state, &ids, Bulk::AddTag("hard".to_owned()), now)
+        let done = perform(&state, &ids, Bulk::AddTags(tags(&["hard"])), now)
             .unwrap()
             .unwrap();
         assert_eq!(done.text, "Tag “hard” added to 3 cards");
         assert_eq!(state.card_tags(&ids[1]).unwrap().len(), 2);
+        assert_eq!((done.undo)(&state).unwrap(), 3);
+        assert_eq!(rows(&state), before);
+        // Several at once; one the cards have already is not named, and one
+        // Undo takes off the others.
+        let bulk = Bulk::AddTags(tags(&["Algebra", "hard", "exam"]));
+        let done = perform(&state, &ids, bulk, now).unwrap().unwrap();
+        assert_eq!(done.text, "2 tags added to 3 cards");
+        assert_eq!(state.card_tags(&ids[1]).unwrap().len(), 3);
         assert_eq!((done.undo)(&state).unwrap(), 3);
         assert_eq!(rows(&state), before);
         let algebra = state
@@ -1388,6 +1431,38 @@ mod tests {
             text::partial_undo_text(1, done.total).as_deref(),
             Some("1 of 2 cards restored; the others changed since")
         );
+    }
+
+    #[test]
+    fn add_tags_leaves_out_cards_at_the_limit_of_the_tags_field() {
+        let (_tmp, state, ids, _) = state_with_cards();
+        // The first card has the field's 100 tags: "algebra" and 99 more.
+        let many: Vec<String> = (1..MAX_TAGS_PER_CARD).map(|i| format!("t{i}")).collect();
+        state
+            .add_tags_to_cards(&ids[..1], &many, MAX_TAGS_PER_CARD)
+            .unwrap();
+        assert_eq!(state.card_tags(&ids[0]).unwrap().len(), MAX_TAGS_PER_CARD);
+        let now = rappel_core::time::now_ms();
+        let result = perform(&state, &ids[..1], Bulk::AddTags(tags(&["x"])), now);
+        assert_eq!(
+            result.unwrap().err().as_deref(),
+            Some("No tags added; a card can have at most 100 tags")
+        );
+        // A tag it has already is no tag past the limit.
+        let result = perform(&state, &ids[..1], Bulk::AddTags(tags(&["t1"])), now);
+        assert_eq!(
+            result.unwrap().err().as_deref(),
+            Some("Nothing changed; the cards were already like that")
+        );
+        let done = perform(&state, &ids, Bulk::AddTags(tags(&["x"])), now)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            done.text,
+            "Tag “x” added to 2 cards; 1 card left out, as a card can have at most 100 tags"
+        );
+        assert_eq!(state.card_tags(&ids[0]).unwrap().len(), MAX_TAGS_PER_CARD);
+        assert_eq!((done.undo)(&state).unwrap(), 2);
     }
 
     #[test]
@@ -1575,6 +1650,82 @@ mod tests {
                 imp.title_stack.visible_child_name().as_deref(),
                 Some("search")
             );
+            window.destroy();
+        });
+    }
+
+    #[test]
+    fn add_tags_puts_the_tags_of_its_entry_on_the_chosen_cards() {
+        crate::testing::with_widgets(|| {
+            let (_tmp, state, ids, maths) = state_with_cards();
+            // A tag on another card, to be suggested.
+            state
+                .add_card_with_tags(&maths, "other", "back", &tags(&["Économie"]))
+                .unwrap();
+            let page = page_over(&state, None);
+            let window = adw::Window::new();
+            window.set_content(Some(&page));
+            window.present();
+            page.choose_mode(true);
+            page.toggle(&ids[0]);
+            page.toggle(&ids[1]);
+
+            let dialog = page.add_tags().unwrap();
+            assert_eq!(
+                dialog.body(),
+                "Choose the tags to put on 2 cards. Press Enter or type a comma after each one."
+            );
+            let entry = dialog
+                .extra_child()
+                .and_downcast::<crate::widgets::TagEntry>()
+                .unwrap();
+            // The focus goes to the entry's text; Enter there is Add once a
+            // tag is there.
+            assert_eq!(dialog.focus(), Some(entry.text().upcast()));
+            assert!(entry.text().activates_default());
+            assert!(!dialog.is_response_enabled("confirm"), "no tag yet");
+
+            // The editor's suggestions: "eco" finds "Économie".
+            entry.type_text("eco");
+            let found = entry.suggest_for_test();
+            assert_eq!(found.len(), 1);
+            entry.accept_suggestion(0);
+            assert_eq!(entry.pill_names(), ["Économie"]);
+            assert!(dialog.is_response_enabled("confirm"));
+            // A name too long for a tag turns Add off; a typed name counts.
+            entry.type_text(&"x".repeat(300));
+            assert!(!dialog.is_response_enabled("confirm"));
+            entry.type_text("exam");
+            assert!(dialog.is_response_enabled("confirm"));
+
+            dialog.emit_by_name::<()>("response", &[&"confirm"]);
+            let names = |id: &str| -> Vec<String> {
+                state
+                    .card_tags(id)
+                    .unwrap()
+                    .into_iter()
+                    .map(|t| t.name)
+                    .collect()
+            };
+            assert_eq!(names(&ids[0]), ["algebra", "exam", "Économie"]);
+            assert_eq!(names(&ids[1]), ["algebra", "exam", "Économie"]);
+            assert_eq!(names(&ids[2]), ["algebra"], "not chosen");
+            assert!(
+                !page.selecting(),
+                "selection mode ends, as for every action"
+            );
+
+            // Cancel adds nothing.
+            page.choose_mode(true);
+            page.toggle(&ids[2]);
+            let dialog = page.add_tags().unwrap();
+            let entry = dialog
+                .extra_child()
+                .and_downcast::<crate::widgets::TagEntry>()
+                .unwrap();
+            entry.type_text("later");
+            dialog.emit_by_name::<()>("response", &[&"cancel"]);
+            assert_eq!(names(&ids[2]), ["algebra"]);
             window.destroy();
         });
     }

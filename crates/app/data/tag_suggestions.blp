@@ -1,7 +1,7 @@
 using Gtk 4.0;
 
-// The tag suggestions under the card editor's tags field (a popover
-// parented to the entry; dialogs/card_editor/suggest.rs). It never takes
+// The tag suggestions under a tag entry (a popover parented to its frame;
+// widgets/tag_entry.rs), in the card editor and Add Tags. It never takes
 // the keyboard focus: the entry keeps it, and the arrow keys move the
 // highlight (widgets/tag_suggestions.rs). Rows are added in code, one per
 // suggestion; tag names are untrusted, so the labels do not use markup.

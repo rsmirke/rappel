@@ -97,7 +97,7 @@ fn one_card_that_is_not_live_refuses_the_whole_write() {
         Err(Error::CardNotFound(_))
     ));
     assert!(matches!(
-        store.add_tag_to_cards_at(&bad, "x", T0),
+        store.add_tags_to_cards_at(&bad, &names(&["x"]), usize::MAX, T0),
         Err(Error::CardNotFound(_))
     ));
     assert!(matches!(
@@ -123,8 +123,15 @@ fn tags_are_added_and_removed_in_bulk_with_exact_reports() {
     let (mut store, _, _, ids) = setup();
     let first = store.add_tag_at(&ids[0], "Hard", T0).unwrap();
 
-    let (tag, changed) = store.add_tag_to_cards_at(&ids, " hard ", T0).unwrap();
-    assert_eq!(tag, first, "found by name key, not created again");
+    let added = store
+        .add_tags_to_cards_at(&ids, &names(&[" hard "]), usize::MAX, T0)
+        .unwrap();
+    let (tag, changed) = (added.tags[0].clone(), added.cards);
+    assert_eq!(
+        added.tags,
+        std::slice::from_ref(&first),
+        "found by name key, not created again"
+    );
     assert_eq!(changed, &ids[1..]);
     assert_eq!(store.tags().unwrap().len(), 1);
     assert_eq!(store.card(&ids[1]).unwrap().updated_at, T0);
@@ -154,7 +161,9 @@ fn bad_tag_names_and_unknown_tags_are_refused() {
     let (mut store, _, _, ids) = setup();
     for name in ["", "  ", "a,b"] {
         assert!(
-            store.add_tag_to_cards_at(&ids, name, T0).is_err(),
+            store
+                .add_tags_to_cards_at(&ids, &names(&[name]), usize::MAX, T0)
+                .is_err(),
             "{name:?}"
         );
     }
@@ -254,17 +263,25 @@ fn an_undo_of_a_move_does_not_undo_a_later_move() {
 fn the_undo_of_suspend_and_of_add_tag_skips_cards_deleted_since() {
     let (mut store, _, _, ids) = setup();
     store.set_suspended(&ids, true).unwrap();
-    let (tag, added) = store.add_tag_to_cards_at(&ids, "x", T0).unwrap();
+    let added = store
+        .add_tags_to_cards_at(&ids, &names(&["x"]), usize::MAX, T0)
+        .unwrap();
     store.delete_card_at(&ids[0], T0 + 1).unwrap();
 
     assert_eq!(store.restore_suspended(&ids, false).unwrap(), 2);
     assert!(!store.card(&ids[1]).unwrap().suspended);
-    assert_eq!(store.release_tag_from_cards(&added, &tag.id).unwrap(), 2);
+    assert_eq!(store.release_tags(&added.links).unwrap(), 2);
     assert_eq!(store.card_tags(&ids[1]).unwrap().len(), 0);
-    assert!(matches!(
-        store.release_tag_from_cards(&added, MISSING),
-        Err(Error::TagNotFound(_))
-    ));
+    // Releasing again, or a tag that is not there, changes nothing.
+    assert_eq!(store.release_tags(&added.links).unwrap(), 0);
+    let missing: Vec<(String, String)> = ids
+        .iter()
+        .map(|id| (id.clone(), MISSING.to_owned()))
+        .collect();
+    assert_eq!(store.release_tags(&missing).unwrap(), 0);
+    // The deleted card keeps its link: the Undo leaves deleted cards alone.
+    store.undelete_cards(&ids[..1]).unwrap();
+    assert_eq!(store.card_tags(&ids[0]).unwrap().len(), 1);
 }
 
 #[test]
@@ -286,4 +303,135 @@ fn undoing_an_entry_twice_skips_it_the_second_time() {
     let events = store.reset_cards(&ids, T0 + 1).unwrap();
     assert_eq!(store.undo_entries(&events, T0 + 2).unwrap().len(), 0);
     assert_eq!(store.undo_entries(&events, T0 + 3).unwrap(), ids);
+}
+
+fn names(list: &[&str]) -> Vec<String> {
+    list.iter().map(|&s| s.to_owned()).collect()
+}
+
+#[test]
+fn several_tags_are_added_at_once_and_their_undo_takes_off_exactly_those() {
+    let (mut store, _, _, ids) = setup();
+    let hard = store.add_tag_at(&ids[0], "Hard", T0).unwrap();
+    let added = store
+        .add_tags_to_cards_at(&ids, &names(&[" hard ", "Exam", "EXAM", "new"]), 100, T0)
+        .unwrap();
+    // "EXAM" is "Exam"; "hard" is the tag the first card has.
+    let tag_names: Vec<&str> = added.tags.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(tag_names, ["Hard", "Exam", "new"]);
+    assert_eq!(added.tags[0], hard);
+    assert_eq!(added.cards, ids);
+    assert_eq!(added.full.len(), 0);
+    // The first card lacked two of them, the others three.
+    assert_eq!(added.links.len(), 2 + 3 + 3);
+    assert_eq!(store.card_tags(&ids[1]).unwrap().len(), 3);
+    assert_eq!(store.card(&ids[1]).unwrap().updated_at, T0);
+
+    // Adding them again changes nothing.
+    let again = store
+        .add_tags_to_cards_at(&ids, &names(&["hard", "exam"]), 100, T0)
+        .unwrap();
+    assert_eq!(again, TagsAdded::default());
+
+    // The undo leaves the tag the first card had before, and skips a card
+    // deleted since.
+    store.delete_card_at(&ids[2], T0 + 1).unwrap();
+    assert_eq!(store.release_tags(&added.links).unwrap(), 2);
+    assert_eq!(
+        store.card_tags(&ids[0]).unwrap(),
+        std::slice::from_ref(&hard)
+    );
+    assert_eq!(store.card_tags(&ids[1]).unwrap().len(), 0);
+    assert_eq!(store.tags().unwrap().len(), 3, "tags are never deleted");
+}
+
+#[test]
+fn a_card_that_would_pass_the_limit_gets_none_of_the_tags() {
+    let (mut store, _, _, ids) = setup();
+    // Card 0 has 2 tags, card 1 has 1, card 2 none; the limit is 3.
+    store.add_tag_at(&ids[0], "a", T0).unwrap();
+    store.add_tag_at(&ids[0], "b", T0).unwrap();
+    store.add_tag_at(&ids[1], "a", T0).unwrap();
+    let added = store
+        .add_tags_to_cards_at(&ids, &names(&["a", "c", "d"]), 3, T0)
+        .unwrap();
+    // Card 0 lacks c and d: 4 > 3. Card 1 lacks c and d: 3. Card 2 lacks
+    // all three: 3.
+    assert_eq!(added.full, &ids[..1]);
+    assert_eq!(added.cards, &ids[1..]);
+    assert_eq!(store.card_tags(&ids[0]).unwrap().len(), 2);
+    assert_eq!(store.card_tags(&ids[1]).unwrap().len(), 3);
+    assert_eq!(store.card_tags(&ids[2]).unwrap().len(), 3);
+
+    // A card already past the limit (an import) gets no more.
+    let added = store
+        .add_tags_to_cards_at(&ids[..1], &names(&["e"]), 1, T0)
+        .unwrap();
+    assert_eq!(added.full, &ids[..1]);
+    assert_eq!(added.links.len(), 0);
+}
+
+#[test]
+fn when_no_card_gets_a_tag_no_tag_is_created() {
+    let (mut store, _, _, ids) = setup();
+    store.add_tag_at(&ids[0], "a", T0).unwrap();
+    let added = store
+        .add_tags_to_cards_at(&ids[..1], &names(&["brand new"]), 1, T0)
+        .unwrap();
+    assert_eq!(added.full, &ids[..1]);
+    assert_eq!(added.tags.len(), 0);
+    assert_eq!(store.tags().unwrap().len(), 1);
+}
+
+#[test]
+fn a_bad_name_or_card_among_several_writes_nothing() {
+    let (mut store, _, _, ids) = setup();
+    for bad in [
+        names(&["ok", ""]),
+        names(&["ok", "a,b"]),
+        names(&["ok", "a\0b"]),
+    ] {
+        assert!(
+            store.add_tags_to_cards_at(&ids, &bad, 100, T0).is_err(),
+            "{bad:?}"
+        );
+    }
+    let mut with_missing = ids.clone();
+    with_missing.push(MISSING.to_owned());
+    assert!(matches!(
+        store.add_tags_to_cards_at(&with_missing, &names(&["ok"]), 100, T0),
+        Err(Error::CardNotFound(_))
+    ));
+    assert_eq!(store.tags().unwrap().len(), 0);
+    assert_eq!(store.card_tags(&ids[0]).unwrap().len(), 0);
+}
+
+#[test]
+fn no_names_no_cards_or_a_limit_of_zero_write_nothing() {
+    let (mut store, _, _, ids) = setup();
+    // No names: nothing to add, and no card is "full".
+    assert_eq!(
+        store.add_tags_to_cards_at(&ids, &[], 100, T0).unwrap(),
+        TagsAdded::default()
+    );
+    // No cards: the names are checked, nothing is written.
+    assert_eq!(
+        store
+            .add_tags_to_cards_at(&[], &names(&["x"]), 100, T0)
+            .unwrap(),
+        TagsAdded::default()
+    );
+    assert!(
+        store
+            .add_tags_to_cards_at(&[], &names(&["a,b"]), 100, T0)
+            .is_err()
+    );
+    // A limit of zero: every card that lacks a tag is full.
+    let added = store
+        .add_tags_to_cards_at(&ids, &names(&["x"]), 0, T0)
+        .unwrap();
+    assert_eq!(added.full, ids);
+    assert_eq!(added.links.len(), 0);
+    assert_eq!(store.tags().unwrap().len(), 0, "no tag was created");
+    assert_eq!(store.release_tags(&[]).unwrap(), 0);
 }
