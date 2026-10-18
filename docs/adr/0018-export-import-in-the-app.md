@@ -4,6 +4,7 @@
 - Date: 2026-10-16
 - Amends: ADR 0017 (limits enforced when writing), ADR 0011 (a second connection)
 - Amended by: ADR 0026 (backups made by imports no longer push out daily ones)
+- Amended by: ADR 0053 (the plan holds a fingerprint of the file, not its document; the apply reads the file again and says so if it changed)
 
 ## Context
 
