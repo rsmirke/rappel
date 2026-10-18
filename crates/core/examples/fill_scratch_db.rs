@@ -21,9 +21,11 @@
 //! With `--suspended N`, the last N cards of the first deck are suspended
 //! (ADR 0035), so they never overlap the first `--due N` ones. With
 //! `--media`, it adds the deck "Media" (ADR 0054): cards showing small
-//! images it draws itself (a square, a wide and a tall PNG), one playing a
-//! one-second WAV tone, one naming a file that is not there, and one with a
-//! remote image, which is shown as text; the same files every run.
+//! images it draws itself (a square, a wide and a tall PNG), two playing a
+//! one-second WAV tone (on the back, and on the front among text), two
+//! naming files that are not there (an image and a sound, ADR 0056), and
+//! one with a remote image, which is shown as text; the same files every
+//! run.
 //! The directory
 //! must be absolute and is never one of the
 //! app's own data directories, release or debug: this is for throwaway

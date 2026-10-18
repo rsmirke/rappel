@@ -9,8 +9,8 @@
 //! of its kind and size, read whole on a worker thread. Those bytes, never
 //! the path or a URI, go to GTK's media stream
 //! (`gtk_media_file_new_for_input_stream`), which GTK 4.24 plays with
-//! `GStreamer`'s `GstPlay` (`gtk/media/gtkgstmediafile.c`: playbin3 on
-//! `giostreamsrc://`, the source handed our stream in its `source-setup`).
+//! `GStreamer`'s `GstPlay` (playbin3; GTK hands the source element our
+//! stream in its `source-setup`, `gtkgstmediafile.c`).
 //! So the file cannot change between the check and the play, and no
 //! `file:` or other URI reaches playbin. `GStreamer` finds the demuxer and
 //! decoder itself, in Rappel's process: see the ADR's untrusted-input
@@ -331,7 +331,14 @@ impl CardAudio {
         let shown = imp.stream.borrow().as_ref().map(|stream| {
             (
                 stream.is_prepared(),
-                time_text(stream.timestamp(), stream.duration()),
+                // The timestamp reads 0 once the stream has ended
+                // (seen with GTK 4.24 and GStreamer 1.28); a sound played
+                // to its end shows its whole length.
+                if stream.is_ended() {
+                    time_text(stream.duration(), stream.duration())
+                } else {
+                    time_text(stream.timestamp(), stream.duration())
+                },
             )
         });
         match shown {

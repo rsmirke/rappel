@@ -19,6 +19,11 @@ You need:
   Debian/Ubuntu: `liblcms2-dev libseccomp-dev libfontconfig-dev`)
 - to show images, glycin's image loaders and bubblewrap, its sandbox, at run time (most GNOME
   systems have both) (Fedora: `glycin-loaders bubblewrap`; Debian/Ubuntu: `glycin-loaders bubblewrap`)
+- to play audio, GStreamer's plugins at run time (GTK plays through GStreamer; most GNOME systems
+  have them; ADR 0056): the base and good plugins, and an AAC decoder for M4A files
+  (Fedora: `gstreamer1-plugins-base gstreamer1-plugins-good gstreamer1-plugin-libav`;
+  Debian/Ubuntu: `gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-libav`).
+  The tests do not need them.
 - `blueprint-compiler` and `glib-compile-resources` (from GLib) on your `PATH`
 - [`cargo-deny`](https://github.com/EmbarkStudios/cargo-deny) for the quality gate (`cargo install cargo-deny`)
 
