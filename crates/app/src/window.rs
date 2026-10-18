@@ -66,7 +66,9 @@ mod imp {
         #[template_child]
         pub error_details: TemplateChild<gtk::Label>,
         #[template_child]
-        pub short_breakpoint: TemplateChild<adw::Breakpoint>,
+        pub too_new_short: TemplateChild<adw::Breakpoint>,
+        #[template_child]
+        pub error_short: TemplateChild<adw::Breakpoint>,
         /// Set once, when the database is open (at startup or after a
         /// restore). Pages and dialogs get a clone from here.
         pub state: OnceCell<AppState>,
@@ -150,17 +152,18 @@ mod imp {
             // The on-screen keyboard never covers the focused field
             // (ADR 0058).
             crate::ui::scroll::install(&*window);
-            // The startup problem pages on a short window (ADR 0058).
-            for (status, icon) in [
-                (&*self.too_new_page, super::TOO_NEW_ICON),
-                (&*self.error_page, super::ERROR_ICON),
-                (
-                    &self.recovery_page.status_page(),
-                    crate::pages::recovery_page::ICON,
-                ),
-            ] {
-                crate::ui::breakpoint::compact_status_page(&self.short_breakpoint, status, icon);
-            }
+            // The "too new" and "could not start" pages on a short window
+            // (ADR 0058).
+            crate::ui::breakpoint::compact_status_page(
+                &self.too_new_short,
+                &self.too_new_page,
+                super::TOO_NEW_ICON,
+            );
+            crate::ui::breakpoint::compact_status_page(
+                &self.error_short,
+                &self.error_page,
+                super::ERROR_ICON,
+            );
         }
     }
     impl WidgetImpl for RappelWindow {}

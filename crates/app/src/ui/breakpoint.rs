@@ -3,6 +3,8 @@
 
 use std::rc::Rc;
 
+use gtk::prelude::IsA;
+
 /// Calls `f(true)` each time `breakpoint` starts to apply and `f(false)`
 /// each time it stops. libadwaita emits `apply` and `unapply` as the
 /// condition starts and stops matching, the first time too when the
@@ -36,6 +38,23 @@ pub fn compact_status_page(
                 status.remove_css_class("compact");
             }
             status.set_icon_name((!short).then_some(icon));
+        }
+    });
+}
+
+/// Makes `widget` `compact` (a status page's smaller layout) while
+/// `breakpoint` applies, keeping its icon: for a status page whose icon
+/// the page changes as it goes (All Cards' empty states; ADR 0058).
+pub fn compact_when(breakpoint: &adw::Breakpoint, widget: &impl IsA<gtk::Widget>) {
+    use adw::prelude::*;
+    let widget = widget.upcast_ref::<gtk::Widget>().downgrade();
+    follow(breakpoint, move |short| {
+        if let Some(widget) = widget.upgrade() {
+            if short {
+                widget.add_css_class("compact");
+            } else {
+                widget.remove_css_class("compact");
+            }
         }
     });
 }

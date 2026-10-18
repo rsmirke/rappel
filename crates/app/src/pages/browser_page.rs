@@ -50,6 +50,8 @@ mod imp {
     #[template(resource = "/io/github/rsmirke/Rappel/browser_page.ui")]
     pub struct BrowserPage {
         #[template_child]
+        pub empty_short: TemplateChild<adw::Breakpoint>,
+        #[template_child]
         pub breakpoint: TemplateChild<adw::Breakpoint>,
         #[template_child]
         pub search_entry: TemplateChild<gtk::SearchEntry>,
@@ -328,6 +330,9 @@ impl BrowserPage {
         imp.card_list
             .set_model(Some(&gtk::NoSelection::new(Some(store.clone()))));
         imp.card_list.set_factory(Some(&page.row_factory()));
+        // The empty state on a short window (ADR 0058); its icon changes
+        // with the state, so only `compact`.
+        crate::ui::breakpoint::compact_when(&imp.empty_short, &*imp.empty_page);
         for filter in [&*imp.deck_filter, &*imp.tag_filter, &*imp.state_filter] {
             dropdown::shrinkable(filter);
         }

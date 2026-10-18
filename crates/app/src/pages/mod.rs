@@ -3,7 +3,7 @@
 mod browser_page;
 mod deck_page;
 mod decks_page;
-pub mod recovery_page;
+mod recovery_page;
 mod review_page;
 mod setting_page;
 mod stats_page;

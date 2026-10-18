@@ -2,64 +2,77 @@ using Gtk 4.0;
 using Adw 1;
 
 template $RappelRecoveryPage: Adw.Bin {
-  child: Adw.StatusPage status {
-    icon-name: "dialog-warning-symbolic";
+  // A short window (a phone held sideways, 640 × 360) makes the status
+  // page `compact` without its icon, so the backups are on screen
+  // (pages/recovery_page.rs, `ui::breakpoint::compact_status_page`;
+  // ADR 0058), as the setting page does.
+  child: Adw.BreakpointBin {
+    width-request: 360;
+    height-request: 294;
 
-    child: Adw.Clamp {
-      maximum-size: 480;
+    Adw.Breakpoint short_breakpoint {
+      condition ("max-height: 450sp")
+    }
 
-      child: Gtk.Box {
-        orientation: vertical;
-        spacing: 18;
+    child: Adw.StatusPage status {
+      icon-name: "dialog-warning-symbolic";
 
-        // Only while an interrupted restore's checked copy waits
-        // (pages/recovery_page.rs).
-        Gtk.Button finish_restore_button {
-          label: _("_Finish Restore");
-          use-underline: true;
-          halign: center;
-          visible: false;
+      child: Adw.Clamp {
+        maximum-size: 480;
 
-          styles [
-            "pill",
-            "suggested-action",
-          ]
-        }
+        child: Gtk.Box {
+          orientation: vertical;
+          spacing: 18;
 
-        Gtk.ListBox backup_list {
-          selection-mode: none;
-          accessibility {
-            label: _("Backups");
+          // Only while an interrupted restore's checked copy waits
+          // (pages/recovery_page.rs).
+          Gtk.Button finish_restore_button {
+            label: _("_Finish Restore");
+            use-underline: true;
+            halign: center;
+            visible: false;
+
+            styles [
+              "pill",
+              "suggested-action",
+            ]
           }
 
-          styles [
-            "boxed-list",
-          ]
-        }
+          Gtk.ListBox backup_list {
+            selection-mode: none;
+            accessibility {
+              label: _("Backups");
+            }
 
-        // Only with no backups to restore (pages/recovery_page.rs).
-        Gtk.Button start_fresh_button {
-          label: _("_Start Fresh");
-          use-underline: true;
-          halign: center;
-          visible: false;
+            styles [
+              "boxed-list",
+            ]
+          }
 
-          styles [
-            "pill",
-            "destructive-action",
-          ]
-        }
+          // Only with no backups to restore (pages/recovery_page.rs).
+          Gtk.Button start_fresh_button {
+            label: _("_Start Fresh");
+            use-underline: true;
+            halign: center;
+            visible: false;
 
-        Gtk.Label path_label {
-          wrap: true;
-          wrap-mode: word_char;
-          selectable: true;
-          justify: center;
+            styles [
+              "pill",
+              "destructive-action",
+            ]
+          }
 
-          styles [
-            "dimmed",
-          ]
-        }
+          Gtk.Label path_label {
+            wrap: true;
+            wrap-mode: word_char;
+            selectable: true;
+            justify: center;
+
+            styles [
+              "dimmed",
+            ]
+          }
+        };
       };
     };
   };

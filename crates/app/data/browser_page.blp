@@ -176,16 +176,29 @@ template $RappelBrowserPage: Adw.NavigationPage {
         Gtk.StackPage {
           name: "empty";
 
-          child: Adw.StatusPage empty_page {
-            child: Gtk.Button empty_button {
-              action-name: "browser.empty-action";
-              use-underline: true;
-              halign: center;
+          // Short (a phone held sideways, or the on-screen keyboard up), the
+          // empty state is `compact` so its button stays on screen (ADR 0058;
+          // `ui::breakpoint`). A bin of its own: the condition is on the
+          // room the page leaves it.
+          child: Adw.BreakpointBin {
+            width-request: 300;
+            height-request: 200;
 
-              styles [
-                "pill",
-                "suggested-action",
-              ]
+            Adw.Breakpoint empty_short {
+              condition ("max-height: 400sp")
+            }
+
+            child: Adw.StatusPage empty_page {
+              child: Gtk.Button empty_button {
+                action-name: "browser.empty-action";
+                use-underline: true;
+                halign: center;
+
+                styles [
+                  "pill",
+                  "suggested-action",
+                ]
+              };
             };
           };
         }

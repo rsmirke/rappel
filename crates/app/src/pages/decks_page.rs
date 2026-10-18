@@ -28,6 +28,10 @@ use crate::ui::toast::{show_error, show_toast_from, undo_toast};
 use crate::widgets::DeckRow;
 use crate::widgets::deck_row::text::refresh_delay_ms;
 
+/// The empty state's icon, as in its layout, given back after a short
+/// window took it off (`ui::breakpoint::compact_status_page`).
+const EMPTY_ICON: &str = "accessories-dictionary-symbolic";
+
 mod imp {
     use std::cell::{Cell, OnceCell, RefCell};
 
@@ -43,6 +47,10 @@ mod imp {
     #[derive(Debug, Default, gtk::CompositeTemplate)]
     #[template(resource = "/io/github/rsmirke/Rappel/decks_page.ui")]
     pub struct DecksPage {
+        #[template_child]
+        pub empty_short: TemplateChild<adw::Breakpoint>,
+        #[template_child]
+        pub empty_status: TemplateChild<adw::StatusPage>,
         #[template_child]
         pub content_stack: TemplateChild<gtk::Stack>,
         #[template_child]
@@ -91,6 +99,12 @@ mod imp {
     impl ObjectImpl for DecksPage {
         fn constructed(&self) {
             self.parent_constructed();
+            // The empty state on a short window (ADR 0058).
+            crate::ui::breakpoint::compact_status_page(
+                &self.empty_short,
+                &self.empty_status,
+                super::EMPTY_ICON,
+            );
             let page = self.obj();
             self.deck_list.connect_row_activated(glib::clone!(
                 #[weak]

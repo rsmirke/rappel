@@ -33,6 +33,10 @@ use crate::ui::{init_once, nav};
 use crate::widgets::{CardObject, CardRow, card_row};
 use crate::window::RappelWindow;
 
+/// The empty state's icon, as in its layout, given back after a short
+/// window took it off (`ui::breakpoint::compact_status_page`).
+const EMPTY_ICON: &str = "document-new-symbolic";
+
 mod imp {
     use std::cell::{Cell, OnceCell, RefCell};
     use std::rc::Rc;
@@ -51,6 +55,10 @@ mod imp {
     #[properties(wrapper_type = super::DeckPage)]
     #[template(resource = "/io/github/rsmirke/Rappel/deck_page.ui")]
     pub struct DeckPage {
+        #[template_child]
+        pub empty_short: TemplateChild<adw::Breakpoint>,
+        #[template_child]
+        pub empty_status: TemplateChild<adw::StatusPage>,
         #[template_child]
         pub breakpoint: TemplateChild<adw::Breakpoint>,
         #[template_child]
@@ -118,6 +126,12 @@ mod imp {
     impl ObjectImpl for DeckPage {
         fn constructed(&self) {
             self.parent_constructed();
+            // The empty state on a short window (ADR 0058).
+            crate::ui::breakpoint::compact_status_page(
+                &self.empty_short,
+                &self.empty_status,
+                super::EMPTY_ICON,
+            );
             let page = self.obj();
             // Back from studying: what is left to study changed, and so
             // may which cards are new. The rows are refreshed before the

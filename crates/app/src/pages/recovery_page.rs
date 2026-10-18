@@ -63,6 +63,8 @@ mod imp {
         #[template_child]
         pub status: TemplateChild<adw::StatusPage>,
         #[template_child]
+        pub short_breakpoint: TemplateChild<adw::Breakpoint>,
+        #[template_child]
         pub backup_list: TemplateChild<gtk::ListBox>,
         #[template_child]
         pub finish_restore_button: TemplateChild<gtk::Button>,
@@ -101,6 +103,11 @@ mod imp {
             self.parent_constructed();
             // The page's only focusable widget when it offers nothing to do.
             crate::ui::focus::unselect_on_first_focus(&self.path_label);
+            crate::ui::breakpoint::compact_status_page(
+                &self.short_breakpoint,
+                &self.status,
+                super::ICON,
+            );
             // No confirmation: nothing is deleted, the old files are moved
             // aside, and this restore was already chosen.
             self.finish_restore_button.connect_clicked(glib::clone!(
@@ -129,15 +136,9 @@ glib::wrapper! {
 
 /// The page's icon, as in `data/recovery_page.blp`, given back after a
 /// short window took it off (`ui::breakpoint::compact_status_page`).
-pub const ICON: &str = "dialog-warning-symbolic";
+const ICON: &str = "dialog-warning-symbolic";
 
 impl RecoveryPage {
-    /// The page's status page, which the window makes compact on a short
-    /// window (ADR 0058).
-    pub fn status_page(&self) -> adw::StatusPage {
-        self.imp().status.get()
-    }
-
     /// Explains `reason`, lists the backups in `data_dir`, and calls
     /// `on_restored` once a restore or a fresh start succeeds.
     pub fn show(
