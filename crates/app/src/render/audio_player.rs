@@ -724,10 +724,10 @@ mod tests {
             );
             // Nothing is played here, so playback may be taken as there
             // whatever is installed.
-            super::super::playback::force(Some(true));
+            let forced = super::super::playback::force(true);
             let images = Images::new(state.media_folder(), 720);
             let side = render(&rappel_core::content::parse(&md), &images);
-            super::super::playback::force(None);
+            drop(forced);
             let controls = audio_controls(&side);
             assert_eq!(controls.len(), 2);
             let (tone, missing) = (&controls[0], &controls[1]);
@@ -785,7 +785,7 @@ mod tests {
                 Accept::Audio,
             )
             .unwrap();
-            super::super::playback::force(Some(false));
+            let _forced = super::super::playback::force(false);
             let folder = state.media_folder().unwrap();
             let column = gtk::Box::new(gtk::Orientation::Vertical, 0);
             let audio = CardAudio::new(Some(&folder), media, "tone");
@@ -805,7 +805,6 @@ mod tests {
             assert_eq!(audio.plays(), 0);
             assert!(audio.imp().stream.borrow().is_none());
             assert_eq!(audio.state(), State::NoPlayback);
-            super::super::playback::force(None);
             window.close();
         });
     }

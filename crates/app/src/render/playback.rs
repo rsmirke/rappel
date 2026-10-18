@@ -62,10 +62,10 @@ pub fn plugin_dirs(env: &SearchEnv) -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = env
         .plugin_path
         .as_deref()
-        .map(|p| std::env::split_paths(p).collect())
+        .map(|p| entries(p).collect())
         .unwrap_or_default();
     if let Some(system) = env.system_path.as_deref() {
-        dirs.extend(std::env::split_paths(system));
+        dirs.extend(entries(system));
         return dirs;
     }
     if let Some(data) = &env.user_data_dir {
@@ -81,6 +81,13 @@ pub fn plugin_dirs(env: &SearchEnv) -> Vec<PathBuf> {
     )));
     dirs.extend(FALLBACK_DIRS.iter().map(PathBuf::from));
     dirs
+}
+
+/// The folders of a path variable, without its empty entries: an empty
+/// entry (`a::b`, a trailing colon, an empty variable) would otherwise be
+/// the current folder, which Rappel must not take for a plugin folder.
+fn entries(value: &std::ffi::OsStr) -> impl Iterator<Item = PathBuf> + '_ {
+    std::env::split_paths(value).filter(|dir| !dir.as_os_str().is_empty())
 }
 
 /// Whether one of `dirs` has [`PLUGIN`], by `exists`.
@@ -124,11 +131,26 @@ thread_local! {
     static FORCED: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
 }
 
-/// Makes [`available`] answer `value` on this thread (tests), or the
-/// truth again with `None`.
+/// Makes [`available`] answer `value` on this thread until the returned
+/// guard is dropped (tests), even if the test panics meanwhile.
 #[cfg(test)]
-pub fn force(value: Option<bool>) {
-    FORCED.with(|forced| forced.set(value));
+#[must_use = "the forced value lasts as long as the guard"]
+pub fn force(value: bool) -> Forced {
+    let before = FORCED.with(|forced| forced.replace(Some(value)));
+    Forced { before }
+}
+
+/// Puts [`available`] back as it was when dropped.
+#[cfg(test)]
+pub struct Forced {
+    before: Option<bool>,
+}
+
+#[cfg(test)]
+impl Drop for Forced {
+    fn drop(&mut self) {
+        FORCED.with(|forced| forced.set(self.before));
+    }
 }
 
 /// Whether [`PLUGIN`] was found, once per run.
@@ -190,6 +212,42 @@ mod tests {
             .map(PathBuf::from)
         );
         assert!(dirs.contains(&PathBuf::from("/app/lib/gstreamer-1.0")));
+    }
+
+    #[test]
+    fn empty_entries_are_not_the_current_folder() {
+        let env = SearchEnv {
+            plugin_path: Some(OsString::new()),
+            system_path: Some(OsString::from("/a::/b:")),
+            ..SearchEnv::default()
+        };
+        assert_eq!(plugin_dirs(&env), ["/a", "/b"].map(PathBuf::from).to_vec());
+        let env = SearchEnv {
+            system_path: Some(OsString::from(":")),
+            ..SearchEnv::default()
+        };
+        assert_eq!(plugin_dirs(&env), Vec::<PathBuf>::new());
+    }
+
+    #[test]
+    fn a_forced_answer_ends_with_its_guard_even_on_a_panic() {
+        let truth = available();
+        {
+            let _forced = force(!truth);
+            assert_eq!(available(), !truth);
+            {
+                let _inner = force(truth);
+                assert_eq!(available(), truth);
+            }
+            assert_eq!(available(), !truth);
+        }
+        assert_eq!(available(), truth);
+        let panicked = std::panic::catch_unwind(|| {
+            let _forced = force(!truth);
+            panic!("a failing test");
+        });
+        assert!(panicked.is_err());
+        assert_eq!(available(), truth);
     }
 
     #[test]
