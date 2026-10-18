@@ -61,15 +61,19 @@ mod measure {
         Decks,
         /// Cards with long fronts: few, large strings.
         LongCards,
-        /// Review events, and the most media files an archive can hold
-        /// (`MEDIA_FILES`, each a small PNG, with its record): what grows
-        /// with media is fixed by the entry limit (ADR 0054).
-        Media,
+        /// Review events, and this many media files (each a small PNG,
+        /// with its record): what grows with media is fixed by the entry
+        /// limit (ADR 0054).
+        Media(u32),
     }
 
-    /// How many media files a `Fill::Media` file has: the entry limit
-    /// (100,000) less `cards.json` and `media/`.
+    /// The most media files an archive can hold: the entry limit (100,000)
+    /// less `cards.json` and `media/`. Planned at that count; applied with
+    /// `APPLIED_MEDIA_FILES`, since the apply syncs every file it writes,
+    /// which takes minutes for 100,000 files on a disk (the apply keeps no
+    /// more per file than the plan, which is measured at the limit).
     const MEDIA_FILES: u32 = 99_998;
+    const APPLIED_MEDIA_FILES: u32 = 5_000;
 
     /// Media file `n`: a PNG signature and `n`, so each differs.
     fn media_file(n: u32) -> Vec<u8> {
@@ -78,10 +82,10 @@ mod measure {
         out
     }
 
-    /// The media files of a `Fill::Media` file, sorted by name (by hash).
-    fn media_files() -> Vec<(String, Vec<u8>)> {
+    /// `count` media files, sorted by name (by hash).
+    fn media_files(count: u32) -> Vec<(String, Vec<u8>)> {
         use sha2::{Digest, Sha256};
-        let mut files: Vec<(String, Vec<u8>)> = (0..MEDIA_FILES)
+        let mut files: Vec<(String, Vec<u8>)> = (0..count)
             .map(|n| {
                 let bytes = media_file(n);
                 let hash = Sha256::digest(&bytes)
@@ -136,7 +140,11 @@ mod measure {
             case("decks, stored", Fill::Decks, true),
             case("review events, deflated", Fill::Reviews, false),
             case("long cards, deflated", Fill::LongCards, false),
-            case("99,998 media files and review events", Fill::Media, true),
+            case(
+                "99,998 media files and review events",
+                Fill::Media(MEDIA_FILES),
+                true,
+            ),
             // Applying writes every row: smaller files, to keep it quick.
             Case {
                 what: "resets and undos, planned and applied",
@@ -153,8 +161,8 @@ mod measure {
                 sizes: [JSON_LIMIT / 64, JSON_LIMIT / 32],
             },
             Case {
-                what: "99,998 media files and review events, planned and applied",
-                fill: Fill::Media,
+                what: "5,000 media files and review events, planned and applied",
+                fill: Fill::Media(APPLIED_MEDIA_FILES),
                 stored: true,
                 apply: true,
                 sizes: [JSON_LIMIT / 64, JSON_LIMIT / 32],
@@ -292,8 +300,8 @@ mod measure {
         json.write_all(br#"],"review_events":["#)?;
         write_events(&mut json, json_bytes, fill, cards)?;
         json.write_all(br#"],"settings":{},"media":["#)?;
-        let files = if fill == Fill::Media {
-            media_files()
+        let files = if let Fill::Media(count) = fill {
+            media_files(count)
         } else {
             Vec::new()
         };
@@ -347,7 +355,7 @@ mod measure {
         const T: i64 = 1_792_067_696_789;
         let first_event = 3_000_000_000;
         match fill {
-            Fill::Reviews | Fill::LongCards | Fill::Media => {
+            Fill::Reviews | Fill::LongCards | Fill::Media(_) => {
                 fill_until(json, json_bytes, |json, n, comma| {
                     let card = id(1 + n % cards);
                     let at = T + i64::try_from(n).map_err(io::Error::other)?;
@@ -416,7 +424,7 @@ mod measure {
         }
         let (index, size) = spec.split_once(':').unwrap();
         let case = cases()[index.parse::<usize>().unwrap()];
-        let json = if case.fill == Fill::Media {
+        let json = if matches!(case.fill, Fill::Media(_)) {
             // Writing 100,000 entries leaves memory with the allocator (the
             // zip writer's list of them) that the import would reuse
             // unseen: written by a process of its own.
@@ -443,8 +451,8 @@ mod measure {
             summary.decks.new >= 1 && summary.conflicts.is_empty(),
             "{summary:?}"
         );
-        if case.fill == Fill::Media {
-            assert_eq!(summary.media.new, MEDIA_FILES as usize);
+        if let Fill::Media(count) = case.fill {
+            assert_eq!(summary.media.new, count as usize);
         }
         println!("PEAK {peak} {json}");
     }

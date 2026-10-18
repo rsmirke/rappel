@@ -312,10 +312,17 @@ pub(super) fn give_name(
         kept_as = %aside.file_name().unwrap_or_default().to_string_lossy(),
         "a damaged media file was set aside"
     );
+    // The second name on disk before the first is given to the good copy,
+    // so the damaged file is never only under a name being replaced.
+    if let Some(dir) = target.parent() {
+        sync_folder(dir)?;
+    }
     namer.rename(temp, target).map_err(io_err(target))
 }
 
 /// Whether a link failed because the file system has no hard links.
+/// `PermissionDenied` can also come from `protected_hardlinks` on a file
+/// the user does not own, which cannot be in the private (`0700`) folder.
 fn no_links(err: &io::Error) -> bool {
     matches!(
         err.kind(),
