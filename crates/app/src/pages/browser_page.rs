@@ -287,6 +287,9 @@ fn perform(
         }
         Bulk::Reset => {
             let events = state.reset_cards(ids, now)?;
+            if events.is_empty() {
+                return Ok(Err(text::no_progress_text(ids.len())));
+            }
             Done {
                 text: text::reset_text(events.len()),
                 total: events.len(),
@@ -906,14 +909,18 @@ impl BrowserPage {
             "browser.add-tags",
             "browser.remove-tag",
             "browser.suspend-selected",
-            "browser.reset-selected",
             "browser.delete-selected",
         ] {
             self.action_set_enabled(action, n > 0);
         }
+        let chosen = self.chosen_items();
+        self.action_set_enabled(
+            "browser.reset-selected",
+            text::reset_offered(chosen.iter().map(BrowseItem::is_new)),
+        );
         // Tags is a menu button, which does not follow its menu's actions.
         imp.tags_button.set_sensitive(n > 0);
-        let choice = self.suspend_choice();
+        let choice = text::suspend_choice(chosen.iter().map(BrowseItem::suspended));
         let (label, accessible) = text::suspend_labels(choice);
         imp.suspend_button.set_tooltip_text(Some(label));
         imp.suspend_button
@@ -927,17 +934,20 @@ impl BrowserPage {
     }
 
     fn suspend_choice(&self) -> SuspendChoice {
+        text::suspend_choice(self.chosen_items().iter().map(BrowseItem::suspended))
+    }
+
+    /// The listed items that are chosen, in list order.
+    fn chosen_items(&self) -> Vec<BrowseItem> {
         let imp = self.imp();
         let Some(store) = imp.items.get() else {
-            return SuspendChoice::Suspend;
+            return Vec::new();
         };
         let selection = imp.selection.borrow();
-        text::suspend_choice(
-            (0..store.n_items())
-                .filter_map(|p| self.item(p))
-                .filter(|i| selection.contains(&i.id()))
-                .map(|i| i.suspended()),
-        )
+        (0..store.n_items())
+            .filter_map(|p| self.item(p))
+            .filter(|i| selection.contains(&i.id()))
+            .collect()
     }
 
     // --- one card --------------------------------------------------------
@@ -1154,7 +1164,12 @@ impl BrowserPage {
                 self.refocus(first, first_id.as_deref());
                 self.offer_undo(state, done);
             }
-            Ok(Err(notice)) => show_toast_from(self, info_toast(&notice)),
+            Ok(Err(notice)) => {
+                // Nothing was written, but the rows may be stale (a card
+                // reset elsewhere still offering Reset Progress).
+                self.requery();
+                show_toast_from(self, info_toast(&notice));
+            }
             Err(rappel_core::Error::CardNotFound(_) | rappel_core::Error::DeckNotFound(_)) => {
                 // Another window or an import removed a card or a deck: the
                 // list shown is old. Nothing was written (the write is all or
@@ -1621,6 +1636,46 @@ mod tests {
             assert_eq!(page.suspend_choice(), SuspendChoice::Unsuspend);
             page.toggle(&ids[2]);
             assert_eq!(page.suspend_choice(), SuspendChoice::Suspend);
+        });
+    }
+
+    #[test]
+    fn reset_is_offered_only_for_cards_with_progress() {
+        crate::testing::with_widgets(|| {
+            let (_tmp, state, ids, _) = state_with_cards();
+            let now = rappel_core::time::now_ms();
+            state
+                .record_review(&ids[1], Grade::Pass, Duration::ZERO, now - DAY_MS)
+                .unwrap();
+            // Suspended, which its status shows instead of New.
+            state.set_suspended(&ids[0..1], true).unwrap();
+            let page = page_over(&state, None);
+            // Without a root a button stays insensitive whatever its action
+            // says (seen with GTK 4.24, see the review page's `can_undo`).
+            let _window = gtk::Window::builder().child(&page).build();
+            let imp = page.imp();
+            page.choose_mode(true);
+            page.toggle(&ids[0]);
+            page.toggle(&ids[2]);
+            assert!(!imp.reset_button.is_sensitive(), "only new cards chosen");
+            page.toggle(&ids[1]);
+            assert!(imp.reset_button.is_sensitive());
+            let item = |id: &str| page.position(id).and_then(|p| page.item(p)).unwrap();
+            assert!(item(&ids[0]).is_new() && item(&ids[2]).is_new());
+            assert!(!item(&ids[1]).is_new());
+
+            // Reset elsewhere: the stale row's reset writes nothing, says
+            // so, and the row catches up.
+            state.reset_card(&ids[1], now).unwrap();
+            assert!(!item(&ids[1]).is_new());
+            let log = state.review_events(&ids[1]).unwrap();
+            assert_eq!(
+                perform(&state, &ids[1..2], Bulk::Reset, now).unwrap().err(),
+                Some(text::no_progress_text(1))
+            );
+            page.run(&ids[1..2], Bulk::Reset);
+            assert_eq!(state.review_events(&ids[1]).unwrap(), log);
+            assert!(item(&ids[1]).is_new());
         });
     }
 

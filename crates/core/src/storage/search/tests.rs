@@ -617,3 +617,30 @@ proptest! {
         prop_assert!(alone.is_subset(&padded), "padding {} bytes", pad.len());
     }
 }
+
+/// `is_new` says whether a reset has anything to do, also for a suspended
+/// card, whose status says only Suspended.
+#[test]
+fn a_row_says_whether_the_card_is_new_even_when_suspended() {
+    let (mut store, deck) = store_with_deck();
+    let ids: Vec<String> = ["a", "b", "c"]
+        .iter()
+        .map(|f| store.add_card_at(&deck, f, "", T0).unwrap().id)
+        .collect();
+    review_twice(&mut store, &ids[1]);
+    review_twice(&mut store, &ids[2]);
+    store.reset_card(&ids[2], NOW).unwrap();
+    store.set_suspended(&ids[..2], true).unwrap();
+    let is_new = |id: &str| {
+        store
+            .browse(&BrowseQuery::default(), NOW)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.card.id == id)
+            .unwrap()
+            .is_new
+    };
+    assert!(is_new(&ids[0]), "suspended and new");
+    assert!(!is_new(&ids[1]), "suspended and reviewed");
+    assert!(is_new(&ids[2]), "reviewed, then reset");
+}

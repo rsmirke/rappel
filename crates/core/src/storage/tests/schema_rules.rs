@@ -154,6 +154,15 @@ fn resets_and_undos_are_append_only_too() {
         )
         .unwrap();
     store.undo(&card, &review.id, DAY0).unwrap();
+    // The undo made the card new, so it needs a review to be reset.
+    store
+        .record_review(
+            &card,
+            crate::domain::Grade::Pass,
+            std::time::Duration::ZERO,
+            DAY0,
+        )
+        .unwrap();
     store.reset_card(&card, DAY0).unwrap();
     for sql in [
         "UPDATE review_events SET undoes = NULL WHERE kind = 'undo'",
@@ -164,5 +173,6 @@ fn resets_and_undos_are_append_only_too() {
         let err = store.conn.execute(sql, []).unwrap_err();
         assert!(err.to_string().contains("append-only"), "{sql}: {err}");
     }
-    assert_eq!(count(&store.conn, "review_events"), 3);
+    // Review, undo, review, reset.
+    assert_eq!(count(&store.conn, "review_events"), 4);
 }

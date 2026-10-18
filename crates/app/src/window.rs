@@ -368,13 +368,14 @@ impl RappelWindow {
         }
     }
 
-    /// After a reset or its undo: the counts of every open deck page and of
-    /// the deck list.
+    /// After a reset or its undo: the counts and the new cards of every open
+    /// deck page, and the deck list.
     pub fn study_changed(&self) {
         let imp = self.imp();
         for page in self.pages() {
             if let Some(deck) = page.downcast_ref::<DeckPage>() {
                 deck.update_study();
+                deck.refresh_new_flags();
             } else if let Some(browser) = page.downcast_ref::<BrowserPage>() {
                 // A deck page's Undo (suspend, reset) changed cards it lists.
                 browser.requery();

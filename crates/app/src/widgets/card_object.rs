@@ -6,7 +6,7 @@
 //! nothing until the rows scroll into view, and binding a recycled row
 //! again is cheap.
 
-use std::cell::{OnceCell, Ref, RefCell};
+use std::cell::{Cell, OnceCell, Ref, RefCell};
 
 use gtk::glib;
 use gtk::subclass::prelude::*;
@@ -17,7 +17,7 @@ use super::card_row::text::row_label;
 use crate::ui::text::one_line;
 
 mod imp {
-    use super::{Card, OnceCell, RefCell};
+    use super::{Card, Cell, OnceCell, RefCell};
     use gtk::glib;
     use gtk::subclass::prelude::*;
 
@@ -27,6 +27,7 @@ mod imp {
         pub tags: RefCell<Vec<String>>,
         pub front: OnceCell<String>,
         pub back: OnceCell<String>,
+        pub is_new: Cell<bool>,
     }
 
     /// `GObject` needs a default; [`super::CardObject::new`], the only
@@ -46,6 +47,7 @@ mod imp {
                 tags: RefCell::default(),
                 front: OnceCell::new(),
                 back: OnceCell::new(),
+                is_new: Cell::new(false),
             }
         }
     }
@@ -77,6 +79,38 @@ impl CardObject {
     /// The card. An edit replaces the whole object in the model.
     pub fn card(&self) -> Ref<'_, Card> {
         self.imp().card.borrow()
+    }
+
+    /// Whether the card is new: no surviving review since it was created or
+    /// last reset. Decides whether its row offers Reset Progress. A card
+    /// starts as not new; the page sets it when it puts the card in the
+    /// list, and replaces the object when it changes, so the row rebinds.
+    pub fn is_new(&self) -> bool {
+        self.imp().is_new.get()
+    }
+
+    /// Marks the card new or not, before the object is put in the list.
+    #[must_use]
+    pub fn with_new(self, is_new: bool) -> Self {
+        self.imp().is_new.set(is_new);
+        self
+    }
+
+    /// A copy of this item, new or not: a new object, so the list rebinds
+    /// its row. The previews already made are kept.
+    pub fn copy_with_new(&self, is_new: bool) -> Self {
+        let imp = self.imp();
+        let obj: Self = glib::Object::new();
+        let copy = obj.imp();
+        copy.card.replace(imp.card.borrow().clone());
+        copy.tags.replace(imp.tags.borrow().clone());
+        for (from, to) in [(&imp.front, &copy.front), (&imp.back, &copy.back)] {
+            if let Some(text) = from.get() {
+                to.get_or_init(|| text.clone());
+            }
+        }
+        copy.is_new.set(is_new);
+        obj
     }
 
     /// The front on one line, without Markdown syntax (see

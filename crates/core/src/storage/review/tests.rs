@@ -362,6 +362,13 @@ impl Model {
         })
     }
 
+    /// No surviving review since creation or the last surviving reset.
+    fn is_new(&self, card: usize) -> bool {
+        self.alive[card]
+            .last()
+            .is_none_or(|e| e.kind == EventKind::Reset)
+    }
+
     fn floor(&self, card: usize, clock: i64) -> i64 {
         self.events[card]
             .last()
@@ -444,14 +451,16 @@ proptest! {
                     clock += clock_delta;
                     let card = card % cards.len();
                     let result = store.reset_card(&cards[card], clock);
-                    if model.live(card) {
+                    if !model.live(card) {
+                        prop_assert!(matches!(result, Err(Error::CardNotFound(_))));
+                    } else if model.is_new(card) {
+                        prop_assert!(matches!(result, Err(Error::CardAlreadyNew(_))));
+                    } else {
                         let e = result.unwrap();
                         prop_assert_eq!(e.reviewed_at, model.floor(card, clock));
                         prop_assert_eq!(store.card_state(&cards[card]).unwrap(), CardState::New);
                         model.events[card].push(e.clone());
                         model.alive[card].push(e);
-                    } else {
-                        prop_assert!(matches!(result, Err(Error::CardNotFound(_))));
                     }
                 }
                 Step::AddCard => {
@@ -591,6 +600,149 @@ fn only_the_latest_surviving_review_or_reset_can_be_undone() {
     assert_eq!(store.card_state(card).unwrap(), CardState::New);
     store.undo(card, &reset.id, T0 + 3).unwrap();
     assert_eq!(store.card_state(card).unwrap(), kept);
+}
+
+#[test]
+fn a_new_card_cannot_be_reset_and_nothing_is_written() {
+    let (mut store, deck, cards) = store_with_cards(1);
+    let card = &cards[0];
+    let refused = |store: &mut Store, at: i64| match store.reset_card(card, at) {
+        Err(Error::CardAlreadyNew(id)) => assert_eq!(&id, card),
+        other => panic!("expected CardAlreadyNew, got {other:?}"),
+    };
+
+    // Never reviewed.
+    refused(&mut store, T0);
+    assert_eq!(store.review_events(card).unwrap(), []);
+
+    // Its only review undone: new again.
+    let review = store
+        .record_review(card, Grade::Pass, Duration::ZERO, T0)
+        .unwrap();
+    let undo = store.undo(card, &review.id, T0 + 1).unwrap();
+    refused(&mut store, T0 + 2);
+    assert_eq!(store.review_events(card).unwrap(), [review, undo]);
+
+    // Already reset: a second reset is refused, but a review makes it
+    // resettable again.
+    store
+        .record_review(card, Grade::Pass, Duration::ZERO, T0 + 3)
+        .unwrap();
+    store.reset_card(card, T0 + 4).unwrap();
+    let log = store.review_events(card).unwrap();
+    refused(&mut store, T0 + 5);
+    assert_eq!(store.review_events(card).unwrap(), log);
+    assert_eq!(store.card_state(card).unwrap(), CardState::New);
+    assert!(store.new_card_ids(&deck).unwrap().contains(card));
+    store
+        .record_review(card, Grade::Pass, Duration::ZERO, T0 + 6)
+        .unwrap();
+    store.reset_card(card, T0 + 7).unwrap();
+
+    // Undoing a reset brings the progress back, so it can be reset again.
+    let latest = store.review_events(card).unwrap().pop().unwrap();
+    store.undo(card, &latest.id, T0 + 8).unwrap();
+    assert_ne!(store.card_state(card).unwrap(), CardState::New);
+    store.reset_card(card, T0 + 9).unwrap();
+    assert_eq!(store.card_state(card).unwrap(), CardState::New);
+}
+
+/// Logs from earlier builds or imports may reset a card that is already
+/// new: a reset first, or two resets in a row. They still replay, the cache
+/// equals a rebuild after each undo, and `reset_card` follows the
+/// surviving log (ADR 0028 addendum).
+#[test]
+fn a_log_with_resets_of_a_new_card_still_replays() {
+    let (mut store, _, cards) = store_with_cards(1);
+    let card = &cards[0];
+    let mut log = Vec::new();
+    for (at, kind) in [
+        (T0, EventKind::Reset),
+        (T0 + 1, EventKind::Reset),
+        (T0 + 2, EventKind::Review(Grade::Pass)),
+        (T0 + 3, EventKind::Reset),
+        (T0 + 4, EventKind::Reset),
+    ] {
+        log.push(ReviewEvent {
+            id: store.ids.next(at).unwrap(),
+            card_id: card.clone(),
+            reviewed_at: at,
+            kind,
+            duration_ms: 0,
+        });
+    }
+    let tx = store.conn.transaction().unwrap();
+    for e in &log {
+        crate::storage::schedule::insert_event(&tx, e).unwrap();
+    }
+    tx.commit().unwrap();
+    store.rebuild_schedule_cache(&Scheduler::default()).unwrap();
+    let cache_is_a_rebuild = |store: &mut Store| {
+        let cached = schedule_table(store);
+        store.rebuild_schedule_cache(&Scheduler::default()).unwrap();
+        assert_eq!(schedule_table(store), cached);
+    };
+    let refused = |store: &mut Store, at: i64| {
+        assert!(matches!(
+            store.reset_card(card, at),
+            Err(Error::CardAlreadyNew(_))
+        ));
+    };
+    assert_eq!(store.card_state(card).unwrap(), CardState::New);
+    refused(&mut store, T0 + 5);
+
+    // Undoing the last reset leaves the one before it: still new.
+    store.undo(card, &log[4].id, T0 + 6).unwrap();
+    cache_is_a_rebuild(&mut store);
+    refused(&mut store, T0 + 7);
+
+    // Undoing that one too brings the review back: progress to reset.
+    store.undo(card, &log[3].id, T0 + 8).unwrap();
+    cache_is_a_rebuild(&mut store);
+    assert_ne!(store.card_state(card).unwrap(), CardState::New);
+    store.reset_card(card, T0 + 9).unwrap();
+    cache_is_a_rebuild(&mut store);
+}
+
+#[test]
+fn new_card_ids_follow_reviews_resets_and_deletes() {
+    let (mut store, deck, cards) = store_with_cards(3);
+    let new = |store: &Store| {
+        let mut ids: Vec<_> = store.new_card_ids(&deck).unwrap().into_iter().collect();
+        ids.sort();
+        ids
+    };
+    let mut all = cards.clone();
+    all.sort();
+    assert_eq!(new(&store), all);
+
+    store
+        .record_review(&cards[0], Grade::Pass, Duration::ZERO, T0)
+        .unwrap();
+    assert!(!new(&store).contains(&cards[0]));
+    assert_eq!(new(&store).len(), 2);
+
+    store.reset_card(&cards[0], T0 + 1).unwrap();
+    assert_eq!(new(&store), all);
+
+    store.delete_card_at(&cards[1], T0 + 2).unwrap();
+    assert!(!new(&store).contains(&cards[1]));
+
+    // A suspended new card is new; another deck's cards are not listed.
+    store.set_suspended(&cards[2..], true).unwrap();
+    assert!(new(&store).contains(&cards[2]));
+    let other = store.create_deck_at("Other", T0).unwrap().id;
+    let elsewhere = store.add_card_at(&other, "q", "a", T0).unwrap().id;
+    assert!(!new(&store).contains(&elsewhere));
+    store.delete_deck_at(&other, T0 + 3).unwrap();
+    assert!(matches!(
+        store.new_card_ids(&other),
+        Err(Error::DeckNotFound(_))
+    ));
+    assert!(matches!(
+        store.new_card_ids("missing"),
+        Err(Error::DeckNotFound(_))
+    ));
 }
 
 #[test]
@@ -1271,7 +1423,12 @@ proptest! {
                     store.record_review(card, Grade::Pass, Duration::ZERO, clock).unwrap();
                 }
                 Write::Reset(..) => {
-                    store.reset_card(card, clock).unwrap();
+                    // A new card refuses a reset and nothing is written,
+                    // so the rule below sees the same log either way.
+                    match store.reset_card(card, clock) {
+                        Ok(_) | Err(crate::Error::CardAlreadyNew(_)) => {}
+                        Err(err) => panic!("reset failed: {err}"),
+                    }
                 }
                 Write::Undo(..) => {
                     let log = store.review_events(card).unwrap();

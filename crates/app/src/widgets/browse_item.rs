@@ -52,6 +52,7 @@ mod imp {
                     deck_name: String::new(),
                     tags: Vec::new(),
                     status: CardStatus::New,
+                    is_new: true,
                 }),
                 front: OnceCell::new(),
                 back: OnceCell::new(),
@@ -96,6 +97,12 @@ impl BrowseItem {
 
     pub fn suspended(&self) -> bool {
         self.imp().row.borrow().card.suspended
+    }
+
+    /// No surviving review since it was created or last reset (see
+    /// [`BrowseRow::is_new`]).
+    pub fn is_new(&self) -> bool {
+        self.imp().row.borrow().is_new
     }
 
     /// The front on one line, without Markdown syntax.
