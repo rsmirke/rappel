@@ -213,6 +213,14 @@ fn ape_start(b: &[u8], floor: usize, end: usize) -> Result<usize, Malformed> {
         let value = u32_le(b, p)
             .and_then(|n| to_usize(u64::from(n)))
             .ok_or(damaged)?;
+        // Bits 1 and 2 of an item's flags give its type; 2 is a locator,
+        // a link to something elsewhere.
+        if u32_le(b, p + 4).is_some_and(|flags| (flags >> 1) & 0b11 == 2) {
+            return Err(Malformed {
+                why: "an APE item that links elsewhere",
+                extra: true,
+            });
+        }
         let key_start = p + 8;
         let key_len = b
             .get(key_start..items_end)
@@ -576,8 +584,17 @@ fn walk_boxes(b: &[u8], start: usize, end: usize, depth: usize, parent: [u8; 4])
             }
             b"dref" => dref(b, body, next)?,
             b"stsd" => stsd(b, body, next)?,
-            // A full box: its children start after version and flags.
-            b"meta" => walk_boxes(b, body + 4, next, depth + 1, kind)?,
+            // An ISO full box: its children start after version and
+            // flags; a QuickTime one (Apple's `mdta` tags) has neither, so
+            // its first child, the handler, starts at once.
+            b"meta" => {
+                let children = if b.get(body + 4..body + 8) == Some(b"hdlr") {
+                    body
+                } else {
+                    body + 4
+                };
+                walk_boxes(b, children, next, depth + 1, kind)?;
+            }
             _ => walk_boxes(b, body, next, depth + 1, kind)?,
         }
         pos = next;
@@ -638,11 +655,12 @@ fn stsd(b: &[u8], body: usize, end: usize) -> Check {
         // 6 reserved bytes and a data reference index, then the sound
         // description (QuickTime File Format): version 0 has 20 bytes of
         // fields, version 1 36, version 2 56 (its size of the structure,
-        // header included, then 72).
+        // header included, at +28 after the always-3, 16, -2, 0 and
+        // 65536 fields, then 72).
         let fields = match b.get(entry + 8..entry + 10) {
             Some([0, 0]) => 28,
             Some([0, 1]) => 44,
-            Some([0, 2]) if u32_be(b, entry + 20) == Some(72) => 64,
+            Some([0, 2]) if u32_be(b, entry + 28) == Some(72) => 64,
             _ => return extra("a sound description of an unknown version"),
         };
         let mut inner = entry + fields;

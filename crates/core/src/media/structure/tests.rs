@@ -87,10 +87,21 @@ fn moov_end() -> usize {
 /// declaring `count` items and `extra` more bytes than they fill, with a
 /// header if `header`.
 fn ape_tag(items: &[(&str, &str)], count: u32, extra: u32, header: bool) -> Vec<u8> {
+    ape_tag_flagged(items, 0, count, extra, header)
+}
+
+/// [`ape_tag`] with `item_flags` on every item.
+fn ape_tag_flagged(
+    items: &[(&str, &str)],
+    item_flags: u32,
+    count: u32,
+    extra: u32,
+    header: bool,
+) -> Vec<u8> {
     let mut body = Vec::new();
     for (key, value) in items {
         body.extend_from_slice(&u32::try_from(value.len()).unwrap().to_le_bytes());
-        body.extend_from_slice(&0_u32.to_le_bytes());
+        body.extend_from_slice(&item_flags.to_le_bytes());
         body.extend_from_slice(key.as_bytes());
         body.push(0);
         body.extend_from_slice(value.as_bytes());
@@ -198,6 +209,23 @@ fn an_ape_tag_must_fill_its_size() {
         tagged.extend(tag);
         assert_eq!(why(MediaKind::Mp3, &tagged), not_filled);
     }
+    // A locator item (type 2 in flag bits 1 and 2) links elsewhere; a
+    // read-only text item (flag bit 0) is fine.
+    let mut locator = MP3.to_vec();
+    locator.extend(ape_tag_flagged(
+        &[("Related", "https://example.invalid/")],
+        0b100,
+        1,
+        0,
+        false,
+    ));
+    assert_eq!(
+        why(MediaKind::Mp3, &locator),
+        more_than_audio("an APE item that links elsewhere")
+    );
+    let mut read_only = MP3.to_vec();
+    read_only.extend(ape_tag_flagged(&gain, 1, 2, 0, false));
+    assert_eq!(check_structure(MediaKind::Mp3, &read_only), Ok(()));
     // A declared size past the frames.
     let mut huge = MP3.to_vec();
     let mut tag = ape_tag(&gain, 2, 0, false);
@@ -400,6 +428,26 @@ fn m4a_files_of_other_encoders_pass() {
     assert_eq!(check_structure(MediaKind::M4a, &tagged), Ok(()));
     let gpac = grow(M4A, &[b"moov"], moov_end(), &meta);
     assert_eq!(check_structure(MediaKind::M4a, &gpac), Ok(()));
+    // A QuickTime-style `meta` (Apple's `mdta` tags, as an iPhone
+    // writes them): no version and flags, its handler first, then `keys`
+    // and `ilst`.
+    let quicktime = mp4_box(
+        *b"meta",
+        &[&hdlr[..], &mp4_box(*b"keys", &[0; 8]), &ilst].concat(),
+    );
+    let apple = grow(M4A, &[b"moov"], moov_end(), &quicktime);
+    assert_eq!(check_structure(MediaKind::M4a, &apple), Ok(()));
+    // Without the handler first, the first 4 bytes are taken as version
+    // and flags, and what follows must still be allowed boxes.
+    let unknown = mp4_box(
+        *b"meta",
+        &[&[0; 4][..], &mp4_box(*b"iinf", &[0; 8])].concat(),
+    );
+    let refused = grow(M4A, &[b"moov"], moov_end(), &unknown);
+    assert_eq!(
+        why(MediaKind::M4a, &refused),
+        more_than_audio("a box an audio file does not have there")
+    );
     let uuid = grow(M4A, &[b"moov"], moov_end(), &mp4_box(*b"uuid", &[7; 16]));
     assert_eq!(check_structure(MediaKind::M4a, &uuid), Ok(()));
     let mut pdin = M4A.to_vec();
@@ -415,6 +463,12 @@ fn m4a_files_of_other_encoders_pass() {
         why(MediaKind::M4a, &odd),
         more_than_audio("a box an audio file does not have there")
     );
+}
+
+/// QuickTime-style sound descriptions pass: version 1 with its codec data
+/// in a `wave` box, and version 2.
+#[test]
+fn quicktime_sound_descriptions_pass() {
     // A version 1 sound description: 16 more bytes of fields, then a
     // `wave` box with the format, a small `mp4a` atom, the `esds` and
     // the terminator.
@@ -454,6 +508,26 @@ fn m4a_files_of_other_encoders_pass() {
         &wave,
     );
     assert_eq!(check_structure(MediaKind::M4a, &v1), Ok(()));
+    // Version 2: 20 more bytes of fields than version 1, the size of the
+    // structure (72) at +28, after always 3, 16, -2, 0 and 65536.
+    let mut v2 = grow(
+        &v1,
+        &[
+            b"moov", b"trak", b"mdia", b"minf", b"stbl", b"stsd", b"mp4a",
+        ],
+        entry + 44,
+        &[0; 20],
+    );
+    v2[entry + 9] = 2;
+    v2[entry + 16..entry + 32]
+        .copy_from_slice(&[0, 3, 0, 16, 0xFF, 0xFE, 0, 0, 0, 1, 0, 0, 0, 0, 0, 72]);
+    assert_eq!(check_structure(MediaKind::M4a, &v2), Ok(()));
+    let mut v2_odd = v2.clone();
+    v2_odd[entry + 31] = 64;
+    assert_eq!(
+        why(MediaKind::M4a, &v2_odd),
+        more_than_audio("a sound description of an unknown version")
+    );
     assert_eq!(check_structure(MediaKind::M4a, &with_wave), Ok(()));
     // Anything else in `wave` is refused.
     let mut odd_wave = with_wave.clone();
