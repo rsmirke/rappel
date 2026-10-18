@@ -6,7 +6,12 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **Add Tags in All Cards uses the card editor's tag field** (#65, ADR 0051). The selection mode's **Add Tags…** suggests the tags you already have as you type, with the same keys (Down / Up, Tab, Enter, Escape), so bulk tagging no longer makes typo tags. Several tags can be added at once, as pills, and one Undo takes them all back. A card that would end up with more than 100 tags is left out, as in the editor, and the toast says how many were.
+- `rappel-core`: `Store::add_tags_to_cards` (several tags on many cards in one write, with a limit per card, `TagsAdded`) and `Store::release_tags`, its Undo.
+
 ### Fixed
+- **Screen readers on the review page** (#48, ADR 0051): the card itself now has a name. The card area's text and the "only its start is shown" note were set for screen readers but never reached them (a plain box has no accessible name in GTK); now the focused card reads its front, and its back once shown, each with the note when it is cut, and the note is no longer exposed a second time on its own. Labels with long unbroken runs (a hash, a long URL) are named without the invisible break characters added for layout.
 - **Hardening, round 2** (ADR 0050): the attack tests of ADR 0025 now cover everything the core gained since: searches, tags, settings, the log's undos and resets, statistics, and backup retention and restore. What they found is fixed:
   - **The deck list and deck page stay fast with a long history.** A card reviewed thousands of times (from an import, or years of study) made the daily counts slow down with the square of its reviews: 7 s for one card of 8,000 reviews in a debug build. It now takes 17 ms.
   - **Searching for something pasted no longer freezes.** The same word typed thousands of times, or one long word of hyphenated pieces, took up to 10 s on 5,000 cards. Repeated words (and words that start another word of the search) are now looked up once, which finds the same cards, and only the first 1 KiB of a search (about 150 words) is read.
