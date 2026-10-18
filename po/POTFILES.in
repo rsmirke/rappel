@@ -47,6 +47,8 @@ crates/app/src/render/audio.rs
 crates/app/src/render/images.rs
 crates/app/src/render/markup.rs
 crates/app/src/startup.rs
+crates/app/src/transfer/anki.rs
+crates/app/src/transfer/anki_text.rs
 crates/app/src/transfer/mod.rs
 crates/app/src/transfer/text.rs
 crates/app/src/ui/rows.rs

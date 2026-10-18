@@ -6,12 +6,15 @@ use std::collections::HashSet;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use rappel_core::domain::{
     Card, CardState, Deck, DeckSummary, Grade, ReviewEvent, SettingKey, Settings, Tag, TaggedCard,
 };
-use rappel_core::interchange::{ExportSummary, ImportPlan, ImportReport};
+use rappel_core::interchange::{
+    AnkiPlan, AnkiReport, ExportSummary, FileKind, ImportPlan, ImportReport, file_kind,
+};
 use rappel_core::media::{CleanedUp, MediaRef, TrashTidied, UnusedMedia};
 use rappel_core::scheduling::StudyInput;
 use rappel_core::stats::{CardInfo, DayGrid, Stats};
@@ -167,6 +170,35 @@ impl AppState {
     /// [`Self::export_on_worker`].
     pub fn plan_import_on_worker(data_dir: &Path, path: &Path) -> rappel_core::Result<ImportPlan> {
         Store::open_concurrent(data_dir)?.plan_import(path)
+    }
+
+    /// Whether `path` is a Rappel export or an Anki package, by its name,
+    /// else by its content ([`file_kind`]). Blocking: it may read the
+    /// file's list of entries.
+    pub fn file_kind_on_worker(path: &Path) -> Option<FileKind> {
+        file_kind(path)
+    }
+
+    /// Reads the Anki package `path` and compares it with the database in
+    /// `data_dir` (see [`Store::plan_anki_import`]); stops when `cancel` is
+    /// set. Blocking; on its own connection like [`Self::export_on_worker`].
+    pub fn plan_anki_import_on_worker(
+        data_dir: &Path,
+        path: &Path,
+        cancel: &AtomicBool,
+    ) -> rappel_core::Result<AnkiPlan> {
+        Store::open_concurrent(data_dir)?.plan_anki_import(path, cancel)
+    }
+
+    /// Applies an Anki import `plan` (see [`Store::apply_anki_import`]);
+    /// writes nothing if `cancel` is set before it commits. Blocking; on
+    /// its own connection like [`Self::export_on_worker`].
+    pub fn apply_anki_import_on_worker(
+        data_dir: &Path,
+        plan: &AnkiPlan,
+        cancel: &AtomicBool,
+    ) -> rappel_core::Result<AnkiReport> {
+        Store::open_concurrent(data_dir)?.apply_anki_import(plan, cancel)
     }
 
     /// Applies `plan` to the database in `data_dir` (see

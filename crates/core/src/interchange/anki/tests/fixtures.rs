@@ -444,3 +444,11 @@ fn files_are_told_apart_by_name_and_content() {
     assert_eq!(file_kind(&write("other.zip", b"not a zip")), None);
     assert_eq!(file_kind(&dir.join("missing")), None);
 }
+
+#[test]
+fn the_plan_and_the_report_go_to_a_worker_thread() {
+    fn assert_send<T: Send + 'static>() {}
+    assert_send::<AnkiPlan>();
+    assert_send::<AnkiReport>();
+    assert_send::<crate::interchange::AnkiProblem>();
+}

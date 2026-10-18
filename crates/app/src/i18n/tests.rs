@@ -1261,6 +1261,12 @@ fn french_through_the_c_library() {
 /// other message as if it could, so a new message is checked unless it is
 /// listed here; one written inside a toast call cannot be listed.
 const NOT_TOASTS: &[&str] = &[
+    // The Anki import's report, behind the Details of "Import done".
+    "{count} card whose note is damaged",
+    "{count} card too long for Rappel",
+    "{count} damaged media file",
+    "{count} media file no card uses",
+    "{count} tag Rappel cannot have",
     "A card can have at most {limit} tags",
     "A card is different in the file",
     "A deck is different in the file",
