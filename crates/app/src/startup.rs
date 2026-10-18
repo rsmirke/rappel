@@ -20,6 +20,11 @@ pub enum RecoveryReason {
     MissingFile,
     /// A restore moved the old database aside and did not finish.
     InterruptedRestore,
+    /// As [`Self::InterruptedRestore`], and Finish Restore found that the
+    /// waiting copy cannot be used (ADR 0050, row 35). Only the recovery
+    /// page reaches it, after that refusal; the open reports the waiting
+    /// copy as an interrupted restore.
+    UnusableRestoreCopy,
 }
 
 impl RecoveryReason {
@@ -29,6 +34,7 @@ impl RecoveryReason {
             Self::NotRappel => "Not a Rappel Database",
             Self::MissingFile => "Database File Is Missing",
             Self::InterruptedRestore => "Restore Did Not Finish",
+            Self::UnusableRestoreCopy => "Restore Copy Cannot Be Used",
         }
     }
 
@@ -52,6 +58,12 @@ impl RecoveryReason {
                 "A restore was interrupted before it finished. Its checked copy is waiting in \
                  the data folder: Finish Restore installs it, or you can restore a backup \
                  instead. The previous database is kept in the data folder, not deleted."
+            }
+            Self::UnusableRestoreCopy => {
+                "A restore was interrupted, and the copy it left waiting cannot be used: it is \
+                 damaged, or was not made by this version of Rappel. Restore a backup to \
+                 continue. The copy and the previous database are kept in the data folder, \
+                 not deleted."
             }
         }
     }

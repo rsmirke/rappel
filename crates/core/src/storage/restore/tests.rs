@@ -1265,3 +1265,66 @@ fn start_fresh_is_refused_while_backups_exist() {
     assert!(matches!(e.start_fresh(), Err(Error::BackupsAvailable(1))));
     assert_eq!(snapshot(&e.data), before, "nothing changed");
 }
+
+/// The dead end of ADR 0050, row 35: the waiting copy is damaged, so Finish
+/// Restore refuses it, and there is no backup. Start Fresh renames the copy
+/// aside, byte for byte, and starts over; nothing is deleted.
+#[test]
+fn start_fresh_sets_a_damaged_waiting_copy_aside_and_keeps_it() {
+    let e = Env::new();
+    let partial = interrupted_without_its_backup(&e);
+    fs::write(&partial, vec![0x42; 8192]).unwrap();
+    fs::write(with_suffix(&e.db(), "-wal"), b"stray").unwrap();
+    assert!(matches!(
+        finish_restore_with(&e.data, DAY0 + DAY_MS, MIGRATIONS),
+        Err(Error::RestoreRefused { .. })
+    ));
+
+    let fresh = e.start_fresh().unwrap();
+
+    let kept = e
+        .data
+        .join(format!("{DB_FILE_NAME}.restore.refused-{RESTORE_STAMP}"));
+    assert_eq!(fresh.set_aside.as_deref(), Some(kept.as_path()));
+    assert_eq!(fs::read(&kept).unwrap(), vec![0x42; 8192]);
+    assert!(!partial.exists());
+    assert!(!restore_checking_path(&e.data).exists());
+    // The stray -wal is moved aside as for any start fresh.
+    let stem = fresh.replaced.clone().expect("the -wal was moved aside");
+    assert_eq!(fs::read(with_suffix(&stem, "-wal")).unwrap(), b"stray");
+    assert_fresh(&e, fresh);
+}
+
+#[test]
+fn a_damaged_waiting_copy_is_kept_in_place_while_backups_exist() {
+    let e = Env::new();
+    let (store, backup) = e.diverged();
+    drop(store);
+    let partial = copy_validate_and_move_aside(&e, &backup);
+    fs::write(&partial, vec![0x42; 8192]).unwrap();
+    let before = snapshot(&e.data);
+
+    assert!(matches!(e.start_fresh(), Err(Error::BackupsAvailable(1))));
+    assert_eq!(snapshot(&e.data), before, "nothing changed");
+}
+
+#[test]
+fn a_second_refused_copy_never_overwrites_the_first() {
+    let e = Env::new();
+    fs::create_dir_all(&e.data).unwrap();
+    let partial = restore_partial_path(&e.data);
+    fs::write(&partial, b"first").unwrap();
+    let first = e.start_fresh().unwrap();
+    drop(first);
+    fs::write(&partial, b"second").unwrap();
+
+    let second = e.start_fresh().unwrap();
+
+    let kept = e
+        .data
+        .join(format!("{DB_FILE_NAME}.restore.refused-{RESTORE_STAMP}"));
+    assert_eq!(fs::read(&kept).unwrap(), b"first");
+    let again = with_suffix(&kept, "-2");
+    assert_eq!(second.set_aside.as_deref(), Some(again.as_path()));
+    assert_eq!(fs::read(&again).unwrap(), b"second");
+}

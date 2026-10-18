@@ -298,6 +298,9 @@ impl RecoveryPage {
             }
             Ok(Err(err)) => {
                 tracing::error!("finishing the restore failed: {err}");
+                if let Some(reason) = reason_after_finish_failure(&err) {
+                    imp.reason.set(Some(reason));
+                }
                 finish_failure_text(&err)
             }
             Err(_) => {
@@ -313,6 +316,9 @@ impl RecoveryPage {
         let Ok(dialog) = dialog::START_FRESH.load() else {
             return;
         };
+        if let Some(body) = start_fresh_body(self.imp().reason.get()) {
+            dialog.set_body(body);
+        }
         glib::spawn_future_local(glib::clone!(
             #[weak(rename_to = page)]
             self,
@@ -402,6 +408,26 @@ fn no_backups_text(reason: Option<RecoveryReason>) -> &'static str {
     }
 }
 
+/// What the page explains after Finish Restore failed with `err`: a copy
+/// that cannot be used leaves Start Fresh to offer, which sets it aside
+/// (ADR 0050, row 35). `None` keeps the reason.
+fn reason_after_finish_failure(err: &rappel_core::Error) -> Option<RecoveryReason> {
+    matches!(err, rappel_core::Error::RestoreRefused { .. })
+        .then_some(RecoveryReason::UnusableRestoreCopy)
+}
+
+/// The body of the question before Start Fresh when it differs from the
+/// one in `data/start_fresh_dialog.blp`: with an unusable waiting copy, that
+/// copy is renamed too. Either way, nothing is deleted.
+fn start_fresh_body(reason: Option<RecoveryReason>) -> Option<&'static str> {
+    (reason == Some(RecoveryReason::UnusableRestoreCopy)).then_some(
+        "The copy the restore left waiting is renamed to “rappel.sqlite3.restore.refused-” \
+         followed by the date and time, and the current database files to \
+         “rappel.sqlite3.replaced-” and the date and time. Both are kept in the data folder. \
+         Nothing is deleted. Rappel then starts with no decks.",
+    )
+}
+
 /// Whether "Finish Restore" is offered: exactly while an interrupted
 /// restore's checked copy waits, with or without backups (ADR 0026).
 fn offers_finish_restore(reason: Option<RecoveryReason>) -> bool {
@@ -423,8 +449,10 @@ fn finish_failure_text(err: &rappel_core::Error) -> String {
 
 /// Whether the page offers Start Fresh when there is no backup to restore:
 /// never while an interrupted restore's validated copy waits (that copy is
-/// the user's data; ADR 0016). With backups it is never offered, and core
-/// refuses it too.
+/// the user's data; ADR 0016), but once Finish Restore found that copy
+/// unusable, so a damaged copy and no backup is no dead end: core checks
+/// the copy again and renames it aside (ADR 0050, row 35). With backups it
+/// is never offered, and core refuses it too.
 fn offers_start_fresh(reason: Option<RecoveryReason>) -> bool {
     reason.is_some_and(|r| r != RecoveryReason::InterruptedRestore)
 }
@@ -521,11 +549,167 @@ mod tests {
         assert!(finish_failure_text(&refused).starts_with("The waiting copy cannot be used:"));
     }
 
+    /// The dead end of ADR 0050, row 35: the waiting copy is refused and
+    /// there is no backup. The page then offers Start Fresh, which says
+    /// that the copy is renamed and kept, and no longer Finish Restore.
+    #[test]
+    fn an_unusable_waiting_copy_leaves_start_fresh() {
+        use rappel_core::Error;
+        let refused = Error::RestoreRefused {
+            path: PathBuf::from("/data/rappel.sqlite3.restore.partial"),
+            source: Box::new(Error::NotARappelDatabase),
+        };
+        let reason = reason_after_finish_failure(&refused);
+        assert_eq!(reason, Some(RecoveryReason::UnusableRestoreCopy));
+        assert!(offers_start_fresh(reason));
+        assert!(!offers_finish_restore(reason));
+        assert!(no_backups_text(reason).contains("start with an empty"));
+        let body = start_fresh_body(reason).unwrap_or_default();
+        assert!(body.contains("restore.refused-"));
+        assert!(body.contains("Nothing is deleted."));
+        assert_eq!(start_fresh_body(Some(RecoveryReason::Damaged)), None);
+        // Other failures keep the page as it was.
+        assert_eq!(reason_after_finish_failure(&Error::NoRestoreWaiting), None);
+    }
+
     #[test]
     fn start_fresh_never_hides_a_waiting_restore_copy() {
         assert!(!offers_start_fresh(Some(
             RecoveryReason::InterruptedRestore
         )));
         assert!(!offers_start_fresh(None));
+    }
+
+    /// A data folder as an interrupted restore leaves it: no
+    /// `rappel.sqlite3`, the waiting copy, and a stray `-wal` beside it
+    /// (ADR 0050, rows 25 and 35). The database moved aside stays, and the
+    /// backups are taken away unless `keep_backups`. Returns the folder and
+    /// the waiting copy's path.
+    fn interrupted(tmp: &tempfile::TempDir, keep_backups: bool) -> (PathBuf, PathBuf) {
+        let data = tmp.path().join("data");
+        let state = AppState::open(data.clone()).expect("a new database opens");
+        state.create_deck("Maths").expect("a deck");
+        drop(state);
+        // The next open backs the deck up (the day's backup).
+        let state = AppState::open(data.clone()).expect("the database opens again");
+        let backups = AppState::list_backups(&data).expect("the backups are listed");
+        let backup = backups
+            .first()
+            .expect("opening made a backup")
+            .path()
+            .to_path_buf();
+        drop(state);
+        let partial = data.join("rappel.sqlite3.restore.partial");
+        std::fs::copy(&backup, &partial).expect("the copy is made");
+        std::fs::rename(
+            data.join("rappel.sqlite3"),
+            data.join("rappel.sqlite3.replaced-20261018-120000"),
+        )
+        .expect("the database is moved aside");
+        for sidecar in ["-wal", "-shm"] {
+            let from = data.join(format!("rappel.sqlite3{sidecar}"));
+            if from.exists() {
+                let to = data.join(format!("rappel.sqlite3.replaced-20261018-120000{sidecar}"));
+                std::fs::rename(from, to).expect("its sidecars too");
+            }
+        }
+        std::fs::write(data.join("rappel.sqlite3-wal"), b"stray").expect("a stray -wal");
+        if !keep_backups {
+            let aside = tmp.path().join("backups-elsewhere");
+            std::fs::rename(data.join("backups"), aside).expect("the backups are moved away");
+        }
+        (data, partial)
+    }
+
+    /// What `open` makes of that folder: the page with Finish Restore.
+    fn reason_at_startup(data: &std::path::Path) -> RecoveryReason {
+        let err = AppState::open(data.to_path_buf()).expect_err("the open is refused");
+        match crate::startup::open_problem(&err, data) {
+            crate::startup::Problem::Recovery { reason, .. } => reason,
+            other => panic!("expected the recovery page, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_waiting_copy_beside_a_stray_wal_offers_finish_restore() {
+        crate::testing::with_widgets(|| {
+            let tmp = tempfile::tempdir().expect("a temporary directory");
+            let (data, partial) = interrupted(&tmp, false);
+            let reason = reason_at_startup(&data);
+            assert_eq!(reason, RecoveryReason::InterruptedRestore);
+            let page: RecoveryPage = glib::Object::new();
+            let done = Rc::new(std::cell::Cell::new(None));
+            let sink = Rc::clone(&done);
+            page.show(reason, data.clone(), move |_, restored, how| {
+                sink.set(Some((how, restored.store.decks().map(|d| d.len()).ok())));
+            });
+            let imp = page.imp();
+            assert!(imp.finish_restore_button.is_visible());
+            assert!(!imp.start_fresh_button.is_visible());
+            glib::MainContext::default().block_on(page.finish_restore());
+            assert_eq!(done.get(), Some((Recovered::Finished, Some(1))));
+            assert!(!partial.exists());
+        });
+    }
+
+    /// The dead end of ADR 0050, row 35, end to end: the waiting copy is
+    /// damaged and there is no backup. Finish Restore is refused, the page
+    /// then offers Start Fresh, and Start Fresh keeps the copy under a new
+    /// name, byte for byte.
+    #[test]
+    fn a_damaged_waiting_copy_without_backups_is_no_dead_end() {
+        crate::testing::with_widgets(|| {
+            let tmp = tempfile::tempdir().expect("a temporary directory");
+            let (data, partial) = interrupted(&tmp, false);
+            std::fs::write(&partial, vec![0x42; 8192]).expect("the copy is damaged");
+            let reason = reason_at_startup(&data);
+            assert_eq!(reason, RecoveryReason::InterruptedRestore);
+            let page: RecoveryPage = glib::Object::new();
+            let done = Rc::new(std::cell::RefCell::new(None));
+            let sink = Rc::clone(&done);
+            page.show(reason, data.clone(), move |_, restored, how| {
+                sink.replace(Some((how, restored.set_aside)));
+            });
+            let imp = page.imp();
+            let context = glib::MainContext::default();
+            context.block_on(page.finish_restore());
+            assert!(done.borrow().is_none(), "the damaged copy is refused");
+            assert_eq!(imp.reason.get(), Some(RecoveryReason::UnusableRestoreCopy));
+            assert_eq!(imp.status.title(), "Restore Copy Cannot Be Used");
+            assert!(!imp.finish_restore_button.is_visible());
+            assert!(imp.start_fresh_button.is_visible());
+            assert!(imp.start_fresh_button.is_sensitive());
+
+            context.block_on(page.start_fresh());
+            let (how, set_aside) = done.take().expect("a fresh database");
+            assert_eq!(how, Recovered::Fresh);
+            let kept = set_aside.expect("the copy was set aside");
+            assert_eq!(std::fs::read(&kept).ok(), Some(vec![0x42; 8192]));
+            assert!(!partial.exists());
+            // The database moved aside by the restore is still there.
+            assert!(
+                data.join("rappel.sqlite3.replaced-20261018-120000")
+                    .exists()
+            );
+        });
+    }
+
+    /// With a backup, a damaged copy is not set aside: the backups are
+    /// listed to restore one, and Start Fresh is not offered.
+    #[test]
+    fn a_damaged_waiting_copy_with_backups_lists_them() {
+        crate::testing::with_widgets(|| {
+            let tmp = tempfile::tempdir().expect("a temporary directory");
+            let (data, partial) = interrupted(&tmp, true);
+            std::fs::write(&partial, vec![0x42; 8192]).expect("the copy is damaged");
+            let page: RecoveryPage = glib::Object::new();
+            page.show(reason_at_startup(&data), data, |_, _, _| {});
+            glib::MainContext::default().block_on(page.finish_restore());
+            let imp = page.imp();
+            assert!(imp.backup_list.is_visible());
+            assert!(imp.backup_list.first_child().is_some());
+            assert!(!imp.start_fresh_button.is_visible());
+            assert!(partial.exists());
+        });
     }
 }

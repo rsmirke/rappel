@@ -474,27 +474,37 @@ impl RappelWindow {
     }
 
     fn restored(&self, data_dir: PathBuf, restored: Restored, how: Recovered) {
-        let message = recovered_message(how, restored.replaced.as_deref());
+        let message = recovered_message(
+            how,
+            restored.replaced.as_deref(),
+            restored.set_aside.as_deref(),
+        );
         self.show_main(AppState::new(data_dir, restored.store));
         self.add_toast(persistent_toast(&message));
     }
 }
 
-/// The toast after the recovery page got a database: what happened, and
-/// where the previous database was kept.
-fn recovered_message(how: Recovered, replaced: Option<&Path>) -> String {
+/// The toast after the recovery page got a database: what happened, where
+/// the previous database was kept, and where an unusable restore copy was
+/// (`set_aside`, ADR 0050, row 35).
+fn recovered_message(how: Recovered, replaced: Option<&Path>, set_aside: Option<&Path>) -> String {
     let done = match how {
         Recovered::Backup => "Backup restored",
         Recovered::Finished => "Restore finished",
         Recovered::Fresh => "Started with an empty database",
     };
-    match replaced {
+    let mut message = match replaced {
         Some(path) => format!(
             "{done}. The previous database was kept as {}",
             path.display()
         ),
         None => done.to_owned(),
+    };
+    if let Some(path) = set_aside {
+        message.push_str(". The restore copy that could not be used was kept as ");
+        message.push_str(&path.display().to_string());
     }
+    message
 }
 
 #[cfg(test)]
@@ -566,26 +576,33 @@ mod tests {
     fn recovery_toasts_say_what_happened_and_where_the_old_file_is() {
         let kept = Path::new("/data/rappel.sqlite3.replaced-20261015-120000");
         assert_eq!(
-            recovered_message(Recovered::Backup, Some(kept)),
+            recovered_message(Recovered::Backup, Some(kept), None),
             "Backup restored. The previous database was kept as \
              /data/rappel.sqlite3.replaced-20261015-120000"
         );
         assert_eq!(
-            recovered_message(Recovered::Backup, None),
+            recovered_message(Recovered::Backup, None, None),
             "Backup restored"
         );
         assert_eq!(
-            recovered_message(Recovered::Finished, None),
+            recovered_message(Recovered::Finished, None, None),
             "Restore finished"
         );
         assert_eq!(
-            recovered_message(Recovered::Fresh, Some(kept)),
+            recovered_message(Recovered::Fresh, Some(kept), None),
             "Started with an empty database. The previous database was kept as \
              /data/rappel.sqlite3.replaced-20261015-120000"
         );
         assert_eq!(
-            recovered_message(Recovered::Fresh, None),
+            recovered_message(Recovered::Fresh, None, None),
             "Started with an empty database"
+        );
+        let copy = Path::new("/data/rappel.sqlite3.restore.refused-20261015-120000");
+        assert_eq!(
+            recovered_message(Recovered::Fresh, Some(kept), Some(copy)),
+            "Started with an empty database. The previous database was kept as \
+             /data/rappel.sqlite3.replaced-20261015-120000. The restore copy that could not be \
+             used was kept as /data/rappel.sqlite3.restore.refused-20261015-120000"
         );
     }
 }

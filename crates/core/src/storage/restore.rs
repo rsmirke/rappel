@@ -53,6 +53,10 @@ pub struct Restored {
     /// suffix. `None` if there was nothing to move. If only leftover
     /// sidecar files were moved, this main file does not exist.
     pub replaced: Option<PathBuf>,
+    /// Where [`start_fresh`] moved a waiting restore copy that could not be
+    /// used (damaged, too new, not Rappel's): `rappel.sqlite3.restore.refused-
+    /// YYYYMMDD-HHMMSS`. `None` otherwise.
+    pub set_aside: Option<PathBuf>,
 }
 
 /// Restores `backup` (from [`super::list_backups`]) as the database in
@@ -95,12 +99,19 @@ pub fn restore_backup(
 /// (see [`Restored::replaced`]). Nothing is deleted. Then an empty
 /// database is created and opened.
 ///
+/// A copy an interrupted restore left waiting is checked first, as
+/// [`finish_restore`] would check it. If it can be used, starting over is
+/// refused (below). If it cannot (it is damaged, too new or not Rappel's),
+/// it is renamed to `rappel.sqlite3.restore.refused-YYYYMMDD-HHMMSS`, never
+/// deleted or overwritten, and [`Restored::set_aside`] says where: otherwise
+/// a damaged copy with no backup left no way on (ADR 0050, row 35).
+///
 /// # Errors
 /// - [`Error::InterruptedRestore`] if a validated copy from an interrupted
-///   restore is waiting to be installed: that copy is the user's data, and
-///   starting over would hide it. Nothing was changed.
+///   restore is waiting to be installed, and still checks: that copy is the
+///   user's data, and starting over would hide it. Nothing was changed.
 /// - [`Error::BackupsAvailable`] if `<data_dir>/backups/` holds backups:
-///   restore one instead. Nothing was changed.
+///   restore one instead. Nothing was changed, a refused copy included.
 /// - IO errors while moving files, and any error from [`Store::open`]. If
 ///   the old files were already moved aside, they stay under their
 ///   `replaced-…` name.
@@ -183,20 +194,50 @@ fn finish_restore_with(data_dir: &Path, now_ms: i64, migrations: &[Migration]) -
         migrations,
         Protect::Everything,
     )?;
-    Ok(Restored { store, replaced })
+    Ok(Restored {
+        store,
+        replaced,
+        set_aside: None,
+    })
 }
 
 /// [`start_fresh`] with every input explicit, for tests.
 fn start_fresh_with(data_dir: &Path, now_ms: i64, migrations: &[Migration]) -> Result<Restored> {
     let partial = restore_partial_path(data_dir);
-    if exists(&partial)? {
-        return Err(Error::InterruptedRestore(partial));
+    let refused_copy = exists(&partial)?;
+    if refused_copy {
+        // Checked on a scratch copy, as `finish_restore` checks it: one that
+        // can still be installed is the user's data.
+        let checking = restore_checking_path(data_dir);
+        copy_private(&partial, &checking).inspect_err(|_| remove_copy(&checking))?;
+        let checked = check_copy(&checking, migrations);
+        remove_copy(&checking);
+        match checked {
+            Ok(()) => return Err(Error::InterruptedRestore(partial)),
+            Err(err) => tracing::warn!("the waiting restore copy cannot be used: {err}"),
+        }
     }
     let backups = super::list_backups(data_dir)?.len();
     if backups > 0 {
         return Err(Error::BackupsAvailable(backups));
     }
     ensure_data_dir(data_dir)?;
+    let set_aside = if refused_copy {
+        let target = free_name(
+            &data_dir.join(format!("{DB_FILE_NAME}.restore")),
+            ".refused-",
+            now_ms,
+        )?;
+        fs::rename(&partial, &target).map_err(|source| Error::Io {
+            path: partial.clone(),
+            source,
+        })?;
+        sync_parent(&target)?;
+        tracing::info!(path = %target.display(), "unusable restore copy set aside");
+        Some(target)
+    } else {
+        None
+    };
     let db_path = data_dir.join(DB_FILE_NAME);
     let replaced = move_aside(&db_path, now_ms)?;
     if let Some(path) = &replaced {
@@ -209,7 +250,11 @@ fn start_fresh_with(data_dir: &Path, now_ms: i64, migrations: &[Migration]) -> R
         migrations,
     )?;
     tracing::info!("started with an empty database");
-    Ok(Restored { store, replaced })
+    Ok(Restored {
+        store,
+        replaced,
+        set_aside,
+    })
 }
 
 /// Path of the validated copy waiting to be installed.
@@ -272,7 +317,11 @@ fn restore_with(
         migrations,
         Protect::Backup(backup),
     )?;
-    Ok(Restored { store, replaced })
+    Ok(Restored {
+        store,
+        replaced,
+        set_aside: None,
+    })
 }
 
 /// The backup must be a regular file with a backup name directly inside
@@ -651,8 +700,14 @@ fn remove_moving_aside(db_path: &Path) -> Result<()> {
 /// `<db>.replaced-<stamp>`, or `<db>.replaced-<stamp>-N` with the smallest
 /// N ≥ 2, such that neither it nor any of its sidecar names exist.
 fn free_stem(db_path: &Path, now_ms: i64) -> Result<PathBuf> {
-    let mut base = db_path.as_os_str().to_owned();
-    base.push(".replaced-");
+    free_name(db_path, ".replaced-", now_ms)
+}
+
+/// `<path><infix><stamp>`, or `<path><infix><stamp>-N` with the smallest
+/// N ≥ 2, such that neither it nor any of its sidecar names exist.
+fn free_name(path: &Path, infix: &str, now_ms: i64) -> Result<PathBuf> {
+    let mut base = path.as_os_str().to_owned();
+    base.push(infix);
     base.push(utc_stamp(now_ms));
     let mut candidate = PathBuf::from(&base);
     let mut counter = 2;
