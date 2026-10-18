@@ -8,8 +8,8 @@
 //!
 //! Nothing is ever fetched: a file a drop or the clipboard names by a URL
 //! (`https:`, `sftp:`) is refused unread (`AppState::add_image_on_worker`),
-//! and when only such files come with a picture, the picture is taken
-//! instead ([`media::picture_instead`]). A picture is taken as the bytes
+//! and when no offered file is local, the picture offered with them is
+//! taken instead, or else their text as before ([`media::without_local_file`]). A picture is taken as the bytes
 //! the other program offers in one of the four image types, never decoded
 //! or encoded in Rappel's process: the store checks its first bytes, and
 //! the review page decodes it in glycin's loader like any image.
@@ -24,7 +24,7 @@ use gtk::{gdk, gio, glib};
 use rappel_core::media::{IMAGE_MAX_BYTES, MediaRef};
 
 use super::CardEditor;
-use super::media::{self, Offered};
+use super::media::{self, Offered, WithoutLocal};
 use crate::state::{AddImageError, AppState, local_path};
 use crate::ui::worker;
 
@@ -140,8 +140,8 @@ impl CardEditor {
                     #[weak]
                     view,
                     async move {
-                        let incoming = offer.read().await;
-                        editor.add_images(&view, mark, incoming).await;
+                        let taken = offer.read().await;
+                        editor.take(&view, mark, taken).await;
                     }
                 ));
             }
@@ -164,12 +164,19 @@ impl CardEditor {
     /// `gdk_content_formats_match_gtype`), so it could not fall back to the
     /// picture when the files turn out to be URLs. This one reads what it
     /// chooses and finishes the drop itself (`gdk_drop_finish`).
+    ///
+    /// Its formats are the file list's type and the image types, with the
+    /// MIME types that deserialize to the file list (`text/uri-list`)
+    /// added (`union_deserialize_mime_types`), as GDK does for a read of a
+    /// type (`gdk_drop_read_value_internal`, gdkdrop.c), so a drag from
+    /// another process, which offers only MIME types, matches.
     fn setup_drop(&self, view: &sourceview5::View, frame: &gtk::Frame) {
         let mut formats = gdk::ContentFormatsBuilder::new().add_type(gdk::FileList::static_type());
         for mime in media::IMAGE_MIME_TYPES {
             formats = formats.add_mime_type(mime);
         }
-        let target = gtk::DropTargetAsync::new(Some(formats.build()), gdk::DragAction::COPY);
+        let formats = formats.build().union_deserialize_mime_types();
+        let target = gtk::DropTargetAsync::new(Some(formats), gdk::DragAction::COPY);
         target.set_propagation_phase(gtk::PropagationPhase::Capture);
         target.connect_drop(glib::clone!(
             #[weak(rename_to = editor)]
@@ -183,26 +190,53 @@ impl CardEditor {
             move |_, drop, x, y| {
                 let mark = drop_mark(&view, &frame, x, y);
                 let drop = drop.clone();
-                glib::spawn_future_local(glib::clone!(
-                    #[weak]
-                    editor,
-                    #[weak]
-                    view,
-                    async move {
-                        let offer = Offer::Drop(drop.clone());
-                        let incoming = offer.read().await;
-                        drop.finish(if incoming.is_empty() {
-                            gdk::DragAction::empty()
-                        } else {
-                            gdk::DragAction::COPY
-                        });
-                        editor.add_images(&view, mark, incoming).await;
+                let editor = editor.downgrade();
+                let view = view.downgrade();
+                // The drop is held strongly and finished as soon as it is
+                // read, before anything needs the editor: a dialog closed
+                // meanwhile still finishes it, so the source is not left
+                // waiting.
+                glib::spawn_future_local(async move {
+                    let taken = Offer::Drop(drop.clone()).read().await;
+                    drop.finish(if matches!(taken, Taken::Nothing) {
+                        gdk::DragAction::empty()
+                    } else {
+                        gdk::DragAction::COPY
+                    });
+                    if let (Some(editor), Some(view)) = (editor.upgrade(), view.upgrade()) {
+                        editor.take(&view, mark, taken).await;
                     }
-                ));
+                });
                 true
             }
         ));
         frame.add_controller(target);
+    }
+
+    /// Does what a paste or a drop gave: adds the images, inserts the text
+    /// at `mark` (a drop) or pastes the clipboard's text at the cursor (a
+    /// paste), or nothing.
+    async fn take(&self, view: &sourceview5::View, mark: gtk::TextMark, taken: Taken) {
+        let buffer = view.buffer();
+        match taken {
+            Taken::Images(incoming) => {
+                self.add_images(view, mark, incoming).await;
+                return;
+            }
+            Taken::Text(Some(text)) => {
+                let mut at = buffer.iter_at_mark(&mark);
+                buffer.begin_user_action();
+                buffer.insert(&mut at, &text);
+                buffer.end_user_action();
+            }
+            // The text view's own paste, which this handler stopped: the
+            // same call its class handler makes (`gtk_text_view_paste_clipboard`).
+            Taken::Text(None) => {
+                buffer.paste_clipboard(&view.clipboard(), None, view.is_editable());
+            }
+            Taken::Nothing => {}
+        }
+        buffer.delete_mark(&mark);
     }
 
     /// Adds `incoming` one by one on a worker thread, then inserts the
@@ -291,6 +325,21 @@ fn drop_mark(view: &sourceview5::View, frame: &gtk::Frame, x: f64, y: f64) -> gt
     }
 }
 
+/// How long reading what a paste or a drop offers may take: the other
+/// program sends it, and may never finish.
+const OFFER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// What a paste or a drop gives, once read.
+#[derive(Debug)]
+enum Taken {
+    /// Images (or files) to add.
+    Images(Vec<Incoming>),
+    /// Text instead: a drop's (read here), or the clipboard's (`None`:
+    /// pasted by the text view's own code).
+    Text(Option<String>),
+    Nothing,
+}
+
 /// Where pasted or dropped images come from: the same questions of
 /// either.
 enum Offer {
@@ -299,11 +348,23 @@ enum Offer {
 }
 
 impl Offer {
+    /// The offered formats with the types they deserialize to. GDK adds
+    /// these itself when a clipboard or a drop gets its formats
+    /// (`gdk_clipboard_claim`, gdkclipboard.c; `gdk_drop_add_formats`,
+    /// gdkdrop.c: `gdk_content_formats_union_deserialize_gtypes`), so a
+    /// `text/uri-list` from another process is a file list here; done
+    /// again so the check does not rest on that.
     fn formats(&self) -> gdk::ContentFormats {
         match self {
             Self::Clipboard(clipboard) => clipboard.formats(),
             Self::Drop(drop) => drop.formats(),
         }
+        .union_deserialize_types()
+    }
+
+    /// Whether text is offered too (the addresses of the files, as text).
+    fn has_text(&self) -> bool {
+        self.formats().contains_type(glib::Type::STRING)
     }
 
     /// Whether a picture is offered in one of the image types.
@@ -321,49 +382,90 @@ impl Offer {
         )
     }
 
-    /// What to add: the files, or the picture when none of the files is
-    /// on this computer. A failed read is logged and adds nothing.
-    async fn read(&self) -> Vec<Incoming> {
+    /// What to take: the files if one is on this computer; else the
+    /// picture, or the text, or the files to be refused
+    /// ([`media::without_local_file`]). A failed or slow read is logged and
+    /// gives nothing.
+    async fn read(&self) -> Taken {
         match self.offered() {
             Offered::Files => {
                 let files = self.read_files().await;
                 let local = files.iter().filter(|f| local_path(f).is_some()).count();
-                if media::picture_instead(local, self.has_picture()) {
-                    vec![self.read_picture().await]
-                } else {
-                    files.into_iter().map(Incoming::File).collect()
+                if local > 0 {
+                    return Taken::Images(files.into_iter().map(Incoming::File).collect());
+                }
+                match media::without_local_file(self.has_picture(), self.has_text()) {
+                    WithoutLocal::Picture => Taken::Images(vec![self.read_picture().await]),
+                    WithoutLocal::Text => match self {
+                        Self::Clipboard(_) => Taken::Text(None),
+                        Self::Drop(_) => self
+                            .read_text()
+                            .await
+                            .map_or(Taken::Nothing, |text| Taken::Text(Some(text))),
+                    },
+                    WithoutLocal::Refuse if files.is_empty() => Taken::Nothing,
+                    WithoutLocal::Refuse => {
+                        Taken::Images(files.into_iter().map(Incoming::File).collect())
+                    }
                 }
             }
-            Offered::Picture => vec![self.read_picture().await],
-            Offered::Text => Vec::new(),
+            Offered::Picture => Taken::Images(vec![self.read_picture().await]),
+            Offered::Text => Taken::Nothing,
+        }
+    }
+
+    /// The value of type `ty` offered, within [`OFFER_TIMEOUT`].
+    async fn read_value(&self, ty: glib::Type) -> Option<glib::Value> {
+        let read = async {
+            match self {
+                Self::Clipboard(clipboard) => {
+                    clipboard
+                        .read_value_future(ty, glib::Priority::DEFAULT)
+                        .await
+                }
+                Self::Drop(drop) => drop.read_value_future(ty, glib::Priority::DEFAULT).await,
+            }
+        };
+        match glib::future_with_timeout(OFFER_TIMEOUT, read).await {
+            Ok(Ok(value)) => Some(value),
+            Ok(Err(err)) => {
+                tracing::warn!("what was offered could not be read: {err}");
+                None
+            }
+            Err(_) => {
+                tracing::warn!("what was offered took too long to read");
+                None
+            }
         }
     }
 
     async fn read_files(&self) -> Vec<gio::File> {
-        let ty = gdk::FileList::static_type();
-        let read = match self {
-            Self::Clipboard(clipboard) => {
-                clipboard
-                    .read_value_future(ty, glib::Priority::DEFAULT)
-                    .await
-            }
-            Self::Drop(drop) => drop.read_value_future(ty, glib::Priority::DEFAULT).await,
-        };
-        match read {
-            Ok(value) => value
-                .get::<gdk::FileList>()
-                .map(|files| files.files())
-                .unwrap_or_default(),
-            Err(err) => {
-                tracing::warn!("the offered files could not be read: {err}");
-                Vec::new()
-            }
-        }
+        self.read_value(gdk::FileList::static_type())
+            .await
+            .and_then(|value| value.get::<gdk::FileList>().ok())
+            .map(|files| files.files())
+            .unwrap_or_default()
+    }
+
+    async fn read_text(&self) -> Option<String> {
+        self.read_value(glib::Type::STRING)
+            .await
+            .and_then(|value| value.get::<String>().ok())
     }
 
     /// The picture's bytes, at most an image's limit: read as a stream,
-    /// stopping one chunk past it.
+    /// stopping one chunk past it, within [`OFFER_TIMEOUT`].
     async fn read_picture(&self) -> Incoming {
+        glib::future_with_timeout(OFFER_TIMEOUT, self.read_picture_bytes())
+            .await
+            .unwrap_or_else(|_| {
+                Incoming::Refused(AddImageError::Unreadable(std::io::Error::other(
+                    "the picture took too long to read",
+                )))
+            })
+    }
+
+    async fn read_picture_bytes(&self) -> Incoming {
         let read = match self {
             Self::Clipboard(clipboard) => {
                 clipboard
@@ -542,6 +644,27 @@ mod tests {
                 matches!(refused, Err(AddImageError::NotAFile)),
                 "{refused:?}"
             );
+        });
+    }
+
+    #[test]
+    fn a_dropped_link_without_a_picture_is_text_as_before() {
+        crate::testing::with_widgets(|| {
+            let (_tmp, _state, _deck, editor, _saved) = super::super::tests::editor_over(None);
+            let imp = editor.imp();
+            let view = &*imp.back_view;
+            let link = "https://example.invalid/x.png";
+            block_on(editor.take(view, cursor_mark(view), Taken::Text(Some(link.to_owned()))));
+            let buffer = &*imp.back_buffer;
+            let (start, end) = buffer.bounds();
+            assert_eq!(buffer.text(&start, &end, false), link);
+            assert!(imp.image_errors.is_empty());
+            // One step to undo.
+            buffer.undo();
+            assert_eq!(buffer.char_count(), 0);
+            // Nothing taken: nothing changes, no mark is left.
+            block_on(editor.take(view, cursor_mark(view), Taken::Nothing));
+            assert_eq!(buffer.char_count(), 0);
         });
     }
 }

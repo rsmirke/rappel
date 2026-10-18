@@ -76,13 +76,33 @@ pub fn offered(has_files: bool, has_picture: bool) -> Offered {
     }
 }
 
-/// Whether the picture offered beside `local_files` local files (of the
-/// files offered) is taken instead of them: when none of the files is on
-/// this computer (a browser offers an image's `https:` address as a file,
-/// and the picture itself), so nothing is fetched and the image still
-/// comes in.
-pub fn picture_instead(local_files: usize, has_picture: bool) -> bool {
-    local_files == 0 && has_picture
+/// What a paste or a drop of files does when none of them is on this
+/// computer (a browser offers an image's `https:` address as a file).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WithoutLocal {
+    /// The picture offered with them is taken: the image still comes in
+    /// and nothing is fetched.
+    Picture,
+    /// Their text (the addresses) is pasted or dropped as text, as before
+    /// images existed: a copied link pastes as a link.
+    Text,
+    /// Nothing else is offered: the files are refused, unread, with "Only
+    /// files on this computer can be added".
+    Refuse,
+}
+
+/// [`WithoutLocal`] for an offer with or without a picture and text. A
+/// picture comes first (it is what a drag of an image means); the refusal
+/// only when files are all that is offered, which is a clear request to
+/// add them.
+pub fn without_local_file(has_picture: bool, has_text: bool) -> WithoutLocal {
+    if has_picture {
+        WithoutLocal::Picture
+    } else if has_text {
+        WithoutLocal::Text
+    } else {
+        WithoutLocal::Refuse
+    }
 }
 
 /// What the editor says when an image cannot be added, in words.
@@ -170,10 +190,11 @@ mod tests {
     }
 
     #[test]
-    fn a_picture_replaces_files_only_when_none_is_local() {
-        assert!(picture_instead(0, true));
-        assert!(!picture_instead(0, false));
-        assert!(!picture_instead(1, true));
+    fn without_a_local_file_the_picture_then_the_text_is_taken() {
+        assert_eq!(without_local_file(true, true), WithoutLocal::Picture);
+        assert_eq!(without_local_file(true, false), WithoutLocal::Picture);
+        assert_eq!(without_local_file(false, true), WithoutLocal::Text);
+        assert_eq!(without_local_file(false, false), WithoutLocal::Refuse);
     }
 
     #[test]
