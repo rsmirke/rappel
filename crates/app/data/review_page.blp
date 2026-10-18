@@ -107,6 +107,11 @@ template $RappelReviewPage: Adw.NavigationPage {
                 orientation: vertical;
                 spacing: 24;
                 focusable: true;
+                // A group, not a box's default generic role: GTK exposes no
+                // name or description for a generic one (its naming is
+                // "prohibited", gtk/gtkatcontext.c), so the card's text set
+                // below would not be read (ADR 0051).
+                accessible-role: group;
 
                 // Its accessible label is the front's text, and its
                 // description the back's once shown (set in the page). The
@@ -140,8 +145,12 @@ template $RappelReviewPage: Adw.NavigationPage {
 
                 // Shown when a side is longer than the review page lays out
                 // (`render::MAX_SHOWN_BYTES`). Screen readers get the same
-                // text with the side (`CUT_NOTE` in the page).
+                // text with the side (`CUT_NOTE` in the page), so the label
+                // itself is hidden from them (a presentation role is not
+                // exposed, `gtk_accessible_should_present`), or it would be
+                // read twice.
                 Gtk.Label cut_note {
+                  accessible-role: presentation;
                   label: _("This card is long: only its start is shown. Edit it to see all of it.");
                   visible: false;
                   wrap: true;
