@@ -417,7 +417,17 @@ fn broken_media_records_and_contents_are_refused() {
     damaged[last] ^= 0xff;
     let jpeg = b"\xff\xd8\xff\xe0\0\x10JFIF\0".to_vec();
     let jpeg_as_png = media_of(&jpeg, MediaKind::Png);
+    // An "MP3" by its first bytes (an ID3 tag) that is an HLS playlist:
+    // GStreamer would fetch what it names (ADR 0056).
+    let mut playlist = b"ID3\x04\0\0\0\0\0\0".to_vec();
+    playlist.extend_from_slice(b"#EXTM3U\n#EXTINF:1,\nhttps://example.invalid/a.mp3\n");
+    let playlist_ref = media_of(&playlist, MediaKind::Mp3);
     refuses(vec![
+        (
+            vec![record(&playlist_ref, &playlist, T0)],
+            vec![(playlist_ref.file_name(), playlist.clone())],
+            media_problem(0, "mime", FieldProblem::NotOfItsType),
+        ),
         (
             with("hash", json!(upper)),
             entry(),

@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use rusqlite::{Connection, params};
 use sha2::{Digest, Sha256};
 
-use super::{DETECT_BYTES, MediaKind, MediaProblem, MediaRef, hex};
+use super::{DETECT_BYTES, MediaKind, MediaProblem, MediaRef, check_structure, hex};
 use crate::data_dir::ensure_data_dir;
 use crate::error::{Error, Result};
 use crate::storage::Store;
@@ -66,19 +66,40 @@ impl Store {
         self.add_media(bytes)
     }
 
-    /// [`Self::add_media`] for an image only (the editor's Insert Image…,
-    /// paste and drop): a file of an audio kind is refused as
+    /// [`Self::add_media`] for an image only (the editor's Insert Image…
+    /// and a pasted picture): a file of an audio kind is refused as
     /// [`MediaProblem::NotImage`] before anything is written.
     ///
     /// # Errors
     /// As [`Self::add_media`].
-    pub fn add_image(&self, mut reader: impl Read) -> Result<MediaRef> {
+    pub fn add_image(&self, reader: impl Read) -> Result<MediaRef> {
+        self.add_media_if(reader, MediaKind::is_image, MediaProblem::NotImage)
+    }
+
+    /// [`Self::add_media`] for an audio file only (the editor's Insert
+    /// Audio…): a file of an image kind is refused as
+    /// [`MediaProblem::NotAudio`] before anything is written.
+    ///
+    /// # Errors
+    /// As [`Self::add_media`].
+    pub fn add_audio(&self, reader: impl Read) -> Result<MediaRef> {
+        self.add_media_if(reader, |kind| !kind.is_image(), MediaProblem::NotAudio)
+    }
+
+    /// [`Self::add_media`] if the first bytes are of a kind `wanted`
+    /// accepts, else `refused` before anything is written.
+    fn add_media_if(
+        &self,
+        mut reader: impl Read,
+        wanted: fn(MediaKind) -> bool,
+        refused: MediaProblem,
+    ) -> Result<MediaRef> {
         let mut head = [0; DETECT_BYTES];
         let n = read_full(&mut reader, &mut head).map_err(Error::MediaRead)?;
         if let Some(kind) = MediaKind::detect(&head[..n])
-            && !kind.is_image()
+            && !wanted(kind)
         {
-            return Err(Error::MediaRefused(MediaProblem::NotImage));
+            return Err(Error::MediaRefused(refused));
         }
         // Empty and unknown files are refused by `add_media` itself.
         self.add_media(io::Cursor::new(&head[..n]).chain(reader))
@@ -204,7 +225,11 @@ pub(crate) enum CopyFailure {
 }
 
 /// Copies `reader` to `out`: its kind from the first bytes, at most its
-/// kind's limit, hashed as it goes.
+/// kind's limit, hashed as it goes. An audio file is also kept in memory
+/// (at most 20 MB) and must be plain audio of its kind over its whole
+/// length ([`check_structure`], ADR 0056), else it is refused as
+/// [`MediaProblem::Malformed`] or [`MediaProblem::NotPlainAudio`] (what was written to `out` is then the
+/// caller's to drop).
 pub(crate) fn copy_capped(
     reader: &mut impl Read,
     out: &mut impl Write,
@@ -219,6 +244,7 @@ pub(crate) fn copy_capped(
     let mut hasher = Sha256::new();
     hasher.update(&head[..n]);
     out.write_all(&head[..n]).map_err(CopyFailure::Write)?;
+    let mut whole = (!kind.is_image()).then(|| head[..n].to_vec());
     let mut total = n as u64;
     let mut buf = vec![0; 64 << 10];
     loop {
@@ -236,7 +262,20 @@ pub(crate) fn copy_capped(
             return Err(CopyFailure::Refused(MediaProblem::TooLarge { kind, limit }));
         }
         hasher.update(&buf[..n]);
+        if let Some(whole) = whole.as_mut() {
+            whole.extend_from_slice(&buf[..n]);
+        }
         out.write_all(&buf[..n]).map_err(CopyFailure::Write)?;
+    }
+    if let Some(whole) = whole
+        && let Err(why) = check_structure(kind, &whole)
+    {
+        tracing::debug!("an audio file is refused: {}", why.why);
+        return Err(CopyFailure::Refused(if why.extra {
+            MediaProblem::NotPlainAudio
+        } else {
+            MediaProblem::Malformed
+        }));
     }
     Ok(Ingested {
         media: MediaRef::new(hasher.finalize().into(), kind),

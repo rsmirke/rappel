@@ -11,12 +11,12 @@
 //! nothing here can open or fetch it.
 
 use std::collections::VecDeque;
-use std::fs;
-use std::io::{self, Read};
 use std::path::Path;
 
 use rappel_core::content::{ImageTarget, Inline};
-use rappel_core::media::{IMAGE_MAX_BYTES, MediaKind, MediaRef};
+use rappel_core::media::{MediaKind, MediaRef};
+
+use super::media_file::{Unreadable, read_media_file};
 
 /// At most this many images are drawn per side; later ones are
 /// placeholders, never read. Each decoded image costs memory and a
@@ -47,35 +47,49 @@ const MAX_HEIGHT_SHARE: f64 = 0.6;
 const MIN_MAX_HEIGHT: i32 = 120;
 
 /// What a paragraph is made of: runs of text, each one label, and the
-/// images drawn between them.
+/// images and audio controls (ADR 0056) between them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Piece<'a> {
     Text(&'a [Inline]),
-    Image { alt: &'a str, media: MediaRef },
+    Image {
+        alt: &'a str,
+        media: MediaRef,
+    },
+    /// A link to a `media:` audio file: its text and the file.
+    Audio {
+        content: &'a [Inline],
+        media: MediaRef,
+    },
 }
 
-/// The pieces of a paragraph's `inlines`: each `media:` image at the top
-/// level becomes an image, and the runs between them text. A run of only
-/// spaces and line breaks between or around images is dropped. Without a
-/// media image, the whole paragraph is one text piece. An image inside
-/// emphasis or a link, and every other image target, stays in the text.
+/// The pieces of a paragraph's `inlines`: each `media:` image and each
+/// `media:` audio link at the top level becomes a piece of its own, and
+/// the runs between them text. A run of only spaces and line breaks
+/// between or around them is dropped. Without either, the whole paragraph
+/// is one text piece. An image or an audio link inside emphasis or a
+/// link, and every other image target, stays in the text.
 pub fn pieces(inlines: &[Inline]) -> Vec<Piece<'_>> {
     let mut out = Vec::new();
     let mut start = 0;
-    let mut any_image = false;
+    let mut any_media = false;
     for (i, inline) in inlines.iter().enumerate() {
-        if let Inline::Image {
-            alt,
-            target: ImageTarget::Media(media),
-        } = inline
-        {
-            push_text(&mut out, &inlines[start..i]);
-            out.push(Piece::Image { alt, media: *media });
-            start = i + 1;
-            any_image = true;
-        }
+        let piece = match inline {
+            Inline::Image {
+                alt,
+                target: ImageTarget::Media(media),
+            } => Piece::Image { alt, media: *media },
+            Inline::Audio { content, media } => Piece::Audio {
+                content,
+                media: *media,
+            },
+            _ => continue,
+        };
+        push_text(&mut out, &inlines[start..i]);
+        out.push(piece);
+        start = i + 1;
+        any_media = true;
     }
-    if !any_image {
+    if !any_media {
         return vec![Piece::Text(inlines)];
     }
     push_text(&mut out, &inlines[start..]);
@@ -107,6 +121,15 @@ pub fn image_count(inlines: &[Inline]) -> usize {
                 }
             )
         })
+        .count()
+}
+
+/// How many `media:` audio links at the top level of `inlines` [`pieces`]
+/// makes audio controls (before the per-side cap).
+pub fn audio_count(inlines: &[Inline]) -> usize {
+    inlines
+        .iter()
+        .filter(|inline| matches!(inline, Inline::Audio { .. }))
         .count()
 }
 
@@ -353,43 +376,27 @@ pub fn texture_cost(width: i32, height: i32) -> usize {
     side(width).saturating_mul(side(height)).saturating_mul(4)
 }
 
-/// Reads the media file at `path` for decoding, checked: a regular file
-/// (never through a symbolic link), at most [`IMAGE_MAX_BYTES`], whose
-/// first bytes are of `media`'s kind. The bytes read are the ones decoded,
-/// so the file cannot change between the check and the decode.
+/// Reads the media file at `path` for decoding, checked
+/// (`media_file::read_media_file`): a regular file (never through a
+/// symbolic link), at most [`rappel_core::media::IMAGE_MAX_BYTES`], whose first
+/// bytes are of `media`'s kind, which must be an image. The bytes read are the ones
+/// decoded, so the file cannot change between the check and the decode.
 pub fn read_image_file(path: &Path, media: MediaRef) -> Result<Vec<u8>, Failure> {
-    use std::os::unix::fs::OpenOptionsExt;
-    // Opened without following a link and without blocking (a pipe under
-    // the name would block an open for reading), then checked on the open
-    // handle, so what is checked is what is read (as `window_state`'s
-    // `read_bounded`).
-    let file = fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(path)
-        .map_err(|err| match err.kind() {
-            io::ErrorKind::NotFound => Failure::Missing,
-            _ => Failure::CannotShow,
-        })?;
-    let meta = file.metadata().map_err(|_| Failure::CannotShow)?;
-    if !meta.file_type().is_file() || meta.len() > IMAGE_MAX_BYTES || meta.len() == 0 {
+    if !media.kind().is_image() {
         return Err(Failure::CannotShow);
     }
-    let mut bytes = Vec::new();
-    // One byte past the limit is enough to know the file grew.
-    file.take(IMAGE_MAX_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|_| Failure::CannotShow)?;
-    let too_large = u64::try_from(bytes.len()).map_or(true, |n| n > IMAGE_MAX_BYTES);
-    if too_large || MediaKind::detect(&bytes) != Some(media.kind()) || !media.kind().is_image() {
-        return Err(Failure::CannotShow);
-    }
-    Ok(bytes)
+    read_media_file(path, media).map_err(|unreadable| match unreadable {
+        Unreadable::Missing => Failure::Missing,
+        Unreadable::Refused => Failure::CannotShow,
+    })
 }
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use rappel_core::content::{Block, parse};
+    use rappel_core::media::IMAGE_MAX_BYTES;
 
     use super::*;
 
@@ -408,6 +415,9 @@ mod tests {
             .map(|piece| match piece {
                 Piece::Text(run) => format!("text {}", run.len()),
                 Piece::Image { alt, media } => format!("image {alt} {}", media.file_name()),
+                Piece::Audio { content, media } => {
+                    format!("audio {} {}", content.len(), media.file_name())
+                }
             })
             .collect()
     }
@@ -422,6 +432,35 @@ mod tests {
             ["text 1", &format!("image a cell {HASH}.png"), "text 1"]
         );
         assert_eq!(image_count(&inlines), 1);
+    }
+
+    #[test]
+    fn audio_links_are_pulled_out_of_their_paragraph() {
+        let md = format!(
+            "Hear [the *tone*](media:{HASH}.wav) and [](media:{HASH}.ogg), \
+             *not [this](media:{HASH}.mp3)*, nor [that](https://e.org/a.mp3)"
+        );
+        let inlines = paragraph(&md);
+        let got = pieces(&inlines);
+        assert_eq!(
+            kinds(&got),
+            [
+                "text 1",
+                &format!("audio 2 {HASH}.wav"),
+                "text 1",
+                &format!("audio 0 {HASH}.ogg"),
+                "text 4",
+            ]
+        );
+        assert_eq!(audio_count(&inlines), 2);
+        assert_eq!(image_count(&inlines), 0);
+        // An image and audio side by side.
+        let md = format!("![a](media:{HASH}.png) [b](media:{HASH}.m4a)");
+        let inlines = paragraph(&md);
+        assert_eq!(
+            kinds(&pieces(&inlines)),
+            [format!("image a {HASH}.png"), format!("audio 1 {HASH}.m4a")]
+        );
     }
 
     #[test]

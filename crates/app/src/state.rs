@@ -39,9 +39,21 @@ pub struct StatsData {
     pub ahead_starts: Vec<i64>,
 }
 
-/// Why an image could not be added in the editor.
+/// What the editor takes from a file or bytes (ADR 0055, 0056).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Accept {
+    /// Only an image (Insert Image…, a picture): `Store::add_image`.
+    Image,
+    /// Only audio (Insert Audio…): `Store::add_audio`.
+    Audio,
+    /// An image or audio, whichever the first bytes say (files pasted or
+    /// dropped): `Store::add_media`.
+    Any,
+}
+
+/// Why a media file could not be added in the editor.
 #[derive(Debug)]
-pub enum AddImageError {
+pub enum AddMediaError {
     /// Not a file on this computer (a URL a drop or the clipboard gave):
     /// never read.
     NotLocal,
@@ -51,7 +63,7 @@ pub enum AddImageError {
     TooLarge,
     /// The file could not be opened or read.
     Unreadable(std::io::Error),
-    /// The store refused it or failed (`Store::add_image`).
+    /// The store refused it or failed (`Store::add_media` and its kinds).
     Store(rappel_core::Error),
 }
 
@@ -178,11 +190,11 @@ impl AppState {
         Store::open_concurrent(data_dir)?.set_desired_retention(value)
     }
 
-    /// Copies the image file `file` into the media store of the database
-    /// in `data_dir` (see [`Store::add_image`]) and returns its reference.
-    /// Blocking (a file of up to 10 MB is hashed, copied and synced); runs
-    /// on a worker thread, on its own connection like
-    /// [`Self::export_on_worker`].
+    /// Copies the media file `file` into the media store of the database
+    /// in `data_dir` (see [`Store::add_media`]), if it is of a kind
+    /// `accept` takes, and returns its reference. Blocking (a file of up
+    /// to 20 MB is hashed, copied and synced); runs on a worker thread, on
+    /// its own connection like [`Self::export_on_worker`].
     ///
     /// Only a file on this computer is read ([`local_path`]): a `GFile`
     /// from a drop or the clipboard can be any URI (`https:`, `sftp:`,
@@ -191,38 +203,50 @@ impl AppState {
     /// local path. It is opened without blocking (a pipe would otherwise
     /// hang the open) and must be a regular file, checked on the open
     /// handle, before a byte is read.
-    pub fn add_image_on_worker(
+    pub fn add_media_on_worker(
         data_dir: &Path,
         file: &gtk::gio::File,
-    ) -> Result<MediaRef, AddImageError> {
+        accept: Accept,
+    ) -> Result<MediaRef, AddMediaError> {
         use std::os::unix::fs::OpenOptionsExt;
-        let path = local_path(file).ok_or(AddImageError::NotLocal)?;
+        let path = local_path(file).ok_or(AddMediaError::NotLocal)?;
         let opened = std::fs::OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_NONBLOCK)
             .open(&path)
-            .map_err(AddImageError::Unreadable)?;
-        let meta = opened.metadata().map_err(AddImageError::Unreadable)?;
+            .map_err(AddMediaError::Unreadable)?;
+        let meta = opened.metadata().map_err(AddMediaError::Unreadable)?;
         if !meta.file_type().is_file() {
-            return Err(AddImageError::NotAFile);
+            return Err(AddMediaError::NotAFile);
         }
-        Store::open_concurrent(data_dir)
-            .and_then(|store| store.add_image(opened))
-            .map_err(AddImageError::Store)
+        Self::add_to_store(data_dir, opened, accept)
     }
 
-    /// [`Self::add_image_on_worker`] for bytes (a pasted or dropped
+    /// [`Self::add_media_on_worker`] for bytes (a pasted or dropped
     /// picture, as the other program gave it).
-    pub fn add_image_bytes_on_worker(
+    pub fn add_media_bytes_on_worker(
         data_dir: &Path,
         bytes: &[u8],
-    ) -> Result<MediaRef, AddImageError> {
-        Store::open_concurrent(data_dir)
-            .and_then(|store| store.add_image(bytes))
-            .map_err(AddImageError::Store)
+        accept: Accept,
+    ) -> Result<MediaRef, AddMediaError> {
+        Self::add_to_store(data_dir, bytes, accept)
     }
 
-    /// The media folder, where card images are read from (it may not
+    fn add_to_store(
+        data_dir: &Path,
+        reader: impl std::io::Read,
+        accept: Accept,
+    ) -> Result<MediaRef, AddMediaError> {
+        Store::open_concurrent(data_dir)
+            .and_then(|store| match accept {
+                Accept::Image => store.add_image(reader),
+                Accept::Audio => store.add_audio(reader),
+                Accept::Any => store.add_media(reader),
+            })
+            .map_err(AddMediaError::Store)
+    }
+
+    /// The media folder, where card images and audio are read from (it may not
     /// exist yet). `None` for a store without a data directory.
     pub fn media_folder(&self) -> Option<PathBuf> {
         self.0.store.borrow().media_folder().map(Path::to_path_buf)

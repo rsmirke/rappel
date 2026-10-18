@@ -19,6 +19,12 @@ You need:
   Debian/Ubuntu: `liblcms2-dev libseccomp-dev libfontconfig-dev`)
 - to show images, glycin's image loaders and bubblewrap, its sandbox, at run time (most GNOME
   systems have both) (Fedora: `glycin-loaders bubblewrap`; Debian/Ubuntu: `glycin-loaders bubblewrap`)
+- to play audio, GStreamer's plugins at run time (GTK plays through GStreamer; most GNOME systems
+  have them; ADR 0056): the base and good plugins, and an AAC decoder for M4A files
+  (Fedora: `gstreamer1-plugins-base gstreamer1-plugins-good gstreamer1-plugin-libav`;
+  Debian/Ubuntu: `gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-libav`).
+  Without the base plugins (`playbin3`), every audio button says "Audio playback is not available on this
+  system" and nothing is played. CI installs the base and good plugins so the audio tests play for real.
 - `blueprint-compiler` and `glib-compile-resources` (from GLib) on your `PATH`
 - [`cargo-deny`](https://github.com/EmbarkStudios/cargo-deny) for the quality gate (`cargo install cargo-deny`)
 
@@ -29,6 +35,8 @@ GTK_DEBUG=interactive cargo run -p rappel   # with the GTK inspector
 scripts/check.sh                           # format, lint, test, licence/advisory checks
 scripts/install-hooks.sh                   # once per clone: run checks before every commit
 ```
+
+At launch Rappel starts itself again once, in the same process, to switch off GStreamer's streaming and network elements (`GST_PLUGIN_FEATURE_RANK`, ADR 0056). A debugger follows it (gdb prints "is executing new program"). To skip the restart, give the variable its value already: Rappel's entries (`DEMOTED` in `crates/app/src/gst_env.rs`, each as `name:none`) at its end, e.g. run `RUST_LOG=rappel=debug` once and copy the value from `/proc/<pid>/environ`; or, **for debugging only**, set `RAPPEL_GST_FEATURES_DEMOTED=1`, which skips it even without them and so leaves GStreamer's streaming and network elements active.
 
 Some tests start GTK, so `scripts/check.sh` needs a display: a desktop session, or `xvfb-run -a scripts/check.sh` without one (as CI does).
 

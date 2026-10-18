@@ -13,6 +13,7 @@
 
 mod kind;
 mod store;
+mod structure;
 
 use std::fmt;
 
@@ -20,6 +21,7 @@ pub use kind::{AUDIO_MAX_BYTES, DETECT_BYTES, IMAGE_MAX_BYTES, MediaKind};
 pub(crate) use store::{
     CopyFailure, Ingested, MEDIA_DIR_NAME, Sync, copy_capped, ingest, insert_media_row, sync_folder,
 };
+pub use structure::{Malformed, check_structure};
 
 /// The scheme of a media reference in card Markdown.
 pub const SCHEME: &str = "media:";
@@ -40,6 +42,20 @@ pub enum MediaProblem {
     /// image is accepted ([`crate::storage::Store::add_image`]).
     #[error("the file is not a PNG, JPEG, WebP or GIF image")]
     NotImage,
+    /// A file of a kind Rappel keeps, but not an audio file, where only
+    /// audio is accepted ([`crate::storage::Store::add_audio`]).
+    #[error("the file is not an Ogg, MP3, M4A or WAV audio file")]
+    NotAudio,
+    /// An audio file whose first bytes are of its kind but which is
+    /// damaged ([`check_structure`]): cut, out of bounds, a bad checksum,
+    /// or junk where its audio should be (ADR 0056).
+    #[error("the audio file is damaged")]
+    Malformed,
+    /// A whole audio file that holds more than plain audio of its kind
+    /// ([`check_structure`]): another stream, a reference to another
+    /// file, a box or a format audio files do not have (ADR 0056).
+    #[error("the audio file holds more than plain audio")]
+    NotPlainAudio,
     /// Larger than its kind allows.
     #[error("the file is larger than {limit} bytes")]
     TooLarge {

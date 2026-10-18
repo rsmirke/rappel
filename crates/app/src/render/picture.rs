@@ -464,7 +464,7 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::state::AppState;
+    use crate::state::{Accept, AppState};
 
     fn chunk(out: &mut Vec<u8>, kind: [u8; 4], data: &[u8]) {
         out.extend_from_slice(&u32::try_from(data.len()).unwrap().to_be_bytes());
@@ -531,9 +531,12 @@ mod tests {
         crate::testing::with_widgets(|| {
             let (tmp, state) = crate::testing::temporary_state();
             let data = tmp.path().join("data");
-            let media =
-                AppState::add_image_bytes_on_worker(&data, &crate::testing::png_bytes(300, 1200))
-                    .unwrap();
+            let media = AppState::add_media_bytes_on_worker(
+                &data,
+                &crate::testing::png_bytes(300, 1200),
+                Accept::Image,
+            )
+            .unwrap();
             let folder = state.media_folder().expect("a media folder");
             let image = settle(&folder, media);
             assert!(image.is_shown(), "{:?}", image.shown_failure());
@@ -637,9 +640,12 @@ mod tests {
         crate::testing::with_widgets(|| {
             let (tmp, state) = crate::testing::temporary_state();
             let data = tmp.path().join("data");
-            let media =
-                AppState::add_image_bytes_on_worker(&data, &crate::testing::png_bytes(30, 20))
-                    .unwrap();
+            let media = AppState::add_media_bytes_on_worker(
+                &data,
+                &crate::testing::png_bytes(30, 20),
+                Accept::Image,
+            )
+            .unwrap();
             let folder = state.media_folder().unwrap();
             // Room for one 600-pixel image, not two.
             let pixels = Rc::new(RefCell::new(PixelBudget::new(1_000)));

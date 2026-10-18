@@ -76,21 +76,38 @@ template $RappelCardEditor: Adw.Dialog {
                 title: _("Front");
                 vexpand: true;
 
-                // Adds an image file to the media store and its reference
-                // at the cursor (ADR 0055). Named for the side, since the
-                // two buttons look alike.
-                header-suffix: Gtk.Button front_image_button {
-                  icon-name: "insert-image-symbolic";
-                  tooltip-text: _("Insert Image…");
+                // Add an image or an audio file to the media store and its
+                // reference at the cursor (ADR 0055, 0056). Named for the
+                // side, since the buttons of both sides look alike.
+                header-suffix: Gtk.Box {
+                  spacing: 6;
                   valign: center;
 
-                  accessibility {
-                    label: _("Insert Image in Front");
+                  Gtk.Button front_image_button {
+                    icon-name: "insert-image-symbolic";
+                    tooltip-text: _("Insert Image…");
+
+                    accessibility {
+                      label: _("Insert Image in Front");
+                    }
+
+                    styles [
+                      "flat",
+                    ]
                   }
 
-                  styles [
-                    "flat",
-                  ]
+                  Gtk.Button front_audio_button {
+                    icon-name: "audio-x-generic-symbolic";
+                    tooltip-text: _("Insert Audio…");
+
+                    accessibility {
+                      label: _("Insert Audio in Front");
+                    }
+
+                    styles [
+                      "flat",
+                    ]
+                  }
                 };
 
                 // A frame, not a card: GtkFrame clips its child to its
@@ -146,21 +163,38 @@ template $RappelCardEditor: Adw.Dialog {
                 title: _("Back");
                 vexpand: true;
 
-                // Adds an image file to the media store and its reference
-                // at the cursor (ADR 0055). Named for the side, since the
-                // two buttons look alike.
-                header-suffix: Gtk.Button back_image_button {
-                  icon-name: "insert-image-symbolic";
-                  tooltip-text: _("Insert Image…");
+                // Add an image or an audio file to the media store and its
+                // reference at the cursor (ADR 0055, 0056). Named for the
+                // side, since the buttons of both sides look alike.
+                header-suffix: Gtk.Box {
+                  spacing: 6;
                   valign: center;
 
-                  accessibility {
-                    label: _("Insert Image in Back");
+                  Gtk.Button back_image_button {
+                    icon-name: "insert-image-symbolic";
+                    tooltip-text: _("Insert Image…");
+
+                    accessibility {
+                      label: _("Insert Image in Back");
+                    }
+
+                    styles [
+                      "flat",
+                    ]
                   }
 
-                  styles [
-                    "flat",
-                  ]
+                  Gtk.Button back_audio_button {
+                    icon-name: "audio-x-generic-symbolic";
+                    tooltip-text: _("Insert Audio…");
+
+                    accessibility {
+                      label: _("Insert Audio in Back");
+                    }
+
+                    styles [
+                      "flat",
+                    ]
+                  }
                 };
 
                 Gtk.Frame back_frame {
@@ -246,8 +280,9 @@ template $RappelCardEditor: Adw.Dialog {
 
         // Not focusable itself: the rendered labels are not (see
         // render/mod.rs); only a drawn image is, a button that opens it at
-        // full size (ADR 0055), so Tab goes from the tags to the preview's
-        // images, then to the header buttons.
+        // full size (ADR 0055), and an audio link's play button (ADR 0056),
+        // so Tab goes from the tags to the preview's images and audio, then
+        // to the header buttons.
         Gtk.ScrolledWindow preview_pane {
           hscrollbar-policy: never;
           hexpand: true;

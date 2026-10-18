@@ -524,6 +524,42 @@ fn the_table_refuses_bad_rows() {
 }
 
 #[test]
+fn add_audio_takes_only_audio() {
+    let (tmp, store) = store();
+    let wav = store.add_audio(&wav_bytes(2)[..]).unwrap();
+    assert_eq!(wav.kind(), MediaKind::Wav);
+    // An image is refused before anything is written.
+    match store.add_audio(&png_bytes(5)[..]) {
+        Err(Error::MediaRefused(MediaProblem::NotAudio)) => {}
+        other => panic!("{other:?}"),
+    }
+    match store.add_audio(&b"<html><script></script></html>"[..]) {
+        Err(Error::MediaRefused(MediaProblem::NotMedia)) => {}
+        other => panic!("{other:?}"),
+    }
+    match store.add_audio(&b""[..]) {
+        Err(Error::MediaRefused(MediaProblem::Empty)) => {}
+        other => panic!("{other:?}"),
+    }
+    // An ID3 tag, then a playlist: an MP3 by its first bytes only. Refused
+    // by every way in, after the copy (its whole is looked at).
+    let mut playlist = b"ID3\x04\0\0\0\0\0\0".to_vec();
+    playlist.extend_from_slice(b"#EXTM3U\nfile:///etc/passwd\n");
+    assert_eq!(MediaKind::detect(&playlist), Some(MediaKind::Mp3));
+    for added in [
+        store.add_audio(&playlist[..]),
+        store.add_media(&playlist[..]),
+    ] {
+        match added {
+            Err(Error::MediaRefused(MediaProblem::Malformed)) => {}
+            other => panic!("{other:?}"),
+        }
+    }
+    assert_eq!(names(&media_dir(&tmp)), [wav.file_name()]);
+    assert_eq!(rows(&store).len(), 1);
+}
+
+#[test]
 fn add_image_takes_only_images() {
     let (tmp, store) = store();
     assert_eq!(store.media_folder(), Some(media_dir(&tmp).as_path()));

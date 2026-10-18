@@ -8,7 +8,8 @@
 //! Enter: Space or Enter shows the answer; then 1 is Fail, 2 or Space is
 //! Pass; E edits the card at any time; S suspends it and Delete deletes it
 //! (after a question), both at once out of the session with an Undo toast
-//! (ADR 0037); Ctrl+Z (and the header's Undo button)
+//! (ADR 0037); R plays the card's audio from its start (ADR 0056,
+//! [`replay_target`]); Ctrl+Z (and the header's Undo button)
 //! takes back the last answer, repeatedly down to the session's first, also
 //! from the summary (ADR 0030). The focus rests on the card between answers.
 //!
@@ -30,7 +31,7 @@ use rappel_core::scheduling::{Session, Summary, capped};
 
 use crate::dialogs::card_editor::{CardEditor, Saved};
 use crate::dialogs::card_info;
-use crate::render::{Images, back_shown, clear, fill, shown_part};
+use crate::render::{Images, audio_controls, back_shown, clear, fill, shown_part, stop_audio};
 use crate::state::AppState;
 use crate::ui::callback::Callback;
 use crate::ui::dialog;
@@ -279,13 +280,15 @@ enum Key {
     Suspend,
     /// Delete: delete the card, after a question.
     Delete,
+    /// R: play the card's audio from its start.
+    Replay,
     /// Ctrl+Z: take back the last answer.
     Undo,
 }
 
 /// The page's keys (`setup_keys`). The Keyboard Shortcuts dialog and the
 /// Card Menu's hints list them; tests check both.
-const KEYS: [(&str, Key); 16] = [
+const KEYS: [(&str, Key); 18] = [
     ("space", Key::Space),
     ("Return", Key::Enter),
     ("KP_Enter", Key::Enter),
@@ -301,6 +304,8 @@ const KEYS: [(&str, Key); 16] = [
     ("<Shift>s", Key::Suspend),
     ("Delete", Key::Delete),
     ("KP_Delete", Key::Delete),
+    ("r", Key::Replay),
+    ("<Shift>r", Key::Replay),
     ("<Control>z", Key::Undo),
 ];
 
@@ -319,6 +324,7 @@ enum Act {
     Info,
     Suspend,
     Delete,
+    Replay,
     Undo,
 }
 
@@ -326,7 +332,7 @@ enum Act {
 /// whether [`KEY_SETTLE`] has passed since the reveal. Holding Space a
 /// moment too long repeats it: a reveal must not become a Pass by itself,
 /// even though a grade can be undone. E and Ctrl+Z are never delayed: they
-/// grade nothing; neither does I. S and Delete take the card out of the
+/// grade nothing; neither do I and R. S and Delete take the card out of the
 /// session, so they are not delayed by `key_action` but guarded elsewhere:
 /// Delete asks first (the question stops the repeat), and S needs the card to
 /// have been on screen a moment ([`suspend_allowed`]), or holding it would
@@ -338,6 +344,7 @@ fn key_action(key: Key, revealed: bool, settled: bool) -> Option<Act> {
         (Key::Suspend, _) => Some(Act::Suspend),
         (Key::Delete, _) => Some(Act::Delete),
         (Key::Undo, _) => Some(Act::Undo),
+        (Key::Replay, _) => Some(Act::Replay),
         (Key::Space | Key::Enter, false) => Some(Act::Reveal),
         (Key::Space | Key::Pass | Key::Fail, true) if !settled => None,
         (Key::Space | Key::Pass, true) => Some(Act::Grade(Grade::Pass)),
@@ -345,6 +352,33 @@ fn key_action(key: Key, revealed: bool, settled: bool) -> Option<Act> {
         // 1 and 2 before the answer, Enter after it: nothing.
         (Key::Fail | Key::Pass, false) | (Key::Enter, true) => None,
     }
+}
+
+/// Which audio control R plays: the first that can play on the back once
+/// the answer is shown and the back has audio controls, else the first
+/// that can play on the front. `front` and `back` say, for each control of
+/// that side in document order, whether it can play (its file is not
+/// known to be missing). The back once shown, because it is what was just
+/// revealed (a word to hear after reading it); a side whose controls all
+/// cannot play gives nothing, not the other side's, so R never plays
+/// something other than what is under the eyes.
+fn replay_target(revealed: bool, front: &[bool], back: &[bool]) -> Option<(Side, usize)> {
+    let (side, controls) = if revealed && !back.is_empty() {
+        (Side::Back, back)
+    } else {
+        (Side::Front, front)
+    };
+    controls
+        .iter()
+        .position(|&available| available)
+        .map(|i| (side, i))
+}
+
+/// A side of the card on screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Side {
+    Front,
+    Back,
 }
 
 /// Whether S may suspend a card that has been on screen for `shown_for`.
@@ -436,6 +470,7 @@ impl ReviewPage {
                 }
             }
             Some(Act::Delete) => self.confirm_delete(),
+            Some(Act::Replay) => self.replay_audio(),
             Some(Act::Undo) => self.undo(),
             None => {}
         }
@@ -657,6 +692,8 @@ impl ReviewPage {
         if imp.editing.get() {
             return;
         }
+        // The editor covers the card: what it played stops.
+        stop_audio();
         // Read again, so the editor starts from what is stored.
         let card = match state.card(&id) {
             Ok(card) => card,
@@ -708,6 +745,34 @@ impl ReviewPage {
                 move || page.park_focus()
             ),
         );
+    }
+
+    /// R: plays the card's audio from its start ([`replay_target`]).
+    fn replay_audio(&self) {
+        let imp = self.imp();
+        let front = audio_controls(&*imp.front_box);
+        // `get_visible`, the back's own flag: `is_visible` also asks the
+        // parents (`gtk_widget_is_visible`).
+        let back = if imp.back_part.get_visible() {
+            audio_controls(&*imp.back_box)
+        } else {
+            Vec::new()
+        };
+        let available = |controls: &[crate::render::CardAudio]| {
+            controls
+                .iter()
+                .map(crate::render::CardAudio::is_available)
+                .collect::<Vec<_>>()
+        };
+        let target = replay_target(imp.revealed.get(), &available(&front), &available(&back));
+        let control = match target {
+            Some((Side::Front, i)) => front.get(i),
+            Some((Side::Back, i)) => back.get(i),
+            None => None,
+        };
+        if let Some(control) = control {
+            control.play_from_start();
+        }
     }
 
     /// Takes the card on screen out of the session by suspending or deleting
@@ -1216,6 +1281,12 @@ mod tests {
         sides: &[(String, String)],
     ) -> (tempfile::TempDir, AppState, ReviewPage, Vec<String>) {
         let (tmp, state) = crate::testing::temporary_state();
+        let (page, ids) = page_over(&state, sides);
+        (tmp, state, page, ids)
+    }
+
+    /// [`page_with`] over the database of `state`.
+    fn page_over(state: &AppState, sides: &[(String, String)]) -> (ReviewPage, Vec<String>) {
         let deck = state.create_deck("Deck").unwrap();
         let now = rappel_core::time::now_ms();
         let day = crate::ui::time::DAY_MS;
@@ -1237,12 +1308,106 @@ mod tests {
             })
             .collect();
         let page = ReviewPage::new(state.clone(), deck, |_| {}).unwrap();
-        (tmp, state, page, ids)
+        (page, ids)
     }
 
     /// Puts `page` in a window, so it has a root as a pushed page does.
     fn in_window(page: &ReviewPage) -> gtk::Window {
         gtk::Window::builder().child(page).build()
+    }
+
+    #[test]
+    fn r_plays_the_back_once_shown_else_the_front() {
+        use Side::{Back, Front};
+        // Before the answer: the front's first that can play.
+        assert_eq!(
+            replay_target(false, &[true, true], &[true]),
+            Some((Front, 0))
+        );
+        assert_eq!(
+            replay_target(false, &[false, true], &[true]),
+            Some((Front, 1))
+        );
+        assert_eq!(replay_target(false, &[], &[true]), None);
+        // After it: the back's, when the back has audio.
+        assert_eq!(
+            replay_target(true, &[true], &[false, true]),
+            Some((Back, 1))
+        );
+        assert_eq!(replay_target(true, &[true], &[]), Some((Front, 0)));
+        // A side whose audio cannot play gives nothing, not the other's.
+        assert_eq!(replay_target(true, &[true], &[false]), None);
+        assert_eq!(replay_target(false, &[false], &[true]), None);
+        assert_eq!(replay_target(true, &[], &[]), None);
+        // R at any time, settled or not: it grades nothing.
+        for (revealed, settled) in [(false, false), (true, false), (true, true)] {
+            assert_eq!(
+                key_action(Key::Replay, revealed, settled),
+                Some(Act::Replay)
+            );
+        }
+    }
+
+    /// R reaches the right control through the page's key handler (the
+    /// controls count the plays asked for, so no sound is needed).
+    #[test]
+    fn r_plays_the_audio_on_screen() {
+        crate::testing::with_widgets(|| {
+            let (tmp, state) = crate::testing::temporary_state();
+            let data = tmp.path().join("data");
+            let add = |samples| {
+                AppState::add_media_bytes_on_worker(
+                    &data,
+                    &crate::testing::wav_bytes(samples),
+                    crate::state::Accept::Audio,
+                )
+                .unwrap()
+                .reference()
+            };
+            let (front_audio, back_audio) = (add(800), add(1_600));
+            let sides = [
+                (
+                    format!("Hear [this]({front_audio})"),
+                    format!("[Answer]({back_audio})"),
+                ),
+                (
+                    format!("[Only the front]({front_audio})"),
+                    "No audio".to_owned(),
+                ),
+            ];
+            // The page is never on screen, so no stream is made: playback
+            // may be taken as there whatever is installed.
+            let _forced = crate::render::force_playback(true);
+            let (page, ids) = page_over(&state, &sides);
+            let _window = in_window(&page);
+            let imp = page.imp();
+            let plays = |container: &gtk::Box| {
+                audio_controls(container)
+                    .iter()
+                    .map(crate::render::CardAudio::plays)
+                    .collect::<Vec<_>>()
+            };
+            for _ in 0..2 {
+                let with_back_audio = current(&page).as_deref() == Some(ids[0].as_str());
+                assert_eq!(page.key(Key::Replay), glib::Propagation::Stop);
+                assert_eq!(plays(&imp.front_box), [1]);
+                page.reveal();
+                page.key(Key::Replay);
+                if with_back_audio {
+                    // The back, once shown.
+                    assert_eq!(plays(&imp.front_box), [1]);
+                    assert_eq!(plays(&imp.back_box), [1]);
+                } else {
+                    // No audio on the back: the front again.
+                    assert_eq!(plays(&imp.front_box), [2]);
+                    assert_eq!(audio_controls(&*imp.back_box).len(), 0);
+                }
+                imp.revealed_at
+                    .set(Instant::now().checked_sub(Duration::from_secs(1)));
+                page.key(Key::Pass);
+            }
+            assert_eq!(current(&page), None);
+        });
     }
 
     #[test]

@@ -21,9 +21,11 @@
 //! With `--suspended N`, the last N cards of the first deck are suspended
 //! (ADR 0035), so they never overlap the first `--due N` ones. With
 //! `--media`, it adds the deck "Media" (ADR 0054): cards showing small
-//! images it draws itself (a square, a wide and a tall PNG), one playing a
-//! one-second WAV tone, one naming a file that is not there, and one with a
-//! remote image, which is shown as text; the same files every run.
+//! images it draws itself (a square, a wide and a tall PNG), two playing a
+//! one-second WAV tone (on the back, and on the front among text), two
+//! naming files that are not there (an image and a sound, ADR 0056), and
+//! one with a remote image, which is shown as text; the same files every
+//! run.
 //! The directory
 //! must be absolute and is never one of the
 //! app's own data directories, release or debug: this is for throwaway
@@ -163,8 +165,9 @@ fn fill_media_deck(store: &mut Store) -> Result<String, String> {
     let tall = add(&png(80, 400)?)?;
     let large = add(&png(1600, 1000)?)?;
     let tone = add(&wav_tone())?;
-    // A file that was never added: 64 zeros of hash.
+    // Files that were never added: 64 zeros of hash.
     let missing = format!("media:{}.png", "0".repeat(64));
+    let missing_audio = format!("media:{}.wav", "0".repeat(64));
     let cards = [
         (
             format!("![A square of colours]({square})"),
@@ -185,6 +188,14 @@ fn fill_media_deck(store: &mut Store) -> Result<String, String> {
         (
             "What do you hear?".to_owned(),
             format!("[A 440 Hz tone]({tone})"),
+        ),
+        (
+            format!("Listen: [the tone on the front]({tone})\n\nWhich note is it?"),
+            "A (440 Hz)".to_owned(),
+        ),
+        (
+            format!("[A sound that is not there]({missing_audio})"),
+            "Shown as not available".to_owned(),
         ),
         (
             format!("![A file that is not there]({missing})"),

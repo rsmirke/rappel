@@ -74,17 +74,20 @@ pub(crate) fn png_bytes(n: u32) -> Vec<u8> {
 }
 
 /// A small WAV for media tests: a RIFF/WAVE header and `n` as the sample
-/// rate, then `n % 64 + 1` bytes of silence.
+/// rate, then `n % 64 + 1` bytes of silence (and the pad byte a chunk of
+/// odd length has, so it is a whole WAV, `check_structure`).
 pub(crate) fn wav_bytes(n: u32) -> Vec<u8> {
     let data = (n % 64 + 1) as usize;
+    let pad = data % 2;
     let mut out = b"RIFF".to_vec();
-    out.extend_from_slice(&u32::try_from(36 + data).unwrap().to_le_bytes());
+    out.extend_from_slice(&u32::try_from(36 + data + pad).unwrap().to_le_bytes());
     out.extend_from_slice(b"WAVEfmt \x10\0\0\0\x01\0\x01\0");
     out.extend_from_slice(&n.to_le_bytes());
     out.extend_from_slice(&n.to_le_bytes());
     out.extend_from_slice(b"\x01\0\x08\0data");
     out.extend_from_slice(&u32::try_from(data).unwrap().to_le_bytes());
     out.extend(std::iter::repeat_n(0x80, data));
+    out.extend(std::iter::repeat_n(0, pad));
     out
 }
 

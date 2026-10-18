@@ -17,14 +17,23 @@
 //! drawn as a picture between the paragraph's runs of text
 //! ([`images::pieces`]), decoded off the main thread in glycin's sandbox
 //! ([`picture`]); any other image stays text and is never read.
+//!
+//! Audio (ADR 0056): a `media:` audio link at the top level of a paragraph
+//! is a play button between the paragraph's runs of text
+//! ([`audio_player`]); nothing plays until the user asks, and only the
+//! media folder's file, read and checked, is played.
 
+mod audio;
+mod audio_player;
 mod breaks;
 mod images;
 mod markup;
 mod math;
 mod math_paragraph;
 mod math_view;
+mod media_file;
 mod picture;
+mod playback;
 mod style;
 
 use std::cell::RefCell;
@@ -36,11 +45,15 @@ use gtk::pango;
 use gtk::prelude::*;
 use rappel_core::content::{Align, Block, Cell, Document, Inline, plain_text};
 
+use audio::AudioBudget;
+pub use audio_player::{CardAudio, stop_all as stop_audio};
 use images::{Failure, ImageBudget, Piece, PixelBudget};
 use math::{Budget, Placement};
 use math_paragraph::MathParagraph;
 use math_view::MathView;
 use picture::CardImage;
+#[cfg(test)]
+pub(crate) use playback::force as force_playback;
 
 #[cfg(test)]
 pub(crate) use picture::full_size_layout;
@@ -93,6 +106,8 @@ struct Side<'a> {
     images: ImageBudget,
     /// The pixels of the side's decoded images, shared by them.
     pixels: Rc<RefCell<PixelBudget>>,
+    /// Audio controls, counted the same way.
+    audio: AudioBudget,
     media: &'a Images,
 }
 
@@ -109,6 +124,7 @@ pub fn render(doc: &Document, media: &Images) -> gtk::Box {
         math: Budget::default(),
         images: ImageBudget::default(),
         pixels: Rc::default(),
+        audio: AudioBudget::default(),
         media,
     };
     for (i, block) in doc.blocks.iter().enumerate() {
@@ -197,8 +213,8 @@ fn block_widget(block: &Block, lists: usize, side: &mut Side<'_>) -> gtk::Widget
 }
 
 /// A paragraph: one label (or math paragraph) for its text, or, when it
-/// has `media:` images, its runs of text and its images one under the
-/// other (`images::pieces`).
+/// has `media:` images or audio links, its runs of text, its images and
+/// its audio controls one under the other (`images::pieces`).
 fn paragraph(inlines: &[Inline], side: &mut Side<'_>) -> gtk::Widget {
     let pieces = images::pieces(inlines);
     if let [Piece::Text(run)] = pieces.as_slice() {
@@ -223,6 +239,7 @@ fn paragraph(inlines: &[Inline], side: &mut Side<'_>) -> gtk::Widget {
                 &mut side.math,
             ),
             Piece::Image { alt, media } => image_widget(alt, media, side).upcast(),
+            Piece::Audio { content, media } => audio_widget(content, media, side).upcast(),
         };
         column.append(&widget);
     }
@@ -243,6 +260,37 @@ fn image_widget(alt: &str, media: rappel_core::media::MediaRef, side: &mut Side<
     } else {
         CardImage::not_read(alt, Failure::TooMany)
     }
+}
+
+/// One `media:` audio link: a play button, or past the side's share
+/// ([`audio::MAX_AUDIO_PER_SIDE`]) a disabled one that reads nothing.
+fn audio_widget(
+    content: &[Inline],
+    media: rappel_core::media::MediaRef,
+    side: &mut Side<'_>,
+) -> CardAudio {
+    let text = audio::link_text(content);
+    if side.audio.take() {
+        CardAudio::new(side.media.folder.as_deref(), media, &text)
+    } else {
+        CardAudio::not_read(&text)
+    }
+}
+
+/// Every audio control under `widget`, in document order: what R on the
+/// review page chooses from.
+pub fn audio_controls(widget: &impl IsA<gtk::Widget>) -> Vec<CardAudio> {
+    let mut out = Vec::new();
+    let mut child = widget.as_ref().first_child();
+    while let Some(c) = child {
+        if let Ok(audio) = c.clone().downcast::<CardAudio>() {
+            out.push(audio);
+        } else {
+            out.extend(audio_controls(&c));
+        }
+        child = c.next_sibling();
+    }
+    out
 }
 
 fn list(start: Option<u64>, items: &[Vec<Block>], lists: usize, side: &mut Side<'_>) -> gtk::Grid {
