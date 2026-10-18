@@ -524,6 +524,28 @@ fn the_table_refuses_bad_rows() {
 }
 
 #[test]
+fn add_audio_takes_only_audio() {
+    let (tmp, store) = store();
+    let wav = store.add_audio(&wav_bytes(2)[..]).unwrap();
+    assert_eq!(wav.kind(), MediaKind::Wav);
+    // An image is refused before anything is written.
+    match store.add_audio(&png_bytes(5)[..]) {
+        Err(Error::MediaRefused(MediaProblem::NotAudio)) => {}
+        other => panic!("{other:?}"),
+    }
+    match store.add_audio(&b"<html><script></script></html>"[..]) {
+        Err(Error::MediaRefused(MediaProblem::NotMedia)) => {}
+        other => panic!("{other:?}"),
+    }
+    match store.add_audio(&b""[..]) {
+        Err(Error::MediaRefused(MediaProblem::Empty)) => {}
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(names(&media_dir(&tmp)), [wav.file_name()]);
+    assert_eq!(rows(&store).len(), 1);
+}
+
+#[test]
 fn add_image_takes_only_images() {
     let (tmp, store) = store();
     assert_eq!(store.media_folder(), Some(media_dir(&tmp).as_path()));

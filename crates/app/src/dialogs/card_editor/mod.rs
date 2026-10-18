@@ -21,11 +21,12 @@
 //!   typed. The card and its tags are saved in one write. An invalid name
 //!   shows an error under the field and disables saving. Ctrl+Shift+Enter
 //!   keeps the tags for the next card (ADR 0031).
-//! - Images (ADR 0055): Insert Image… beside each side's title, Ctrl+V of a
-//!   picture or of image files, and dropping them on a side ([`images`]).
+//! - Images and audio (ADR 0055, 0056): Insert Image… and Insert Audio…
+//!   beside each side's title, Ctrl+V of a picture or of media files, and
+//!   dropping them on a side ([`insert`]).
 
 mod format;
-mod images;
+mod insert;
 mod layout;
 mod media;
 
@@ -110,6 +111,10 @@ mod imp {
         #[template_child]
         pub back_image_button: TemplateChild<gtk::Button>,
         #[template_child]
+        pub front_audio_button: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub back_audio_button: TemplateChild<gtk::Button>,
+        #[template_child]
         pub front_frame: TemplateChild<gtk::Frame>,
         #[template_child]
         pub back_frame: TemplateChild<gtk::Frame>,
@@ -139,8 +144,9 @@ mod imp {
         pub preview_back: TemplateChild<gtk::Box>,
         /// The preview refresh waiting for typing to pause.
         pub preview: Debounce,
-        /// The last "image could not be added" toast, replaced by the next.
-        pub image_errors: ErrorSlot,
+        /// The last "image could not be added" (or audio) toast, replaced
+        /// by the next.
+        pub media_errors: ErrorSlot,
         /// Our `notify::dark` handler on the style manager, a singleton
         /// that outlives the editor: disconnected on dispose.
         pub dark_handler: RefCell<Option<glib::SignalHandlerId>>,
@@ -291,7 +297,7 @@ impl CardEditor {
         self.setup_shortcuts();
         self.setup_views();
         self.setup_tags();
-        self.setup_images();
+        self.setup_media();
         self.setup_layout();
         self.connect_close_attempt(Self::ask_discard);
     }

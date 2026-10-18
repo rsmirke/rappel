@@ -4,7 +4,7 @@
 
 use rappel_core::content::{Block, Document, Inline};
 
-use super::images::image_count;
+use super::images::{audio_count, image_count};
 use super::math::MAX_FORMULAS;
 
 /// Whether the back is shown after the reveal: not when there is nothing
@@ -66,7 +66,7 @@ pub fn table_cell_classes(
 /// most a side draws.
 pub fn widget_cost(block: &Block) -> usize {
     match block {
-        Block::Paragraph(inlines) => 1 + formula_cost(inlines) + image_cost(inlines),
+        Block::Paragraph(inlines) => 1 + formula_cost(inlines) + media_cost(inlines),
         Block::Heading {
             content: inlines, ..
         } => 1 + formula_cost(inlines),
@@ -93,15 +93,17 @@ pub fn widget_cost(block: &Block) -> usize {
     }
 }
 
-/// The widgets the `media:` images of a paragraph add (ADR 0055): a box
-/// for the column, and per image three (its widget, the button and the
-/// picture, or the placeholder's line, icon and label). A paragraph also
-/// has its text runs, each a label, at most one more than its images,
-/// which the 1 of the paragraph and this count's 3 per image cover.
-fn image_cost(inlines: &[Inline]) -> usize {
-    match image_count(inlines) {
-        0 => 0,
-        n => 1 + 3 * n,
+/// The widgets the `media:` images and audio links of a paragraph add
+/// (ADR 0055, 0056): a box for the column, per image three (its widget,
+/// the button and the picture, or the placeholder's line, icon and label),
+/// and per audio link six (its widget, the button, its box, icon and
+/// label, and the note). A paragraph also has its text runs, each a label,
+/// at most one more than its media, which the 1 of the paragraph and these
+/// counts cover.
+fn media_cost(inlines: &[Inline]) -> usize {
+    match (image_count(inlines), audio_count(inlines)) {
+        (0, 0) => 0,
+        (images, audio) => 1 + 3 * images + 6 * audio,
     }
 }
 
@@ -193,6 +195,10 @@ mod tests {
         // Many images on many lines stay within the side's widget budget
         // only as far as they fit; the rest is plain text.
         assert!(cost(&format!("{media}\n").repeat(1_000)) > 2_000);
+        let audio = format!("[a](media:{}.ogg)", "ab".repeat(32));
+        assert_eq!(cost(&format!("x {audio} y")), 1 + 1 + 6);
+        assert_eq!(cost(&format!("{media} {audio}")), 1 + 1 + 3 + 6);
+        assert_eq!(cost(&format!("*{audio}*")), 1);
     }
 
     #[test]

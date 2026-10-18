@@ -120,16 +120,16 @@ fn push(out: &mut Markup, inlines: &[Inline], len: &mut Cursor, math: &mut Budge
                 // Never fetched: shown as the Markdown that was typed.
                 ImageTarget::Other(url) => out.text(&format!("![{alt}]({url})"), len),
             },
-            // A placeholder until the audio slice puts a play button here
-            // (SPEC §4.9); nothing is played or opened.
+            // Where it cannot be a play button (inside emphasis or a link,
+            // in a heading or a table cell; `images::pieces` takes the
+            // others out of the text): its words in italics, or "Audio".
+            // Nothing is played or opened from here.
             Inline::Audio { content, .. } => {
                 out.markup.push_str("<i>");
                 if content.is_empty() {
-                    out.text("[audio]", len);
+                    out.text("Audio", len);
                 } else {
-                    out.text("[audio: ", len);
                     push(out, content, len, math);
-                    out.text("]", len);
                 }
                 out.markup.push_str("</i>");
             }
@@ -320,12 +320,12 @@ mod tests {
     }
 
     #[test]
-    fn audio_links_are_placeholders() {
+    fn audio_links_in_text_are_their_words() {
         let md = format!("[a *<b>*]({}) []({})", media("ogg"), media("mp3"));
         let out = markup(&md);
-        assert_eq!(shown(&out.markup), "[audio: a <b>] [audio]");
+        assert_eq!(shown(&out.markup), "a <b> Audio");
         assert_eq!(out.links, []);
-        assert!(out.markup.starts_with("<i>[audio: a <i>&lt;b&gt;</i>]</i>"));
+        assert!(out.markup.starts_with("<i>a <i>&lt;b&gt;</i></i>"));
     }
 
     #[test]

@@ -66,19 +66,40 @@ impl Store {
         self.add_media(bytes)
     }
 
-    /// [`Self::add_media`] for an image only (the editor's Insert Image…,
-    /// paste and drop): a file of an audio kind is refused as
+    /// [`Self::add_media`] for an image only (the editor's Insert Image…
+    /// and a pasted picture): a file of an audio kind is refused as
     /// [`MediaProblem::NotImage`] before anything is written.
     ///
     /// # Errors
     /// As [`Self::add_media`].
-    pub fn add_image(&self, mut reader: impl Read) -> Result<MediaRef> {
+    pub fn add_image(&self, reader: impl Read) -> Result<MediaRef> {
+        self.add_media_if(reader, MediaKind::is_image, MediaProblem::NotImage)
+    }
+
+    /// [`Self::add_media`] for an audio file only (the editor's Insert
+    /// Audio…): a file of an image kind is refused as
+    /// [`MediaProblem::NotAudio`] before anything is written.
+    ///
+    /// # Errors
+    /// As [`Self::add_media`].
+    pub fn add_audio(&self, reader: impl Read) -> Result<MediaRef> {
+        self.add_media_if(reader, |kind| !kind.is_image(), MediaProblem::NotAudio)
+    }
+
+    /// [`Self::add_media`] if the first bytes are of a kind `wanted`
+    /// accepts, else `refused` before anything is written.
+    fn add_media_if(
+        &self,
+        mut reader: impl Read,
+        wanted: fn(MediaKind) -> bool,
+        refused: MediaProblem,
+    ) -> Result<MediaRef> {
         let mut head = [0; DETECT_BYTES];
         let n = read_full(&mut reader, &mut head).map_err(Error::MediaRead)?;
         if let Some(kind) = MediaKind::detect(&head[..n])
-            && !kind.is_image()
+            && !wanted(kind)
         {
-            return Err(Error::MediaRefused(MediaProblem::NotImage));
+            return Err(Error::MediaRefused(refused));
         }
         // Empty and unknown files are refused by `add_media` itself.
         self.add_media(io::Cursor::new(&head[..n]).chain(reader))

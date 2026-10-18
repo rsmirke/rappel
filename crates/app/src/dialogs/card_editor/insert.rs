@@ -1,18 +1,24 @@
-//! Images in the editor (ADR 0055): Insert Image… on each side, Ctrl+V of
-//! a picture or of image files, and dropping them on a side. Each file is
-//! added to the media store on a worker thread (`Store::add_image`: its
-//! kind from its first bytes, at most 10 MB), then its reference goes in
-//! at the cursor, or where it was dropped, as one undoable step
-//! ([`media::insertion`]). A refused file is a toast in the editor's own
-//! overlay saying why ([`media::add_failed_text`]).
+//! Images and audio in the editor (ADR 0055, 0056): Insert Image… and
+//! Insert Audio… on each side, Ctrl+V of a picture or of media files, and
+//! dropping them on a side. Each file is added to the media store on a
+//! worker thread (`Store::add_image`, `add_audio`, or for a paste or a drop
+//! of files `add_media`, which takes either: the kind from the first
+//! bytes, at most 10 MB for an image and 20 MB for audio), then its
+//! reference goes in at the cursor, or where it was dropped, as one
+//! undoable step ([`media::insertion`]: `![](…)` for an image, `[](…)` for
+//! audio). A refused file is a toast in the editor's own overlay saying
+//! why ([`media::add_failed_text`]).
 //!
 //! Nothing is ever fetched: a file a drop or the clipboard names by a URL
-//! (`https:`, `sftp:`) is refused unread (`AppState::add_image_on_worker`),
+//! (`https:`, `sftp:`) is refused unread (`AppState::add_media_on_worker`),
 //! and when no offered file is local, the picture offered with them is
-//! taken instead, or else their text as before ([`media::without_local_file`]). A picture is taken as the bytes
-//! the other program offers in one of the four image types, never decoded
-//! or encoded in Rappel's process: the store checks its first bytes, and
-//! the review page decodes it in glycin's loader like any image.
+//! taken instead, or else their text as before
+//! ([`media::without_local_file`]). A picture is taken as the bytes the
+//! other program offers in one of the four image types, never decoded or
+//! encoded in Rappel's process: the store checks its first bytes, and the
+//! review page decodes it in glycin's loader like any image. Audio comes
+//! only as files: no program offers sound on the clipboard in the kinds
+//! kept, so the drop target takes no audio MIME type.
 //!
 //! An added file stays in the media folder whether or not the card is then
 //! saved: it is content-addressed and harmless, and the clean-up of unused
@@ -25,65 +31,86 @@ use rappel_core::media::{IMAGE_MAX_BYTES, MediaRef};
 
 use super::CardEditor;
 use super::media::{self, Offered, WithoutLocal};
-use crate::state::{AddImageError, AppState, local_path};
+use crate::state::{Accept, AddMediaError, AppState, local_path};
 use crate::ui::worker;
 
-/// Something to add as an image.
+/// Something to add as media.
 #[derive(Debug)]
 pub enum Incoming {
     /// A file the chooser, the clipboard or a drop gave.
     File(gio::File),
-    /// A picture's bytes from the clipboard or a drop.
+    /// A picture's bytes from the clipboard or a drop: always added as an
+    /// image.
     Bytes(Vec<u8>),
     /// A picture that could not be taken (too large, unreadable).
-    Refused(AddImageError),
+    Refused(AddMediaError),
 }
 
 impl CardEditor {
-    /// The Insert Image… buttons, the paste handlers and the drop targets
-    /// of both sides.
-    pub(super) fn setup_images(&self) {
+    /// The Insert Image… and Insert Audio… buttons, the paste handlers
+    /// and the drop targets of both sides.
+    pub(super) fn setup_media(&self) {
         let imp = self.imp();
         let sides = [
             (
                 &*imp.front_image_button,
+                &*imp.front_audio_button,
                 &*imp.front_view,
                 &*imp.front_frame,
                 "Front",
             ),
             (
                 &*imp.back_image_button,
+                &*imp.back_audio_button,
                 &*imp.back_view,
                 &*imp.back_frame,
                 "Back",
             ),
         ];
-        for (button, view, frame, name) in sides {
-            button.update_property(&[gtk::accessible::Property::Label(&media::insert_label(name))]);
-            button.connect_clicked(glib::clone!(
-                #[weak(rename_to = editor)]
-                self,
-                #[weak]
-                view,
-                move |_| editor.choose_images(&view)
-            ));
+        for (image_button, audio_button, view, frame, name) in sides {
+            image_button
+                .update_property(&[gtk::accessible::Property::Label(&media::insert_label(name))]);
+            audio_button.update_property(&[gtk::accessible::Property::Label(
+                &media::insert_audio_label(name),
+            )]);
+            for (button, accept) in [(image_button, Accept::Image), (audio_button, Accept::Audio)] {
+                button.connect_clicked(glib::clone!(
+                    #[weak(rename_to = editor)]
+                    self,
+                    #[weak]
+                    view,
+                    move |_| editor.choose_files(&view, accept)
+                ));
+            }
             self.setup_paste(view);
             self.setup_drop(view, frame);
         }
     }
 
-    /// Opens the file chooser, filtered to the image kinds, and adds the
-    /// chosen files at the cursor of `view`.
-    fn choose_images(&self, view: &sourceview5::View) {
+    /// Opens the file chooser, filtered to the image or the audio kinds
+    /// (`accept`), and adds the chosen files at the cursor of `view`.
+    fn choose_files(&self, view: &sourceview5::View, accept: Accept) {
         let filter = gtk::FileFilter::new();
-        filter.set_name(Some("Images"));
-        for mime in media::IMAGE_MIME_TYPES {
-            filter.add_mime_type(mime);
-        }
+        let title = if accept == Accept::Audio {
+            filter.set_name(Some("Audio"));
+            for mime in media::AUDIO_MIME_TYPES {
+                filter.add_mime_type(mime);
+            }
+            for suffix in media::AUDIO_SUFFIXES {
+                filter.add_suffix(suffix);
+            }
+            "Insert Audio"
+        } else {
+            filter.set_name(Some("Images"));
+            for mime in media::IMAGE_MIME_TYPES {
+                filter.add_mime_type(mime);
+            }
+            "Insert Image"
+        };
         let filters = gio::ListStore::new::<gtk::FileFilter>();
         filters.append(&filter);
         let chooser = gtk::FileDialog::builder()
-            .title("Insert Image")
+            .title(title)
             .modal(true)
             .filters(&filters)
             .default_filter(&filter)
@@ -103,13 +130,13 @@ impl CardEditor {
                             .filter_map(Result::ok)
                             .map(Incoming::File)
                             .collect();
-                        editor.add_images(&view, mark, incoming).await;
+                        editor.add_media(&view, mark, incoming, accept).await;
                     }
                     // Cancelled, or no chooser: nothing to add.
                     Err(err) => {
                         view.buffer().delete_mark(&mark);
                         if !err.matches(gtk::DialogError::Dismissed) {
-                            tracing::warn!("the image chooser failed: {err}");
+                            tracing::warn!("the file chooser failed: {err}");
                         }
                     }
                 }
@@ -117,8 +144,8 @@ impl CardEditor {
         ));
     }
 
-    /// Ctrl+V (and the menu's Paste) of image files or of a picture adds
-    /// them; any other paste is the text view's own. `paste-clipboard` is
+    /// Ctrl+V (and the menu's Paste) of image or audio files or of a
+    /// picture adds them; any other paste is the text view's own. `paste-clipboard` is
     /// a run-last action signal (gtktextview.c, GTK 4.24): this handler
     /// runs before the class handler, which stopping the emission skips.
     /// The clipboard is read asynchronously, so the window never waits.
@@ -148,8 +175,8 @@ impl CardEditor {
         ));
     }
 
-    /// Dropping image files or a picture on a side adds them where they
-    /// were dropped. The target is on the side's frame in the capture
+    /// Dropping image or audio files or a picture on a side adds them
+    /// where they were dropped. The target is on the side's frame in the capture
     /// phase, so it sees a drop before the text view's own target (which
     /// takes text, `G_TYPE_STRING`, gtktextview.c): drop events go through
     /// the capture and bubble phases like others (`gtk_propagate_event`,
@@ -213,14 +240,14 @@ impl CardEditor {
         frame.add_controller(target);
     }
 
-    /// Does what a paste or a drop gave: adds the images, inserts the text
+    /// Does what a paste or a drop gave: adds the media, inserts the text
     /// at `mark` (a drop) or pastes the clipboard's text at the cursor (a
     /// paste), or nothing.
     async fn take(&self, view: &sourceview5::View, mark: gtk::TextMark, taken: Taken) {
         let buffer = view.buffer();
         match taken {
-            Taken::Images(incoming) => {
-                self.add_images(view, mark, incoming).await;
+            Taken::Media(incoming, accept) => {
+                self.add_media(view, mark, incoming, accept).await;
                 return;
             }
             Taken::Text(Some(text)) => {
@@ -239,14 +266,16 @@ impl CardEditor {
         buffer.delete_mark(&mark);
     }
 
-    /// Adds `incoming` one by one on a worker thread, then inserts the
+    /// Adds `incoming` one by one on a worker thread, files as `accept`
+    /// takes them and a picture's bytes as an image, then inserts the
     /// references of those added at `mark` in `view`, and removes the
     /// mark. The first refusal is a toast.
-    pub(super) async fn add_images(
+    pub(super) async fn add_media(
         &self,
         view: &sourceview5::View,
         mark: gtk::TextMark,
         incoming: Vec<Incoming>,
+        accept: Accept,
     ) {
         let imp = self.imp();
         let Some(data_dir) = imp.state.get().map(|state| state.data_dir().to_path_buf()) else {
@@ -260,13 +289,13 @@ impl CardEditor {
             let result = match item {
                 Incoming::File(file) => {
                     worker::run(self, move || {
-                        AppState::add_image_on_worker(&data_dir, &file)
+                        AppState::add_media_on_worker(&data_dir, &file, accept)
                     })
                     .await
                 }
                 Incoming::Bytes(bytes) => {
                     worker::run(self, move || {
-                        AppState::add_image_bytes_on_worker(&data_dir, &bytes)
+                        AppState::add_media_bytes_on_worker(&data_dir, &bytes, Accept::Image)
                     })
                     .await
                 }
@@ -275,16 +304,16 @@ impl CardEditor {
             match result {
                 Ok(Ok(media)) => added.push(media),
                 Ok(Err(err)) => {
-                    failure.get_or_insert_with(|| media::add_failed_text(&err));
+                    failure.get_or_insert_with(|| media::add_failed_text(&err, accept));
                 }
                 Err(worker::Panicked) => {
-                    failure.get_or_insert_with(|| "The image could not be added".to_owned());
+                    failure.get_or_insert_with(|| media::could_not_add(accept).to_owned());
                 }
             }
         }
         if let Some(message) = failure {
-            imp.image_errors
-                .show(&*imp.toast_overlay, "adding an image", &message);
+            imp.media_errors
+                .show(&*imp.toast_overlay, "adding media", &message);
         }
         insert_references(view, &mark, &added);
         view.buffer().delete_mark(&mark);
@@ -332,15 +361,15 @@ const OFFER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 /// What a paste or a drop gives, once read.
 #[derive(Debug)]
 enum Taken {
-    /// Images (or files) to add.
-    Images(Vec<Incoming>),
+    /// Media to add, files as the [`Accept`] takes them.
+    Media(Vec<Incoming>, Accept),
     /// Text instead: a drop's (read here), or the clipboard's (`None`:
     /// pasted by the text view's own code).
     Text(Option<String>),
     Nothing,
 }
 
-/// Where pasted or dropped images come from: the same questions of
+/// Where pasted or dropped media come from: the same questions of
 /// either.
 enum Offer {
     Clipboard(gdk::Clipboard),
@@ -392,10 +421,15 @@ impl Offer {
                 let files = self.read_files().await;
                 let local = files.iter().filter(|f| local_path(f).is_some()).count();
                 if local > 0 {
-                    return Taken::Images(files.into_iter().map(Incoming::File).collect());
+                    return Taken::Media(
+                        files.into_iter().map(Incoming::File).collect(),
+                        Accept::Any,
+                    );
                 }
                 match media::without_local_file(self.has_picture(), self.has_text()) {
-                    WithoutLocal::Picture => Taken::Images(vec![self.read_picture().await]),
+                    WithoutLocal::Picture => {
+                        Taken::Media(vec![self.read_picture().await], Accept::Image)
+                    }
                     WithoutLocal::Text => match self {
                         Self::Clipboard(_) => Taken::Text(None),
                         Self::Drop(_) => self
@@ -405,11 +439,11 @@ impl Offer {
                     },
                     WithoutLocal::Refuse if files.is_empty() => Taken::Nothing,
                     WithoutLocal::Refuse => {
-                        Taken::Images(files.into_iter().map(Incoming::File).collect())
+                        Taken::Media(files.into_iter().map(Incoming::File).collect(), Accept::Any)
                     }
                 }
             }
-            Offered::Picture => Taken::Images(vec![self.read_picture().await]),
+            Offered::Picture => Taken::Media(vec![self.read_picture().await], Accept::Image),
             Offered::Text => Taken::Nothing,
         }
     }
@@ -459,7 +493,7 @@ impl Offer {
         glib::future_with_timeout(OFFER_TIMEOUT, self.read_picture_bytes())
             .await
             .unwrap_or_else(|_| {
-                Incoming::Refused(AddImageError::Unreadable(std::io::Error::other(
+                Incoming::Refused(AddMediaError::Unreadable(std::io::Error::other(
                     "the picture took too long to read",
                 )))
             })
@@ -480,7 +514,7 @@ impl Offer {
         let stream = match read {
             Ok((stream, _mime)) => stream,
             Err(err) => {
-                return Incoming::Refused(AddImageError::Unreadable(std::io::Error::other(
+                return Incoming::Refused(AddMediaError::Unreadable(std::io::Error::other(
                     err.to_string(),
                 )));
             }
@@ -496,11 +530,11 @@ impl Offer {
                 Ok(chunk) => {
                     bytes.extend_from_slice(&chunk);
                     if bytes.len() > limit {
-                        return Incoming::Refused(AddImageError::TooLarge);
+                        return Incoming::Refused(AddMediaError::TooLarge);
                     }
                 }
                 Err(err) => {
-                    return Incoming::Refused(AddImageError::Unreadable(std::io::Error::other(
+                    return Incoming::Refused(AddMediaError::Unreadable(std::io::Error::other(
                         err.to_string(),
                     )));
                 }
@@ -511,8 +545,8 @@ impl Offer {
 }
 
 /// Inserts the references of `refs` at `mark` as one user action (one
-/// Ctrl+Z takes it back), puts the cursor in the first one's alt text and
-/// the focus in the view.
+/// Ctrl+Z takes it back), puts the cursor in the first one's words (an
+/// image's alt text, an audio link's text) and the focus in the view.
 pub(super) fn insert_references(view: &sourceview5::View, mark: &gtk::TextMark, refs: &[MediaRef]) {
     if refs.is_empty() {
         return;
@@ -552,7 +586,12 @@ mod tests {
             buffer.place_cursor(&buffer.iter_at_offset(1));
             let view = &*imp.front_view;
             let png = crate::testing::png_bytes(4, 3);
-            block_on(editor.add_images(view, cursor_mark(view), vec![Incoming::Bytes(png)]));
+            block_on(editor.add_media(
+                view,
+                cursor_mark(view),
+                vec![Incoming::Bytes(png)],
+                Accept::Image,
+            ));
             let (start, end) = buffer.bounds();
             let text = buffer.text(&start, &end, false).to_string();
             let reference = text
@@ -562,7 +601,7 @@ mod tests {
             assert!(MediaRef::parse(reference).is_some(), "{reference}");
             let cursor = buffer.iter_at_mark(&buffer.get_insert()).offset();
             assert_eq!(cursor, 4, "between [ and ]");
-            assert!(imp.image_errors.is_empty());
+            assert!(imp.media_errors.is_empty());
             // One Ctrl+Z takes the whole reference back.
             buffer.undo();
             let (start, end) = buffer.bounds();
@@ -587,8 +626,13 @@ mod tests {
                 (&big, "This image is larger than 10 MB"),
             ] {
                 let file = gio::File::for_path(path);
-                block_on(editor.add_images(view, cursor_mark(view), vec![Incoming::File(file)]));
-                assert_eq!(imp.image_errors.shown_text().as_deref(), Some(text));
+                block_on(editor.add_media(
+                    view,
+                    cursor_mark(view),
+                    vec![Incoming::File(file)],
+                    Accept::Image,
+                ));
+                assert_eq!(imp.media_errors.shown_text().as_deref(), Some(text));
                 assert_eq!(imp.back_buffer.char_count(), 0);
             }
             // Nothing was kept for them.
@@ -616,11 +660,18 @@ mod tests {
             ] {
                 let file = gio::File::for_uri(uri);
                 assert_eq!(local_path(&file), None, "{uri}");
-                block_on(editor.add_images(view, cursor_mark(view), vec![Incoming::File(file)]));
-                assert_eq!(
-                    imp.image_errors.shown_text().as_deref(),
-                    Some("Only files on this computer can be added")
-                );
+                for accept in [Accept::Image, Accept::Audio, Accept::Any] {
+                    block_on(editor.add_media(
+                        view,
+                        cursor_mark(view),
+                        vec![Incoming::File(file.clone())],
+                        accept,
+                    ));
+                    assert_eq!(
+                        imp.media_errors.shown_text().as_deref(),
+                        Some("Only files on this computer can be added")
+                    );
+                }
             }
             assert_eq!(imp.front_buffer.char_count(), 0);
             // A local file is a path.
@@ -638,12 +689,118 @@ mod tests {
             let refused = crate::testing::within(
                 std::time::Duration::from_secs(2),
                 "adding a pipe",
-                move || AppState::add_image_on_worker(&data, &gio::File::for_path(&fifo)),
+                move || {
+                    AppState::add_media_on_worker(&data, &gio::File::for_path(&fifo), Accept::Any)
+                },
             );
             assert!(
-                matches!(refused, Err(AddImageError::NotAFile)),
+                matches!(refused, Err(AddMediaError::NotAFile)),
                 "{refused:?}"
             );
+        });
+    }
+
+    #[test]
+    fn an_added_audio_file_is_a_link_with_the_cursor_in_its_words() {
+        crate::testing::with_widgets(|| {
+            let (tmp, _state, _deck, editor, _saved) = super::super::tests::editor_over(None);
+            let imp = editor.imp();
+            let buffer = &*imp.back_buffer;
+            buffer.set_text("Hear:");
+            buffer.place_cursor(&buffer.end_iter());
+            let view = &*imp.back_view;
+            let wav = tmp.path().join("tone.wav");
+            std::fs::write(&wav, crate::testing::wav_bytes(8_000)).unwrap();
+            // Insert Audio…: only audio.
+            block_on(editor.add_media(
+                view,
+                cursor_mark(view),
+                vec![Incoming::File(gio::File::for_path(&wav))],
+                Accept::Audio,
+            ));
+            let (start, end) = buffer.bounds();
+            let text = buffer.text(&start, &end, false).to_string();
+            let reference = text
+                .strip_prefix("Hear: [](")
+                .and_then(|rest| rest.strip_suffix(')'))
+                .expect("an audio link after the words");
+            let media = MediaRef::parse(reference).expect("a media reference");
+            assert!(!media.kind().is_image());
+            let cursor = buffer.iter_at_mark(&buffer.get_insert()).offset();
+            assert_eq!(cursor, 7, "between [ and ]");
+            assert!(imp.media_errors.is_empty());
+            buffer.undo();
+            assert_eq!(buffer.char_count(), 5);
+            // An image chosen for Insert Audio… is refused, in words.
+            let png = tmp.path().join("x.png");
+            std::fs::write(&png, crate::testing::png_bytes(2, 2)).unwrap();
+            block_on(editor.add_media(
+                view,
+                cursor_mark(view),
+                vec![Incoming::File(gio::File::for_path(&png))],
+                Accept::Audio,
+            ));
+            assert_eq!(
+                imp.media_errors.shown_text().as_deref(),
+                Some("This file is not an Ogg, MP3, M4A or WAV audio file")
+            );
+            assert_eq!(buffer.char_count(), 5);
+            // An audio file chosen for Insert Image… likewise.
+            block_on(editor.add_media(
+                view,
+                cursor_mark(view),
+                vec![Incoming::File(gio::File::for_path(&wav))],
+                Accept::Image,
+            ));
+            assert_eq!(
+                imp.media_errors.shown_text().as_deref(),
+                Some("This file is not a PNG, JPEG, WebP or GIF image")
+            );
+            // Too large.
+            let big = tmp.path().join("big.wav");
+            let mut bytes = crate::testing::wav_bytes(8_000);
+            bytes.resize(20_000_001, 128);
+            std::fs::write(&big, &bytes).unwrap();
+            block_on(editor.add_media(
+                view,
+                cursor_mark(view),
+                vec![Incoming::File(gio::File::for_path(&big))],
+                Accept::Audio,
+            ));
+            assert_eq!(
+                imp.media_errors.shown_text().as_deref(),
+                Some("This audio file is larger than 20 MB")
+            );
+            assert_eq!(buffer.char_count(), 5);
+        });
+    }
+
+    /// Files pasted or dropped together go in each as its kind, whatever
+    /// their names say.
+    #[test]
+    fn dropped_files_go_in_as_their_kinds() {
+        crate::testing::with_widgets(|| {
+            let (tmp, _state, _deck, editor, _saved) = super::super::tests::editor_over(None);
+            let imp = editor.imp();
+            let view = &*imp.front_view;
+            // A WAV called .png and a PNG called .wav.
+            let sound = tmp.path().join("sound.png");
+            std::fs::write(&sound, crate::testing::wav_bytes(8_000)).unwrap();
+            let picture = tmp.path().join("picture.wav");
+            std::fs::write(&picture, crate::testing::png_bytes(3, 3)).unwrap();
+            let files = [&picture, &sound]
+                .map(|path| Incoming::File(gio::File::for_path(path)))
+                .into_iter()
+                .collect();
+            block_on(editor.take(view, cursor_mark(view), Taken::Media(files, Accept::Any)));
+            let buffer = &*imp.front_buffer;
+            let (start, end) = buffer.bounds();
+            let text = buffer.text(&start, &end, false).to_string();
+            let parts: Vec<_> = text.split("\n\n").collect();
+            assert_eq!(parts.len(), 2, "{text}");
+            assert!(parts[0].starts_with("![](media:") && parts[0].ends_with(".png)"));
+            assert!(parts[1].starts_with("[](media:") && parts[1].ends_with(".wav)"));
+            assert!(imp.media_errors.is_empty());
         });
     }
 
@@ -658,7 +815,7 @@ mod tests {
             let buffer = &*imp.back_buffer;
             let (start, end) = buffer.bounds();
             assert_eq!(buffer.text(&start, &end, false), link);
-            assert!(imp.image_errors.is_empty());
+            assert!(imp.media_errors.is_empty());
             // One step to undo.
             buffer.undo();
             assert_eq!(buffer.char_count(), 0);

@@ -105,6 +105,23 @@ pub fn temporary_state() -> (tempfile::TempDir, crate::state::AppState) {
     (tmp, state)
 }
 
+/// A real WAV of `samples` samples of 8 kHz, 8-bit mono silence (one
+/// second is 8,000).
+pub fn wav_bytes(samples: u32) -> Vec<u8> {
+    let mut out = b"RIFF".to_vec();
+    out.extend_from_slice(&(36 + samples).to_le_bytes());
+    out.extend_from_slice(b"WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00");
+    out.extend_from_slice(&8_000_u32.to_le_bytes());
+    out.extend_from_slice(&8_000_u32.to_le_bytes());
+    out.extend_from_slice(b"\x01\x00\x08\x00data");
+    out.extend_from_slice(&samples.to_le_bytes());
+    out.resize(
+        out.len() + usize::try_from(samples).expect("a small file"),
+        128,
+    );
+    out
+}
+
 /// A real PNG of `w` × `h` grey pixels, encoded by GDK (needs GTK).
 pub fn png_bytes(w: i32, h: i32) -> Vec<u8> {
     use gtk::gdk;

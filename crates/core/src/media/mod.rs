@@ -40,6 +40,10 @@ pub enum MediaProblem {
     /// image is accepted ([`crate::storage::Store::add_image`]).
     #[error("the file is not a PNG, JPEG, WebP or GIF image")]
     NotImage,
+    /// A file of a kind Rappel keeps, but not an audio file, where only
+    /// audio is accepted ([`crate::storage::Store::add_audio`]).
+    #[error("the file is not an Ogg, MP3, M4A or WAV audio file")]
+    NotAudio,
     /// Larger than its kind allows.
     #[error("the file is larger than {limit} bytes")]
     TooLarge {
