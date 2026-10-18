@@ -150,35 +150,42 @@ impl RecoveryPage {
         if let Some(reason) = imp.reason.get() {
             imp.status.set_title(reason.title());
         }
-        let mut description = imp
-            .reason
-            .get()
-            .map(RecoveryReason::description)
-            .unwrap_or_default()
-            .to_owned();
-        match AppState::list_backups(&dir) {
+        let description = match AppState::list_backups(&dir) {
             Ok(backups) if backups.is_empty() => {
                 imp.start_fresh_button
                     .set_visible(offers_start_fresh(imp.reason.get()));
-                description.push_str("\n\n");
-                description.push_str(no_backups_text(imp.reason.get()));
+                description_text(imp.reason.get(), Some(false))
             }
             Ok(backups) => {
                 for backup in backups {
                     imp.backup_list.append(&self.backup_row(backup));
                 }
+                description_text(imp.reason.get(), Some(true))
             }
             Err(err) => {
                 tracing::error!("cannot list backups: {err}");
-                description.push_str("\n\nThe backups could not be listed: ");
-                description.push_str(&err.to_string());
+                let mut text = description_text(imp.reason.get(), None);
+                text.push_str("\n\nThe backups could not be listed: ");
+                text.push_str(&err.to_string());
+                text
             }
-        }
+        };
         imp.backup_list
             .set_visible(imp.backup_list.first_child().is_some());
         // The description is Pango markup; the error text and paths are not.
         imp.status
             .set_description(Some(&glib::markup_escape_text(&description)));
+        // Start Fresh as the only thing to do: give it the focus, so the
+        // keyboard reaches it, and the status page's scrolled window
+        // brings it into view on a short window (GtkViewport's
+        // `scroll-to-focus`, on by default).
+        if only_start_fresh(
+            imp.start_fresh_button.is_visible(),
+            imp.finish_restore_button.is_visible(),
+            imp.backup_list.first_child().is_some(),
+        ) {
+            imp.start_fresh_button.grab_focus();
+        }
     }
 
     fn backup_row(&self, backup: BackupInfo) -> BackupRow {
@@ -302,10 +309,15 @@ impl RecoveryPage {
                 return;
             }
             Ok(Err(err)) => {
-                tracing::error!("finishing the restore failed: {err}");
                 if let Some(reason) = reason_after_finish_failure(&err) {
+                    // The page itself now says the copy cannot be used: no
+                    // toast over it. The details are for the log.
+                    tracing::warn!("the waiting restore copy cannot be used: {err}");
                     imp.reason.set(Some(reason));
+                    self.reload();
+                    return;
                 }
+                tracing::error!("finishing the restore failed: {err}");
                 finish_failure_text(&err)
             }
             Err(_) => {
@@ -394,6 +406,34 @@ fn restore_question(when: &str) -> (&'static str, String) {
              folder, not deleted."
         ),
     )
+}
+
+/// The page's explanation for `reason`, with `backups` saying whether
+/// there are any (`None`: they could not be listed). With a copy that
+/// cannot be used and no backup, one short text says what happened and
+/// what Start Fresh does, and never asks to restore a backup.
+fn description_text(reason: Option<RecoveryReason>, backups: Option<bool>) -> String {
+    if reason == Some(RecoveryReason::UnusableRestoreCopy) && backups == Some(false) {
+        return "A restore was interrupted, and the copy it left waiting is damaged or was not \
+                made by this version of Rappel. There is no backup to restore. Start Fresh sets \
+                the copy aside and starts with no decks; nothing is deleted, and the files stay \
+                in the data folder."
+            .to_owned();
+    }
+    let mut text = reason
+        .map(RecoveryReason::description)
+        .unwrap_or_default()
+        .to_owned();
+    if backups == Some(false) {
+        text.push_str("\n\n");
+        text.push_str(no_backups_text(reason));
+    }
+    text
+}
+
+/// Whether Start Fresh is the page's only action, and so takes the focus.
+fn only_start_fresh(start_fresh: bool, finish_restore: bool, backups: bool) -> bool {
+    start_fresh && !finish_restore && !backups
 }
 
 /// What the page adds to its explanation when there is no backup. Where
@@ -579,6 +619,35 @@ mod tests {
     }
 
     #[test]
+    fn an_unusable_copy_without_backups_never_asks_for_one() {
+        let reason = Some(RecoveryReason::UnusableRestoreCopy);
+        let text = description_text(reason, Some(false));
+        assert!(!text.contains("Restore a backup"), "{text}");
+        assert!(text.contains("no backup to restore"));
+        assert!(text.contains("Start Fresh sets the copy aside"));
+        assert_eq!(text.matches("deleted").count(), 1);
+        assert!(!text.contains('\n'), "one paragraph");
+        let with = description_text(reason, Some(true));
+        assert!(with.contains("Restore a backup"));
+        assert!(!with.contains("Start Fresh"));
+        // Other reasons keep their explanation and the no-backup note.
+        let damaged = description_text(Some(RecoveryReason::Damaged), Some(false));
+        assert!(damaged.ends_with(no_backups_text(Some(RecoveryReason::Damaged))));
+        assert_eq!(
+            description_text(Some(RecoveryReason::Damaged), None),
+            RecoveryReason::Damaged.description()
+        );
+    }
+
+    #[test]
+    fn start_fresh_takes_the_focus_only_when_it_is_the_only_action() {
+        assert!(only_start_fresh(true, false, false));
+        assert!(!only_start_fresh(true, true, false));
+        assert!(!only_start_fresh(true, false, true));
+        assert!(!only_start_fresh(false, false, false));
+    }
+
+    #[test]
     fn start_fresh_never_hides_a_waiting_restore_copy() {
         assert!(!offers_start_fresh(Some(
             RecoveryReason::InterruptedRestore
@@ -685,6 +754,8 @@ mod tests {
             assert!(!imp.finish_restore_button.is_visible());
             assert!(imp.start_fresh_button.is_visible());
             assert!(imp.start_fresh_button.is_sensitive());
+            // The page says it; no error toast over it.
+            assert!(imp.errors.is_empty());
 
             context.block_on(page.start_fresh());
             let (how, set_aside) = done.take().expect("a fresh database");

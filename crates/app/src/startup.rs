@@ -60,10 +60,9 @@ impl RecoveryReason {
                  instead. The previous database is kept in the data folder, not deleted."
             }
             Self::UnusableRestoreCopy => {
-                "A restore was interrupted, and the copy it left waiting cannot be used: it is \
-                 damaged, or was not made by this version of Rappel. Restore a backup to \
-                 continue. The copy and the previous database are kept in the data folder, \
-                 not deleted."
+                "A restore was interrupted, and the copy it left waiting is damaged or was not \
+                 made by this version of Rappel. Restore a backup to continue; the copy and the \
+                 previous database stay in the data folder."
             }
         }
     }
