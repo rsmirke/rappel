@@ -12,8 +12,17 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
   - **Searching for something pasted no longer freezes.** The same word typed thousands of times, or one long word of hyphenated pieces, took up to 10 s on 5,000 cards. Repeated words (and words that start another word of the search) are now looked up once, which finds the same cards, and only the first 1 KiB of a search (about 150 words) is read.
   - **A card with thousands of tags saves quickly.** Setting 5,000 tags took 0.6 s and grew faster than the count; it now grows in step with it.
   - A damaged settings value is quoted only in part in its error message.
+- **Hardening, round 2, the app** (ADR 0050, rows 30 to 38):
+  - **Pasting a long list into the tags field no longer freezes the editor.** 20,000 names took over a second and made a pill for each. The field now adds at most **100 tags** to a card and says "A card can have at most 100 tags" under it; the names past that stay in the field, so nothing is lost. A card imported with more tags keeps them.
+  - **A card with thousands of tags no longer slows its row.** The "+N" pill's tooltip and what a screen reader hears name the first 20 tags and say how many more there are.
+  - **The filter drop-downs of All Cards** end a long choice in "…" as they were meant to, and their lists wrap long deck and tag names instead of growing wider than the window.
+  - A tag name with a line break shows on one line in the suggestions too, and a name written right to left no longer reorders the text after it in a row's caption or tooltip.
+  - **Rappel no longer hangs at start** if its `window-state.ini` is replaced by a pipe; a file that is not a small regular file is ignored, and a saved size larger than the screen is cut to it.
+  - Statistics and Card Information no longer overflow on huge counts or far-off dates, and show "—" instead of "NaN%".
+  - **No dead end after an interrupted restore with a damaged copy.** If Finish Restore finds the waiting copy unusable and there is no backup, the page now says so and offers **Start Fresh**, which renames the copy to `rappel.sqlite3.restore.refused-…` and keeps it. The error toast no longer hides the one that says what was done.
 - **Restore edge cases** (#50): with a stray `-wal` file next to a restore that did not finish, the start page now offers **Finish Restore** instead of saying the database is missing. Finishing a restore no longer deletes any old backup, so the one it came from stays. And backups made while the computer's clock ran ahead are kept like others (the newest of each day, for up to 14 such days) instead of all but one being deleted once the clock is put right.
 - `rappel-core`: `MAX_QUERY_BYTES`, how much of a search query is read.
+- `rappel-core`: `Restored::set_aside`, where `start_fresh` moved a waiting restore copy that could not be used.
 
 ### Changed
 - Internal: the tests' time bounds hold on a busy machine (#67, ADR 0049). They measure the CPU time of the thread that did the work instead of the wall clock, and when a time is over its bound they compare it with a reference workload run at once on the same thread, so a machine slowed by load is measured at its own speed. A hang is caught by a separate, generous wall-clock timeout. The bounds themselves are unchanged and still fail the regressions they are there for. With three busy loops per CPU, `cargo test` used to fail 7 to 11 tests per run; it now passes.
