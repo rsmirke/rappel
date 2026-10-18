@@ -311,12 +311,21 @@ const SHOWN_VALUE_CHARS: usize = 64;
 /// [`Error::InvalidColumn`] for `value` read from `column`, its text cut to
 /// [`SHOWN_VALUE_CHARS`] characters, with "…" where it was cut.
 pub(super) fn invalid(column: &'static str, value: &dyn std::fmt::Display) -> Error {
+    Error::InvalidColumn {
+        column,
+        value: shown_value(value),
+    }
+}
+
+/// `value` as text, cut to [`SHOWN_VALUE_CHARS`] characters, with "…"
+/// where it was cut.
+pub(super) fn shown_value(value: &dyn std::fmt::Display) -> String {
     let mut value = value.to_string();
     if let Some((cut, _)) = value.char_indices().nth(SHOWN_VALUE_CHARS) {
         value.truncate(cut);
         value.push('…');
     }
-    Error::InvalidColumn { column, value }
+    value
 }
 
 /// A `REAL` written from an `f32` back to `f32`.

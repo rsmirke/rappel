@@ -1456,3 +1456,203 @@ fn a_negative_version_is_unusable_but_a_newer_one_is_kept() {
         }
     }
 }
+
+// --- Restoring past a waiting copy (ADR 0052) ------------------------------
+
+impl Env {
+    /// `rappel.sqlite3.restore.set-aside-<RESTORE_STAMP>`, the name the
+    /// first copy a restore sets aside gets.
+    fn set_aside(&self) -> PathBuf {
+        self.data
+            .join(format!("{DB_FILE_NAME}.restore.set-aside-{RESTORE_STAMP}"))
+    }
+}
+
+/// The folder outside `backups/` (the opens there make and prune backups).
+fn files_outside_backups(e: &Env) -> BTreeMap<PathBuf, (bool, Vec<u8>)> {
+    let backups = e.backups();
+    snapshot(&e.data)
+        .into_iter()
+        .filter(|(path, _)| !path.starts_with(&backups))
+        .collect()
+}
+
+/// A restore keeps the copy an interrupted restore left waiting, byte for
+/// byte, under a new name, and every other file as it was (ADR 0007's
+/// "Noted, not changed" in ADR 0050, row 35, now changed).
+#[test]
+fn a_restore_sets_a_waiting_copy_aside_byte_identical() {
+    for main_file_left in [false, true] {
+        let e = Env::new();
+        let (store, backup) = e.diverged();
+        drop(store);
+        let partial = restore_partial_path(&e.data);
+        if main_file_left {
+            // A crash after the copy got its name, before the database
+            // was moved aside: both are there.
+            copy_private(&backup, &partial).unwrap();
+        } else {
+            copy_validate_and_move_aside(&e, &backup);
+        }
+        // Not the backup's bytes, so the test sees which file is which.
+        {
+            let conn = Connection::open(&partial).unwrap();
+            add_deck(&conn);
+        }
+        let waiting = fs::read(&partial).unwrap();
+        let before = files_outside_backups(&e);
+
+        let restored = e.restore(&backup).unwrap();
+
+        assert_eq!(deck_names(&restored.store.conn), ["Maths"]);
+        assert_eq!(restored.set_aside.as_deref(), Some(e.set_aside().as_path()));
+        assert_eq!(fs::read(e.set_aside()).unwrap(), waiting);
+        assert_eq!(mode(&e.set_aside()), 0o600);
+        // Every file that was there is still there with the same bytes,
+        // the waiting copy under its new name; what is new is the restored
+        // database and the copy's new name.
+        let after = files_outside_backups(&e);
+        let db = e.db().to_string_lossy().into_owned();
+        let replaced = e.replaced().to_string_lossy().into_owned();
+        // The main file or one of its `-wal`/`-shm`/`-journal` files: the
+        // suffix after the database's name, if `path` is one.
+        let sidecar = |path: &Path| {
+            let name = path.to_string_lossy();
+            name.strip_prefix(&db)
+                .filter(|rest| !rest.starts_with('.'))
+                .map(str::to_owned)
+        };
+        for (path, content) in &before {
+            if *path == partial {
+                continue;
+            }
+            // The live database and its own files went to `replaced-…`.
+            let moved = match sidecar(path) {
+                Some(suffix) => PathBuf::from(format!("{replaced}{suffix}")),
+                None => path.clone(),
+            };
+            assert_eq!(after.get(&moved), Some(content), "{} kept", path.display());
+        }
+        for path in after.keys() {
+            assert!(
+                before.contains_key(path)
+                    || *path == e.set_aside()
+                    || sidecar(path).is_some()
+                    || path.to_string_lossy().starts_with(&replaced),
+                "{} is new",
+                path.display()
+            );
+        }
+        no_partial_left(&e);
+    }
+}
+
+#[test]
+fn two_restores_in_a_row_never_overwrite_a_copy_set_aside() {
+    let e = Env::new();
+    let (store, backup) = e.diverged();
+    drop(store);
+    let partial = restore_partial_path(&e.data);
+    fs::write(&partial, b"first").unwrap();
+    let first = e.restore(&backup).unwrap();
+    drop(first);
+    fs::write(&partial, b"second").unwrap();
+
+    let second = e.restore(&backup).unwrap();
+
+    assert_eq!(fs::read(e.set_aside()).unwrap(), b"first");
+    let again = with_suffix(&e.set_aside(), "-2");
+    assert_eq!(second.set_aside.as_deref(), Some(again.as_path()));
+    assert_eq!(fs::read(&again).unwrap(), b"second");
+    // A third restore with nothing waiting sets nothing aside.
+    drop(second);
+    let third = e.restore(&backup).unwrap();
+    assert_eq!(third.set_aside, None);
+}
+
+/// A crash right after the waiting copy got its second name, or right after
+/// the new copy took its place, leaves a checked copy waiting: the open
+/// still refuses to start an empty database, and the next restore or
+/// Finish Restore goes on.
+#[test]
+fn a_crash_after_setting_the_copy_aside_is_recoverable() {
+    for crash_after_new_copy in [false, true] {
+        let e = Env::new();
+        let (store, backup) = e.diverged();
+        drop(store);
+        let partial = copy_validate_and_move_aside(&e, &backup);
+        let waiting = fs::read(&partial).unwrap();
+        // The restore's first steps, by hand, then the crash.
+        let kept = keep_waiting_copy(&e.data, &partial, DAY0 + DAY_MS)
+            .unwrap()
+            .unwrap();
+        assert_eq!(kept, e.set_aside());
+        if crash_after_new_copy {
+            let checking = restore_checking_path(&e.data);
+            copy_private(&backup, &checking).unwrap();
+            check_copy(&checking, MIGRATIONS).unwrap();
+            fs::rename(&checking, &partial).unwrap();
+        }
+
+        assert!(matches!(e.open(), Err(Error::InterruptedRestore(_))));
+        assert!(!e.db().exists(), "no empty database was started");
+        assert_eq!(fs::read(&kept).unwrap(), waiting, "the copy set aside");
+
+        if crash_after_new_copy {
+            let finished = finish_restore_with(&e.data, DAY0 + DAY_MS, MIGRATIONS).unwrap();
+            assert_eq!(deck_names(&finished.store.conn), ["Maths"]);
+        } else {
+            let restored = e.restore(&backup).unwrap();
+            assert_eq!(deck_names(&restored.store.conn), ["Maths"]);
+            // The same file under a second name again: nothing overwritten.
+            let again = with_suffix(&e.set_aside(), "-2");
+            assert_eq!(restored.set_aside.as_deref(), Some(again.as_path()));
+        }
+        assert_eq!(fs::read(&kept).unwrap(), waiting, "still kept");
+    }
+}
+
+/// Anything but a regular file at the waiting copy's name is no copy: a
+/// restore leaves it alone and refuses, with nothing changed.
+#[test]
+fn a_restore_leaves_a_folder_or_link_at_the_copys_name_alone() {
+    for link in [false, true] {
+        let e = Env::new();
+        let (store, backup) = e.diverged();
+        drop(store);
+        let partial = restore_partial_path(&e.data);
+        if link {
+            std::os::unix::fs::symlink(&backup, &partial).unwrap();
+        } else {
+            fs::create_dir(&partial).unwrap();
+        }
+        let before = snapshot(&e.data);
+
+        let err = e.restore(&backup).unwrap_err();
+
+        assert!(
+            matches!(&err, Error::Io { path, source }
+                if *path == partial && source.kind() == std::io::ErrorKind::AlreadyExists),
+            "{err:?}"
+        );
+        assert_eq!(snapshot(&e.data), before, "nothing changed");
+    }
+}
+
+#[test]
+fn without_hard_links_the_copy_is_copied_aside_never_over_a_file() {
+    let e = Env::new();
+    fs::create_dir_all(&e.data).unwrap();
+    let partial = restore_partial_path(&e.data);
+    fs::write(&partial, b"waiting").unwrap();
+    // A file that took the first free name meanwhile is not overwritten.
+    fs::write(e.set_aside(), b"someone else's").unwrap();
+
+    let first = copy_to_free_name(&e.data, &partial, ".set-aside-", DAY0 + DAY_MS).unwrap();
+
+    assert_eq!(first, with_suffix(&e.set_aside(), "-2"));
+    assert_eq!(fs::read(&first).unwrap(), b"waiting");
+    assert_eq!(fs::read(e.set_aside()).unwrap(), b"someone else's");
+    assert_eq!(mode(&first), 0o600);
+    assert_eq!(fs::read(&partial).unwrap(), b"waiting", "left in place");
+}

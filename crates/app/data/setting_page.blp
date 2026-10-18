@@ -1,0 +1,51 @@
+using Gtk 4.0;
+using Adw 1;
+
+// The window's page for a damaged stored setting (ADR 0052). Its texts are
+// set by pages/setting_page.rs from startup.rs.
+template $RappelSettingPage: Adw.Bin {
+  child: Adw.StatusPage status {
+    icon-name: "dialog-warning-symbolic";
+    title: _("A Setting Is Damaged");
+
+    child: Adw.Clamp {
+      maximum-size: 480;
+
+      child: Gtk.Box {
+        orientation: vertical;
+        spacing: 18;
+
+        Gtk.Button reset_button {
+          label: _("_Reset This Setting");
+          use-underline: true;
+          halign: center;
+
+          styles [
+            "pill",
+            "suggested-action",
+          ]
+        }
+
+        // While the reset runs (a backup, and for the retention a rebuild
+        // of every card's schedule).
+        Adw.Spinner spinner {
+          visible: false;
+          halign: center;
+          width-request: 32;
+          height-request: 32;
+        }
+
+        Gtk.Label path_label {
+          wrap: true;
+          wrap-mode: word_char;
+          selectable: true;
+          justify: center;
+
+          styles [
+            "dimmed",
+          ]
+        }
+      };
+    };
+  };
+}

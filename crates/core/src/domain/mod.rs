@@ -14,7 +14,7 @@ pub use tag::{
 
 pub use settings::{
     DEFAULT_DESIRED_RETENTION, DESIRED_RETENTION_RANGE, MAX_DAILY_LIMIT, MAX_DAY_START_HOUR,
-    Settings,
+    SettingKey, Settings,
 };
 
 /// The answer to a review. Rappel has exactly two grades (SPEC §6).

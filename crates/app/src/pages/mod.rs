@@ -5,6 +5,7 @@ mod deck_page;
 mod decks_page;
 mod recovery_page;
 mod review_page;
+mod setting_page;
 mod stats_page;
 
 pub use browser_page::BrowserPage;
@@ -18,4 +19,8 @@ pub use recovery_page::{Recovered, RecoveryPage};
 pub use review_page::ReviewPage;
 #[cfg(test)]
 pub(crate) use review_page::key_triggers as review_key_triggers;
+pub use setting_page::SettingPage;
+/// A data folder with damaged settings, for the window's tests.
+#[cfg(test)]
+pub(crate) use setting_page::tests::damaged_folder as damaged_setting_folder;
 pub use stats_page::StatsPage;

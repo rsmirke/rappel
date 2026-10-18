@@ -590,18 +590,21 @@ impl BrowserPage {
     // --- reading ---------------------------------------------------------
 
     /// Fills the deck and tag drop-downs, keeping what was chosen (or
-    /// choosing `deck_id`).
+    /// choosing `deck_id`). The tag filter lists the tags in use, and the
+    /// chosen one even if no card has it any more (`text::filter_tags`,
+    /// ADR 0052).
     fn load_filters(&self, deck_id: Option<&str>) -> rappel_core::Result<()> {
         let imp = self.imp();
         let Some(state) = imp.state.get() else {
             return Ok(());
         };
         let decks = state.decks()?;
-        let tags = state.tags()?;
         let kept_deck = text::filter_choice(imp.deck_filter.selected(), imp.decks.borrow().len())
             .map(|i| imp.decks.borrow()[i].id.clone());
-        let kept_tag = text::filter_choice(imp.tag_filter.selected(), imp.tags.borrow().len())
-            .map(|i| imp.tags.borrow()[i].id.clone());
+        let kept = text::filter_choice(imp.tag_filter.selected(), imp.tags.borrow().len())
+            .map(|i| imp.tags.borrow()[i].clone());
+        let kept_tag = kept.as_ref().map(|t| t.id.clone());
+        let tags = text::filter_tags(state.used_tags()?, kept);
         let want_deck = deck_id.map(str::to_owned).or(kept_deck);
 
         imp.quiet.set(true);
@@ -1088,16 +1091,19 @@ impl BrowserPage {
         ));
     }
 
-    /// Asks for tags in the card editor's tag entry, with every tag as a
-    /// suggestion (the tag filter's list, read again on every change), and
-    /// puts them on the chosen cards (ADR 0051). Returns the dialog (tests
-    /// answer it).
+    /// Asks for tags in the card editor's tag entry, with the tags in use
+    /// as suggestions (ADR 0051, 0052), and puts them on the chosen cards.
+    /// Returns the dialog (tests answer it).
     fn add_tags(&self) -> Option<adw::AlertDialog> {
         let ids = self.chosen_ids();
         if ids.is_empty() {
             return None;
         }
-        let all = self.imp().tags.borrow().clone();
+        let state = self.imp().state.get()?;
+        let all = state.used_tags().unwrap_or_else(|err| {
+            tracing::warn!("the tags could not be read for suggestions: {err}");
+            Vec::new()
+        });
         let body = text::add_tags_body(ids.len());
         browser_dialogs::add_tags(
             self,
@@ -1208,6 +1214,11 @@ impl BrowserPage {
     /// this one goes.
     fn changed(&self) {
         self.imp().dirty.set(true);
+        // The tags in use may have changed (a tag added, taken off, or on
+        // deleted cards only), and the tag filter lists those.
+        if let Err(err) = self.load_filters(None) {
+            self.error_toast(&format!("The tags could not be read: {err}"));
+        }
         self.requery();
     }
 

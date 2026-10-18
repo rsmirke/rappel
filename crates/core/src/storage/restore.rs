@@ -9,7 +9,9 @@
 //!    migration that fails refuses the restore before anything changed.
 //!    Only then is it renamed to `rappel.sqlite3.restore.partial`: that name
 //!    always means "a validated copy", and a later attempt that fails never
-//!    deletes it.
+//!    deletes it. A copy an earlier restore left waiting there is first
+//!    given a second name, `rappel.sqlite3.restore.set-aside-YYYYMMDD-HHMMSS`,
+//!    so it is kept, never replaced (ADR 0052).
 //! 2. The current database and its `-wal`, `-shm` and `-journal` files are
 //!    renamed, main file first, to `rappel.sqlite3.replaced-YYYYMMDD-HHMMSS`
 //!    (plus the same suffixes). SQLite finds `<name>-wal` next to
@@ -53,9 +55,12 @@ pub struct Restored {
     /// suffix. `None` if there was nothing to move. If only leftover
     /// sidecar files were moved, this main file does not exist.
     pub replaced: Option<PathBuf>,
-    /// Where [`start_fresh`] moved a waiting restore copy that could not be
-    /// used (damaged, too new, not Rappel's): `rappel.sqlite3.restore.refused-
-    /// YYYYMMDD-HHMMSS`. `None` otherwise.
+    /// Where a copy an earlier, interrupted restore left waiting was kept:
+    /// [`start_fresh`] moves one that could not be used (damaged, too new,
+    /// not Rappel's) to `rappel.sqlite3.restore.refused-YYYYMMDD-HHMMSS`,
+    /// and [`restore_backup`] sets one aside as
+    /// `rappel.sqlite3.restore.set-aside-YYYYMMDD-HHMMSS` before installing
+    /// its own (ADR 0052). Either may end in `-N`. `None` otherwise.
     pub set_aside: Option<PathBuf>,
 }
 
@@ -71,11 +76,20 @@ pub struct Restored {
 /// `rappel.sqlite3.replaced-YYYYMMDD-HHMMSS` (mode `0600`), see
 /// [`Restored::replaced`]. This works when the current database is damaged.
 ///
+/// A copy an interrupted restore left waiting (`rappel.sqlite3.restore.partial`)
+/// is the user's data too: before the new copy takes its name, it is kept
+/// under a free `rappel.sqlite3.restore.set-aside-YYYYMMDD-HHMMSS[-N]` name,
+/// never over a file, and [`Restored::set_aside`] says where (ADR 0052).
+/// Anything but a regular file at that name is left alone, and the restore
+/// is refused with nothing changed.
+///
 /// # Errors
 /// - [`Error::RestoreRefused`] if the backup is not a backup file in
 ///   `<data_dir>/backups/`, is damaged, is newer than this build, or does
 ///   not have the Rappel schema, or cannot be migrated to this build's
 ///   schema. Nothing was changed.
+/// - [`Error::Io`] (`AlreadyExists`) for something other than a regular
+///   file at the waiting copy's name. Nothing was changed.
 /// - IO errors while copying or moving files, and any error from
 ///   [`Store::open`] on the restored database. If the old files were
 ///   already moved aside, they stay under their `replaced-…` name, and
@@ -335,10 +349,21 @@ fn restore_with(
         return Err(refused(err));
     }
 
+    // A copy an earlier restore left waiting is kept under a new name
+    // first, by a second name for the same file: `partial` names a checked
+    // copy at every moment, so a crash here still leaves `Store::open`
+    // refusing to start an empty database (ADR 0052).
+    let partial = restore_partial_path(data_dir);
+    let set_aside = keep_waiting_copy(data_dir, &partial, now_ms).inspect_err(|_| {
+        remove_copy(&checking);
+    })?;
+    if let Some(path) = &set_aside {
+        tracing::info!(path = %path.display(), "waiting restore copy set aside");
+    }
+
     // From here on the validated copy is never deleted on error: if the
     // main file is gone, it is what makes `Store::open` refuse to start an
     // empty database (`InterruptedRestore`), and a retry replaces it.
-    let partial = restore_partial_path(data_dir);
     fs::rename(&checking, &partial).map_err(|source| Error::Io {
         path: checking.clone(),
         source,
@@ -364,7 +389,7 @@ fn restore_with(
     Ok(Restored {
         store,
         replaced,
-        set_aside: None,
+        set_aside,
     })
 }
 
@@ -403,16 +428,25 @@ fn check_location(data_dir: &Path, backup: &Path) -> Result<()> {
 /// `-journal` next to it, are removed first so they cannot be read along
 /// with the copy.
 fn copy_private(src: &Path, dest: &Path) -> Result<()> {
+    for p in std::iter::once(dest.to_path_buf()).chain(sidecar_paths(dest)) {
+        match fs::remove_file(&p) {
+            Err(source) if source.kind() != io::ErrorKind::NotFound => {
+                return Err(Error::Io { path: p, source });
+            }
+            _ => {}
+        }
+    }
+    copy_new(src, dest)
+}
+
+/// Copies `src` to `dest`, which must not exist yet (`AlreadyExists`
+/// otherwise, nothing written), with mode `0600`, and syncs it. A copy that
+/// fails part-way is removed.
+fn copy_new(src: &Path, dest: &Path) -> Result<()> {
     let io_err = |path: &Path| {
         let path = path.to_path_buf();
         move |source| Error::Io { path, source }
     };
-    for p in std::iter::once(dest.to_path_buf()).chain(sidecar_paths(dest)) {
-        match fs::remove_file(&p) {
-            Err(err) if err.kind() != io::ErrorKind::NotFound => return Err(io_err(&p)(err)),
-            _ => {}
-        }
-    }
     let mut from = File::open(src).map_err(io_err(src))?;
     let mut to = OpenOptions::new()
         .write(true)
@@ -420,8 +454,10 @@ fn copy_private(src: &Path, dest: &Path) -> Result<()> {
         .mode(FILE_MODE)
         .open(dest)
         .map_err(io_err(dest))?;
-    io::copy(&mut from, &mut to).map_err(io_err(dest))?;
-    to.sync_all().map_err(io_err(dest))
+    io::copy(&mut from, &mut to)
+        .and_then(|_| to.sync_all())
+        .map_err(io_err(dest))
+        .inspect_err(|_| remove_copy(dest))
 }
 
 /// Validates the copy at `path`. If it is older than `migrations`, migrates
@@ -747,27 +783,91 @@ fn free_stem(db_path: &Path, now_ms: i64) -> Result<PathBuf> {
 }
 
 /// Moves the unusable copy `partial` to a free
-/// `rappel.sqlite3.restore.refused-<stamp>[-N]`, never over a file. A hard
-/// link fails if the name was taken in the meantime, and then the next free
-/// name is tried; the copy's old name is removed only once the new one
-/// exists. Where the file system refuses hard links (`Unsupported` or
-/// `PermissionDenied`, as some do), it falls back to a rename to the free
-/// name, which could only replace a file created there between the check
-/// and the rename; any other error is returned.
+/// `rappel.sqlite3.restore.refused-<stamp>[-N]`, never over a file: a hard
+/// link to that name (`link_to_free_name`), then the old name is removed.
+/// Where the file system refuses hard links, it falls back to a rename to
+/// the free name, which could only replace a file created there between
+/// the check and the rename.
 fn set_aside_copy(data_dir: &Path, partial: &Path, now_ms: i64) -> Result<PathBuf> {
-    let stem = data_dir.join(format!("{DB_FILE_NAME}.restore"));
     let io_err = |source| Error::Io {
         path: partial.to_path_buf(),
         source,
     };
+    let target = if let Some(target) = link_to_free_name(data_dir, partial, ".refused-", now_ms)? {
+        fs::remove_file(partial).map_err(io_err)?;
+        target
+    } else {
+        let target = free_name(&restore_stem(data_dir), ".refused-", now_ms)?;
+        fs::rename(partial, &target).map_err(io_err)?;
+        target
+    };
+    sync_parent(&target)?;
+    Ok(target)
+}
+
+/// Before a restore installs its own copy, keeps the copy an interrupted
+/// restore left waiting at `partial` under a free
+/// `rappel.sqlite3.restore.set-aside-<stamp>[-N]`, never over a file, and
+/// returns that name; `None` if nothing waits. `partial` itself is left in
+/// place, so the restore's rename of its checked copy over it replaces only
+/// the name, and a crash at any point still leaves a checked copy there.
+/// The second name is a hard link (`link_to_free_name`), or, where the file
+/// system refuses hard links, a byte copy to a name that did not exist.
+///
+/// # Errors
+/// [`Error::Io`] (`AlreadyExists`) if anything but a regular file has the
+/// waiting copy's name: it is left alone and nothing is changed. IO errors.
+fn keep_waiting_copy(data_dir: &Path, partial: &Path, now_ms: i64) -> Result<Option<PathBuf>> {
+    match fs::symlink_metadata(partial) {
+        Ok(meta) if meta.file_type().is_file() => {}
+        Ok(_) => {
+            return Err(Error::Io {
+                path: partial.to_path_buf(),
+                source: io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "is not a restore copy, so it was left alone",
+                ),
+            });
+        }
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(source) => {
+            return Err(Error::Io {
+                path: partial.to_path_buf(),
+                source,
+            });
+        }
+    }
+    let target = match link_to_free_name(data_dir, partial, ".set-aside-", now_ms)? {
+        Some(target) => target,
+        None => copy_to_free_name(data_dir, partial, ".set-aside-", now_ms)?,
+    };
+    sync_parent(&target)?;
+    Ok(Some(target))
+}
+
+/// `rappel.sqlite3.restore`, the start of every name a restore copy is kept
+/// under.
+fn restore_stem(data_dir: &Path) -> PathBuf {
+    data_dir.join(format!("{DB_FILE_NAME}.restore"))
+}
+
+/// Gives `partial` a second name, a free `rappel.sqlite3.restore<infix>
+/// <stamp>[-N]`, by a hard link, and returns it. A hard link fails if the
+/// name was taken in the meantime, and then the next free name is tried, so
+/// nothing is ever overwritten. `None` where the file system refuses hard
+/// links (`Unsupported` or `PermissionDenied`, as some do); any other error
+/// is returned.
+fn link_to_free_name(
+    data_dir: &Path,
+    partial: &Path,
+    infix: &str,
+    now_ms: i64,
+) -> Result<Option<PathBuf>> {
+    let stem = restore_stem(data_dir);
     for _ in 0..100 {
-        let target = free_name(&stem, ".refused-", now_ms)?;
+        let target = free_name(&stem, infix, now_ms)?;
         match fs::hard_link(partial, &target) {
-            Ok(()) => {
-                fs::remove_file(partial).map_err(io_err)?;
-                sync_parent(&target)?;
-                return Ok(target);
-            }
+            Ok(()) => return Ok(Some(target)),
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {}
             // Only where the file system refuses hard links; any other
             // error is returned as it is.
@@ -777,18 +877,45 @@ fn set_aside_copy(data_dir: &Path, partial: &Path, now_ms: i64) -> Result<PathBu
                     io::ErrorKind::Unsupported | io::ErrorKind::PermissionDenied
                 ) =>
             {
-                tracing::debug!("no hard link for the restore copy, renaming it: {err}");
-                fs::rename(partial, &target).map_err(io_err)?;
-                sync_parent(&target)?;
-                return Ok(target);
+                tracing::debug!("no hard link for the restore copy: {err}");
+                return Ok(None);
             }
-            Err(err) => return Err(io_err(err)),
+            Err(source) => {
+                return Err(Error::Io {
+                    path: partial.to_path_buf(),
+                    source,
+                });
+            }
         }
     }
-    Err(io_err(io::Error::new(
-        io::ErrorKind::AlreadyExists,
-        "no free name to set the restore copy aside",
-    )))
+    Err(no_free_name(partial))
+}
+
+/// Copies `partial` to a free `rappel.sqlite3.restore<infix><stamp>[-N]`
+/// that did not exist (the next one is tried if it appeared meanwhile), for
+/// a file system without hard links.
+fn copy_to_free_name(data_dir: &Path, partial: &Path, infix: &str, now_ms: i64) -> Result<PathBuf> {
+    let stem = restore_stem(data_dir);
+    for _ in 0..100 {
+        let target = free_name(&stem, infix, now_ms)?;
+        match copy_new(partial, &target) {
+            Ok(()) => return Ok(target),
+            Err(Error::Io { path, source })
+                if path == target && source.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(err) => return Err(err),
+        }
+    }
+    Err(no_free_name(partial))
+}
+
+fn no_free_name(partial: &Path) -> Error {
+    Error::Io {
+        path: partial.to_path_buf(),
+        source: io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "no free name to set the restore copy aside",
+        ),
+    }
 }
 
 /// `<path><infix><stamp>`, or `<path><infix><stamp>-N` with the smallest

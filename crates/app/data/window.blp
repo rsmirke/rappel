@@ -37,6 +37,17 @@ template $RappelWindow: Adw.ApplicationWindow {
       }
 
       Adw.ViewStackPage {
+        name: "setting";
+
+        child: Adw.ToolbarView {
+          [top]
+          Adw.HeaderBar {}
+
+          content: $RappelSettingPage setting_page {};
+        };
+      }
+
+      Adw.ViewStackPage {
         name: "too-new";
 
         child: Adw.ToolbarView {

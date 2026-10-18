@@ -14,6 +14,48 @@ pub const MAX_DAILY_LIMIT: u32 = 9_999;
 /// The last hour a study day may start at.
 pub const MAX_DAY_START_HOUR: u8 = 23;
 
+/// One of the stored settings, by its key in the `settings` table. A
+/// damaged stored value is reported with this key, never with the text the
+/// file holds (ADR 0052).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SettingKey {
+    /// [`Settings::desired_retention`].
+    DesiredRetention,
+    /// [`Settings::max_new_per_day`].
+    MaxNewPerDay,
+    /// [`Settings::max_reviews_per_day`].
+    MaxReviewsPerDay,
+    /// [`Settings::day_start_hour`].
+    DayStartHour,
+}
+
+impl SettingKey {
+    /// Every key, in the order the settings are checked.
+    pub const ALL: [Self; 4] = [
+        Self::DesiredRetention,
+        Self::MaxNewPerDay,
+        Self::MaxReviewsPerDay,
+        Self::DayStartHour,
+    ];
+
+    /// The key as the `settings` table stores it.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::DesiredRetention => "desired_retention",
+            Self::MaxNewPerDay => "max_new_per_day",
+            Self::MaxReviewsPerDay => "max_reviews_per_day",
+            Self::DayStartHour => "day_start_hour",
+        }
+    }
+}
+
+impl std::fmt::Display for SettingKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// The global settings. A setting that was never written has its default.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Settings {
@@ -48,7 +90,7 @@ impl Settings {
         if DESIRED_RETENTION_RANGE.contains(&value) {
             Ok(value)
         } else {
-            Err(invalid("desired_retention", value))
+            Err(invalid(SettingKey::DesiredRetention, value))
         }
     }
 
@@ -57,7 +99,7 @@ impl Settings {
     /// # Errors
     /// [`Error::InvalidSetting`] if it is above [`MAX_DAILY_LIMIT`].
     pub fn check_max_new(value: u32) -> Result<u32> {
-        check_limit("max_new_per_day", value)
+        check_limit(SettingKey::MaxNewPerDay, value)
     }
 
     /// `value` if it is a valid reviews-per-day limit.
@@ -65,7 +107,7 @@ impl Settings {
     /// # Errors
     /// [`Error::InvalidSetting`] if it is above [`MAX_DAILY_LIMIT`].
     pub fn check_max_reviews(value: u32) -> Result<u32> {
-        check_limit("max_reviews_per_day", value)
+        check_limit(SettingKey::MaxReviewsPerDay, value)
     }
 
     /// `value` if it is an hour of the day.
@@ -76,12 +118,12 @@ impl Settings {
         if value <= MAX_DAY_START_HOUR {
             Ok(value)
         } else {
-            Err(invalid("day_start_hour", value))
+            Err(invalid(SettingKey::DayStartHour, value))
         }
     }
 }
 
-fn check_limit(key: &'static str, value: u32) -> Result<u32> {
+fn check_limit(key: SettingKey, value: u32) -> Result<u32> {
     if value <= MAX_DAILY_LIMIT {
         Ok(value)
     } else {
@@ -89,9 +131,9 @@ fn check_limit(key: &'static str, value: u32) -> Result<u32> {
     }
 }
 
-fn invalid(key: &'static str, value: impl std::fmt::Display) -> Error {
+fn invalid(key: SettingKey, value: impl std::fmt::Display) -> Error {
     Error::InvalidSetting {
-        key,
+        key: key.as_str(),
         value: value.to_string(),
     }
 }
@@ -110,6 +152,21 @@ mod tests {
         Settings::check_max_new(s.max_new_per_day).unwrap();
         Settings::check_max_reviews(s.max_reviews_per_day).unwrap();
         Settings::check_day_start_hour(s.day_start_hour).unwrap();
+    }
+
+    #[test]
+    fn every_key_is_listed_once_with_its_stored_name() {
+        let names: Vec<&str> = SettingKey::ALL.iter().map(|k| k.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "desired_retention",
+                "max_new_per_day",
+                "max_reviews_per_day",
+                "day_start_hour"
+            ]
+        );
+        assert_eq!(SettingKey::DayStartHour.to_string(), "day_start_hour");
     }
 
     #[test]

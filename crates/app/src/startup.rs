@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use rappel_core::Error;
 use rappel_core::data_dir::{self, BuildProfile, DataDirEnv};
+use rappel_core::domain::{SettingKey, Settings};
 
 use crate::state::AppState;
 
@@ -87,6 +88,9 @@ pub enum Problem {
         supported: u32,
         data_dir: PathBuf,
     },
+    /// A stored setting is damaged (ADR 0052): the page offers to reset it
+    /// to its default, after a backup.
+    DamagedSetting { key: SettingKey, data_dir: PathBuf },
     /// Anything else: a short message, the full error, and the data folder
     /// when it is known.
     Failed {
@@ -147,6 +151,57 @@ pub fn too_new_text(found: i64, supported: u32) -> String {
     )
 }
 
+/// The title of the page for a damaged stored setting.
+pub const DAMAGED_SETTING_TITLE: &str = "A Setting Is Damaged";
+
+/// The setting's name as Preferences shows it.
+pub fn setting_name(key: SettingKey) -> &'static str {
+    match key {
+        SettingKey::DesiredRetention => "Desired Retention",
+        SettingKey::MaxNewPerDay => "New Cards per Day",
+        SettingKey::MaxReviewsPerDay => "Reviews per Day",
+        SettingKey::DayStartHour => "Day Starts At",
+    }
+}
+
+/// The setting's default, as Preferences shows a value: "90%", "20",
+/// "200", "04:00".
+pub fn setting_default(key: SettingKey) -> String {
+    let defaults = Settings::default();
+    match key {
+        SettingKey::DesiredRetention => {
+            crate::ui::text::percent(f64::from(defaults.desired_retention))
+        }
+        // Under 1,000, so no digit grouping.
+        SettingKey::MaxNewPerDay => defaults.max_new_per_day.to_string(),
+        SettingKey::MaxReviewsPerDay => defaults.max_reviews_per_day.to_string(),
+        SettingKey::DayStartHour => {
+            crate::dialogs::preferences::hour_label(defaults.day_start_hour)
+        }
+    }
+}
+
+/// The page's description: which setting, that the database was left
+/// alone, and what Reset This Setting does.
+pub fn damaged_setting_text(key: SettingKey) -> String {
+    format!(
+        "The stored value of “{}” in Preferences cannot be read, so Rappel did not open the \
+         database. Reset This Setting makes a backup first, then sets it back to its default, \
+         {}. Your decks, cards and review history are not changed.",
+        setting_name(key),
+        setting_default(key)
+    )
+}
+
+/// The toast once the setting is reset.
+pub fn setting_reset_text(key: SettingKey) -> String {
+    format!(
+        "“{}” was reset to {}. A backup was made first.",
+        setting_name(key),
+        setting_default(key)
+    )
+}
+
 /// The screen for a data directory that could not be resolved or created.
 pub fn data_dir_problem(err: &Error) -> Problem {
     let (message, data_dir) = match err {
@@ -180,6 +235,12 @@ pub fn open_problem(err: &Error, data_dir: &Path) -> Problem {
         Error::NotARappelDatabase => RecoveryReason::NotRappel,
         Error::OrphanedSidecar(_) => RecoveryReason::MissingFile,
         Error::InterruptedRestore(_) => RecoveryReason::InterruptedRestore,
+        Error::DamagedSetting { key, .. } => {
+            return Problem::DamagedSetting {
+                key: *key,
+                data_dir,
+            };
+        }
         Error::UnsupportedVersion { found, supported } => {
             return Problem::TooNew {
                 found: *found,
@@ -249,6 +310,47 @@ mod tests {
             open_problem(&Error::InterruptedRestore(partial), &dir()),
             recovery(RecoveryReason::InterruptedRestore)
         );
+    }
+
+    #[test]
+    fn a_damaged_setting_offers_to_reset_it() {
+        let err = Error::DamagedSetting {
+            key: SettingKey::MaxNewPerDay,
+            value: "\"lots\"".into(),
+        };
+        assert_eq!(
+            open_problem(&err, &dir()),
+            Problem::DamagedSetting {
+                key: SettingKey::MaxNewPerDay,
+                data_dir: dir(),
+            }
+        );
+    }
+
+    #[test]
+    fn the_damaged_setting_texts_name_it_and_its_default() {
+        let names: Vec<(&str, String)> = SettingKey::ALL
+            .iter()
+            .map(|&k| (setting_name(k), setting_default(k)))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                ("Desired Retention", "90%".to_owned()),
+                ("New Cards per Day", "20".to_owned()),
+                ("Reviews per Day", "200".to_owned()),
+                ("Day Starts At", "04:00".to_owned()),
+            ]
+        );
+        assert_eq!(
+            setting_reset_text(SettingKey::DesiredRetention),
+            "“Desired Retention” was reset to 90%. A backup was made first."
+        );
+        let text = damaged_setting_text(SettingKey::DayStartHour);
+        assert!(text.starts_with("The stored value of “Day Starts At” in Preferences"));
+        assert!(text.contains("makes a backup first"));
+        assert!(text.contains("its default, 04:00."));
+        assert!(text.ends_with("are not changed."));
     }
 
     #[test]

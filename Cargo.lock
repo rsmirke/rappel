@@ -1201,6 +1201,7 @@ dependencies = [
  "ratex-layout",
  "ratex-parser",
  "ratex-types",
+ "rusqlite",
  "sourceview5",
  "tempfile",
  "tracing",

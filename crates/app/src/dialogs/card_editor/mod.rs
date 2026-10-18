@@ -360,14 +360,14 @@ impl CardEditor {
         ));
     }
 
-    /// Reads every tag again, for the suggestions. A failure only means no
-    /// suggestions.
+    /// Reads the tags in use again, for the suggestions: a tag no live card
+    /// has is not offered (ADR 0052). A failure only means no suggestions.
     fn reload_all_tags(&self) {
         let imp = self.imp();
         let Some(state) = imp.state.get() else {
             return;
         };
-        let all = state.tags().unwrap_or_else(|err| {
+        let all = state.used_tags().unwrap_or_else(|err| {
             tracing::warn!("the tags could not be read for suggestions: {err}");
             Vec::new()
         });

@@ -38,6 +38,10 @@ type OnRestored = dyn Fn(PathBuf, Restored, Recovered);
 /// with its version and the latest this build supports.
 type OnTooNew = dyn Fn(i64, u32);
 
+/// Called when the database the page installed has a damaged stored
+/// setting, with its key (ADR 0052).
+type OnDamagedSetting = dyn Fn(rappel_core::domain::SettingKey);
+
 mod imp {
     use std::cell::{Cell, RefCell};
     use std::path::PathBuf;
@@ -46,7 +50,7 @@ mod imp {
     use adw::subclass::prelude::*;
     use gtk::glib;
 
-    use super::{OnRestored, OnTooNew};
+    use super::{OnDamagedSetting, OnRestored, OnTooNew};
     use crate::startup::RecoveryReason;
     use crate::ui::callback::Callback;
 
@@ -67,6 +71,7 @@ mod imp {
         pub data_dir: RefCell<Option<PathBuf>>,
         pub on_restored: RefCell<Option<Callback<OnRestored>>>,
         pub on_too_new: RefCell<Option<Callback<OnTooNew>>>,
+        pub on_damaged_setting: RefCell<Option<Callback<OnDamagedSetting>>>,
         /// The last failure's toast: replaced by the next one, and
         /// dismissed once a database is open, so it does not stay over
         /// the toast that says what was done.
@@ -143,6 +148,36 @@ impl RecoveryPage {
     pub fn set_on_too_new(&self, f: impl Fn(i64, u32) + 'static) {
         let f: Rc<OnTooNew> = Rc::new(f);
         self.imp().on_too_new.replace(Some(Callback::new(f)));
+    }
+
+    /// Calls `f` when the database a restore, Finish Restore or Start Fresh
+    /// installed has a damaged stored setting: the window then shows the
+    /// page that resets it, as at startup (ADR 0052). There is one such
+    /// callback.
+    pub fn set_on_damaged_setting(&self, f: impl Fn(rappel_core::domain::SettingKey) + 'static) {
+        let f: Rc<OnDamagedSetting> = Rc::new(f);
+        self.imp()
+            .on_damaged_setting
+            .replace(Some(Callback::new(f)));
+    }
+
+    /// Hands a damaged setting in `result` to the window; whether it did.
+    /// The database is installed then, so this page has nothing left to do.
+    fn damaged_setting<T>(
+        &self,
+        result: &Result<rappel_core::Result<T>, worker::Panicked>,
+    ) -> bool {
+        let Ok(Err(rappel_core::Error::DamagedSetting { key, .. })) = result else {
+            return false;
+        };
+        tracing::warn!(%key, "the installed database has a damaged setting");
+        let imp = self.imp();
+        imp.errors.clear();
+        let handler = imp.on_damaged_setting.borrow().as_ref().map(Callback::get);
+        if let Some(handler) = handler {
+            handler(*key);
+        }
+        true
     }
 
     /// Rebuilds the backup list and the explanation under the title.
@@ -255,6 +290,9 @@ impl RecoveryPage {
             AppState::restore_unopened(&worker_dir, &backup)
         })
         .await;
+        if self.damaged_setting(&result) {
+            return;
+        }
 
         let message = match result {
             Ok(Ok(restored)) => {
@@ -311,6 +349,9 @@ impl RecoveryPage {
         let worker_dir = dir.clone();
         let result =
             worker::run(self, move || AppState::finish_restore_unopened(&worker_dir)).await;
+        if self.damaged_setting(&result) {
+            return;
+        }
 
         let message = match result {
             Ok(Ok(restored)) => {
@@ -386,6 +427,9 @@ impl RecoveryPage {
         // The app is held while it runs, as for a restore.
         let worker_dir = dir.clone();
         let result = worker::run(self, move || AppState::start_fresh_unopened(&worker_dir)).await;
+        if self.damaged_setting(&result) {
+            return;
+        }
 
         let message = match result {
             Ok(Ok(fresh)) => {

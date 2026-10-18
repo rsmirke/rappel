@@ -7,13 +7,18 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- **A damaged setting no longer stops Rappel with no way on** (ADR 0052). If a value in the database's settings cannot be read (a hand edit, a damaged file), Rappel shows **A Setting Is Damaged**, names the setting as Preferences does and says what its default is. **Reset This Setting** makes a backup first, then puts that one setting back to its default and opens your decks; nothing else is changed. If another setting is damaged too, the page then shows that one.
+- **Restoring a backup keeps the copy an interrupted restore left waiting** (ADR 0052): it is kept as `rappel.sqlite3.restore.set-aside-` and the date and time in the data folder, never replaced, and the notice after the restore says where.
+- **Tag suggestions only offer tags a card has** (ADR 0052): a typo tag that was taken off again is no longer suggested in the card editor or in Add Tags, and no longer listed in the All Cards tag filter (unless it is the one chosen there). No tag is deleted.
 - **Reset Progress is greyed out for a card that is already new** (no review since it was created or last reset, or only reviews that were undone), in the card menu of the deck page and of All Cards. A reset of such a card used to add a log entry that changed nothing. In selection mode, **Reset Progress** is offered while at least one chosen card has progress, and leaves the new ones alone. If a menu is stale and the core refuses, the page says "This card has no progress to reset" and updates the row.
 
 ### Changed
+- `rappel-core`: a stored setting that is not valid is `Error::DamagedSetting { key, .. }` (was `Error::InvalidColumn`), and `Store::open` refuses it after migrating, naming its key (`domain::SettingKey`). `restore_backup` sets a waiting restore copy aside (`Restored::set_aside`) and refuses, changing nothing, when something other than a regular file has its name.
 - `rappel-core`: `Store::reset_card` refuses a new card with `Error::CardAlreadyNew`, and nothing is written; `Store::reset_cards` skips new cards and returns only the entries it wrote.
 
 ### Added
 - Development: `scripts/screenshot.py`, the batch-mode screenshot harness (a private Xvfb display, input only through XTest).
+- `rappel-core`: `storage::reset_setting(data_dir, key)` (a backup, then the one damaged row removed and, for the retention, the schedule rebuilt, in one transaction) and `Store::used_tags` (the tags at least one live card has).
 - `rappel-core`: `Error::CardAlreadyNew`; `Store::new_card_ids(deck)` lists a deck's new cards in one query; `BrowseRow::is_new` says whether a card is new, also when it is suspended.
 
 ## [0.2.0-beta.1] — 2026-10-18
