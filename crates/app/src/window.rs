@@ -630,4 +630,35 @@ mod tests {
              used was kept as /data/rappel.sqlite3.restore.refused-20261015-120000"
         );
     }
+
+    /// Finish Restore on a waiting copy from a newer Rappel shows the "too
+    /// new" page, as a database that is too new does, with its version
+    /// (ADR 0050, row 35).
+    #[test]
+    fn a_waiting_copy_from_a_newer_rappel_shows_the_too_new_page() {
+        crate::testing::with_widgets(|| {
+            let tmp = tempfile::tempdir().expect("a temporary directory");
+            let (data, partial) = crate::pages::interrupted_restore_folder(&tmp, false);
+            // `user_version`, bytes 60 to 63 of the header, big-endian.
+            let mut bytes = std::fs::read(&partial).expect("the copy is read");
+            bytes[60..64].copy_from_slice(&10_000_u32.to_be_bytes());
+            std::fs::write(&partial, bytes).expect("the copy is written");
+            let window: RappelWindow = glib::Object::new();
+            window.show_problem(Problem::Recovery {
+                reason: crate::startup::RecoveryReason::InterruptedRestore,
+                data_dir: data,
+            });
+            let imp = window.imp();
+            assert_eq!(imp.stack.visible_child_name().as_deref(), Some("recovery"));
+            glib::MainContext::default().block_on(imp.recovery_page.finish_restore());
+            assert_eq!(imp.stack.visible_child_name().as_deref(), Some("too-new"));
+            let description = imp.too_new_page.description().unwrap_or_default();
+            assert!(
+                description.contains("database version 10000"),
+                "{description}"
+            );
+            assert!(partial.exists(), "the copy is kept");
+            window.destroy();
+        });
+    }
 }

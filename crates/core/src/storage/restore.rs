@@ -203,16 +203,17 @@ fn finish_restore_with(data_dir: &Path, now_ms: i64, migrations: &[Migration]) -
 
 /// Whether `err`, from checking a restore copy, is about the copy's content,
 /// so the copy can never be installed: it is damaged, not an SQLite file,
-/// not a Rappel database, or in WAL mode, which no backup is. Any other
-/// error (a full disk, an IO error, too little memory, a copy made by a
-/// newer Rappel) says nothing against the copy, so it is kept where it is
-/// (ADR 0050, row 35).
+/// not a Rappel database, in WAL mode, which no backup is, or has a
+/// negative version, which no Rappel writes. Any other error (a full disk,
+/// an IO error, too little memory, a copy made by a newer Rappel) says
+/// nothing against the copy, so it is kept where it is (ADR 0050, row 35).
 #[must_use]
 pub fn is_unusable_copy(err: &Error) -> bool {
     match err {
-        Error::IntegrityCheckFailed { .. } | Error::NotARappelDatabase => true,
-        // `require_rollback_journal`'s refusal is the only `InvalidData`.
-        Error::Io { source, .. } => source.kind() == io::ErrorKind::InvalidData,
+        Error::IntegrityCheckFailed { .. }
+        | Error::NotARappelDatabase
+        | Error::WalModeCopy { .. } => true,
+        Error::UnsupportedVersion { found, .. } => *found < 0,
         Error::Sqlite(rusqlite::Error::SqliteFailure(failure, _)) => matches!(
             failure.code,
             rusqlite::ErrorCode::NotADatabase | rusqlite::ErrorCode::DatabaseCorrupt
@@ -506,10 +507,9 @@ fn require_rollback_journal(path: &Path) -> Result<()> {
     if &header[..16] != SQLITE_HEADER || (header[18] == 1 && header[19] == 1) {
         Ok(())
     } else {
-        Err(io_err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "the file is in WAL mode, which backups never are",
-        )))
+        Err(Error::WalModeCopy {
+            path: path.to_path_buf(),
+        })
     }
 }
 
@@ -750,10 +750,10 @@ fn free_stem(db_path: &Path, now_ms: i64) -> Result<PathBuf> {
 /// `rappel.sqlite3.restore.refused-<stamp>[-N]`, never over a file. A hard
 /// link fails if the name was taken in the meantime, and then the next free
 /// name is tried; the copy's old name is removed only once the new one
-/// exists. Where the file system refuses hard links (some do, with
-/// `EPERM` or `ENOTSUP`), it falls back to a rename to the free name, which
-/// could only replace a file created there between the check and the
-/// rename.
+/// exists. Where the file system refuses hard links (`Unsupported` or
+/// `PermissionDenied`, as some do), it falls back to a rename to the free
+/// name, which could only replace a file created there between the check
+/// and the rename; any other error is returned.
 fn set_aside_copy(data_dir: &Path, partial: &Path, now_ms: i64) -> Result<PathBuf> {
     let stem = data_dir.join(format!("{DB_FILE_NAME}.restore"));
     let io_err = |source| Error::Io {
@@ -769,12 +769,20 @@ fn set_aside_copy(data_dir: &Path, partial: &Path, now_ms: i64) -> Result<PathBu
                 return Ok(target);
             }
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {}
-            Err(err) => {
+            // Only where the file system refuses hard links; any other
+            // error is returned as it is.
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    io::ErrorKind::Unsupported | io::ErrorKind::PermissionDenied
+                ) =>
+            {
                 tracing::debug!("no hard link for the restore copy, renaming it: {err}");
                 fs::rename(partial, &target).map_err(io_err)?;
                 sync_parent(&target)?;
                 return Ok(target);
             }
+            Err(err) => return Err(io_err(err)),
         }
     }
     Err(io_err(io::Error::new(

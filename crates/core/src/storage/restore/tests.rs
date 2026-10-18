@@ -1082,7 +1082,7 @@ fn v1_schema_labelled_v2_is_refused() {
 fn wal_mode_backup_is_refused() {
     assert_refused(
         |e, good| altered_copy(e, good, "PRAGMA journal_mode = WAL;"),
-        |err| matches!(err, Error::Io { source, .. } if source.kind() == std::io::ErrorKind::InvalidData),
+        |err| matches!(err, Error::WalModeCopy { .. }),
     );
 }
 
@@ -1349,7 +1349,13 @@ fn only_a_refusal_of_the_content_makes_a_copy_unusable() {
             messages: vec!["bad".into()],
         },
         Error::NotARappelDatabase,
-        io(io::ErrorKind::InvalidData),
+        Error::WalModeCopy {
+            path: PathBuf::from("/x"),
+        },
+        Error::UnsupportedVersion {
+            found: -1,
+            supported: 5,
+        },
         sqlite(rusqlite::ffi::SQLITE_NOTADB),
         sqlite(rusqlite::ffi::SQLITE_CORRUPT),
     ] {
@@ -1362,6 +1368,8 @@ fn only_a_refusal_of_the_content_makes_a_copy_unusable() {
         sqlite(rusqlite::ffi::SQLITE_BUSY),
         io(io::ErrorKind::PermissionDenied),
         io(io::ErrorKind::StorageFull),
+        // `read_moving_aside`'s refusal of its marker, not of the copy.
+        io(io::ErrorKind::InvalidData),
         Error::UnsupportedVersion {
             found: 99,
             supported: 5,
@@ -1419,4 +1427,32 @@ fn a_folder_at_the_copys_name_is_left_alone() {
     let before = snapshot(&e.data);
     assert!(matches!(e.start_fresh(), Err(Error::InterruptedRestore(_))));
     assert_eq!(snapshot(&e.data), before, "nothing changed");
+}
+
+/// A copy with a negative version was not written by any Rappel: unusable,
+/// so Start Fresh sets it aside. One from a newer Rappel is kept, and its
+/// error returned with nothing changed.
+#[test]
+fn a_negative_version_is_unusable_but_a_newer_one_is_kept() {
+    for (version, set_aside) in [(-1_i64, true), (i64::from(latest(MIGRATIONS)) + 1, false)] {
+        let e = Env::new();
+        let partial = interrupted_without_its_backup(&e);
+        {
+            let conn = Connection::open(&partial).unwrap();
+            conn.pragma_update(None, "user_version", version).unwrap();
+        }
+        let before = snapshot(&e.data);
+        let result = e.start_fresh();
+        if set_aside {
+            let fresh = result.unwrap();
+            assert!(fresh.set_aside.is_some(), "{version}");
+            assert!(!partial.exists());
+        } else {
+            assert!(
+                matches!(result, Err(Error::UnsupportedVersion { found, .. }) if found == version),
+                "{version}"
+            );
+            assert_eq!(snapshot(&e.data), before, "nothing changed");
+        }
+    }
 }

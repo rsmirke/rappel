@@ -23,6 +23,7 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 - **Restore edge cases** (#50): with a stray `-wal` file next to a restore that did not finish, the start page now offers **Finish Restore** instead of saying the database is missing. Finishing a restore no longer deletes any old backup, so the one it came from stays. And backups made while the computer's clock ran ahead are kept like others (the newest of each day, for up to 14 such days) instead of all but one being deleted once the clock is put right.
 - `rappel-core`: `MAX_QUERY_BYTES`, how much of a search query is read.
 - `rappel-core`: `Restored::set_aside`, where `start_fresh` moved a waiting restore copy that could not be used.
+- `rappel-core`: `storage::is_unusable_copy`, whether a failed check of a restore copy refused its content (only then does Start Fresh set the copy aside), and `Error::WalModeCopy`, the refusal of a copy in WAL mode (was an IO error).
 
 ### Changed
 - Internal: the tests' time bounds hold on a busy machine (#67, ADR 0049). They measure the CPU time of the thread that did the work instead of the wall clock, and when a time is over its bound they compare it with a reference workload run at once on the same thread, so a machine slowed by load is measured at its own speed. A hang is caught by a separate, generous wall-clock timeout. The bounds themselves are unchanged and still fail the regressions they are there for. With three busy loops per CPU, `cargo test` used to fail 7 to 11 tests per run; it now passes.

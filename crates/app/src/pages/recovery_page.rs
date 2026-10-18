@@ -301,7 +301,7 @@ impl RecoveryPage {
 
     /// Installs the waiting copy on a worker thread, like a restore, and
     /// logs as `restore` does.
-    async fn finish_restore(&self) {
+    pub(crate) async fn finish_restore(&self) {
         let imp = self.imp();
         let Some(dir) = imp.data_dir.borrow().clone() else {
             return;
@@ -500,7 +500,8 @@ fn finish_failure(err: &rappel_core::Error) -> FinishFailure {
     use rappel_core::Error;
     match err {
         Error::RestoreRefused { source, .. } => match **source {
-            Error::UnsupportedVersion { found, supported } => {
+            // A negative version is no newer Rappel's: unusable, below.
+            Error::UnsupportedVersion { found, supported } if found >= 0 => {
                 FinishFailure::TooNew { found, supported }
             }
             ref source if rappel_core::storage::is_unusable_copy(source) => FinishFailure::Unusable,
@@ -552,7 +553,7 @@ fn offers_start_fresh(reason: Option<RecoveryReason>) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -690,10 +691,24 @@ mod tests {
             finish_failure(&refused(io(std::io::ErrorKind::StorageFull))),
             FinishFailure::Other
         );
-        // The WAL-mode refusal.
+        // The WAL-mode refusal, and a version no Rappel writes.
+        assert_eq!(
+            finish_failure(&refused(Error::WalModeCopy {
+                path: PathBuf::from("/data/x")
+            })),
+            FinishFailure::Unusable
+        );
+        assert_eq!(
+            finish_failure(&refused(Error::UnsupportedVersion {
+                found: -1,
+                supported: 7
+            })),
+            FinishFailure::Unusable
+        );
+        // Any other IO error, `InvalidData` included, keeps the copy.
         assert_eq!(
             finish_failure(&refused(io(std::io::ErrorKind::InvalidData))),
-            FinishFailure::Unusable
+            FinishFailure::Other
         );
         assert_eq!(
             finish_failure(&Error::NoRestoreWaiting),
@@ -764,7 +779,7 @@ mod tests {
     /// (ADR 0050, rows 25 and 35). The database moved aside stays, and the
     /// backups are taken away unless `keep_backups`. Returns the folder and
     /// the waiting copy's path.
-    fn interrupted(tmp: &tempfile::TempDir, keep_backups: bool) -> (PathBuf, PathBuf) {
+    pub(crate) fn interrupted(tmp: &tempfile::TempDir, keep_backups: bool) -> (PathBuf, PathBuf) {
         let data = tmp.path().join("data");
         let state = AppState::open(data.clone()).expect("a new database opens");
         state.create_deck("Maths").expect("a deck");
