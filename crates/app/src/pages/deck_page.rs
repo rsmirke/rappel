@@ -764,7 +764,7 @@ enum Notice {
 /// e.g. after an import): that is information, not an error.
 fn reset_notice(err: &Error) -> Notice {
     match err {
-        Error::CardAlreadyNew(_) => Notice::Info(gettext("This card has no progress to reset")),
+        Error::CardAlreadyNew(_) => Notice::Info(crate::pages::browser_text::no_progress_text(1)),
         // Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
         err => Notice::Error(with_error(
             &gettext("The progress could not be reset: {error}"),

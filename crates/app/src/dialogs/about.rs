@@ -54,6 +54,13 @@ fn katex_fonts() -> Legal {
     }
 }
 
+/// The translators to credit: none where the lookup gave the message
+/// itself back (English, or a language whose catalog has no credits), so
+/// the dialog never lists "translator-credits" as a name.
+fn translator_credits(looked_up: String) -> Option<String> {
+    (looked_up != "translator-credits" && !looked_up.trim().is_empty()).then_some(looked_up)
+}
+
 /// The issue tracker, from the repository.
 fn issue_url() -> String {
     format!("{REPOSITORY}/issues")
@@ -74,9 +81,13 @@ pub fn show(parent: &impl IsA<gtk::Widget>) {
     // Opened in the browser only when clicked; Rappel fetches nothing.
     dialog.set_website(REPOSITORY);
     dialog.set_issue_url(&issue_url());
-    // Translators: put your name here (one per line, with an e-mail
-    // address in <> if you like); libadwaita lists it under Translated by.
-    dialog.set_translator_credits(&gettext("translator-credits"));
+    if let Some(credits) = translator_credits(gettext(
+        // Translators: put your name here (one per line, with an e-mail
+        // address in <> if you like); libadwaita lists it under Translated by.
+        "translator-credits",
+    )) {
+        dialog.set_translator_credits(&credits);
+    }
     dialog.add_credit_section(Some(&gettext("Built With")), &LIBRARIES);
     let fonts = katex_fonts();
     dialog.add_legal_section(
@@ -154,5 +165,14 @@ mod tests {
             assert!(!label.text().contains('<'), "{}", label.text());
             assert!(label.text().contains("SIL Open Font License"));
         });
+    }
+
+    #[test]
+    fn an_untranslated_credit_line_is_left_out() {
+        assert_eq!(translator_credits("translator-credits".to_owned()), None);
+        assert_eq!(translator_credits(" ".to_owned()), None);
+        assert_eq!(translator_credits(gettext("translator-credits")), None);
+        let french = crate::i18n::tests::in_french(|| gettext("translator-credits"));
+        assert_eq!(translator_credits(french.clone()), Some(french));
     }
 }

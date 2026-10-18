@@ -7,7 +7,7 @@ use std::time::Duration;
 use rappel_core::domain::Grade;
 use rappel_core::stats::{CardInfo, HistoryEntry};
 
-use crate::i18n::{fill, gettext, ngettext};
+use crate::i18n::{fill, gettext, ngettext, npgettext};
 use crate::ui::text::{
     counted, decimal_separator, duration_text, group_digit_string, group_digits, interval_text,
     isolate, list_separator, one_line, percent,
@@ -87,12 +87,26 @@ pub fn stability_text(days: f32) -> String {
         let n = whole.parse::<usize>().unwrap_or(usize::MAX);
         (group_digit_string(&whole), n)
     } else {
-        // A number with a decimal takes the plural ("0.4 days").
-        (format!("{days:.1}").replace('.', &decimal_separator()), 2)
+        let shown = format!("{days:.1}").replace('.', &decimal_separator());
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "between 0 and 100 here"
+        )]
+        let whole = days.floor() as usize;
+        return fill(
+            // Translators: a card's stability with one decimal ("0.4 days",
+            // "12.4 days"). The count given for the plural is the whole
+            // part (0 for 0.4): English says "days" for every decimal, and
+            // French "jour" below 2 ("1,5 jour"); give the forms your
+            // language uses for decimals with that whole part.
+            &npgettext("decimal number", "{count} days", "{count} days", whole),
+            &[("count", &shown)],
+        );
     };
     fill(
-        // Translators: a card's stability, in days, maybe with a decimal
-        // ("12.4 days").
+        // Translators: a card's stability, a whole number of days
+        // ("130 days").
         &ngettext("{count} day", "{count} days", n),
         &[("count", &number)],
     )
@@ -445,5 +459,19 @@ mod tests {
             )
         );
         assert_eq!(stability_text(-0.0), "0.0 days");
+    }
+
+    #[test]
+    fn a_decimal_stability_takes_the_form_each_language_gives_decimals() {
+        assert_eq!(stability_text(0.4), "0.4 days");
+        assert_eq!(stability_text(1.5), "1.5 days");
+        assert_eq!(stability_text(12.4), "12.4 days");
+        crate::i18n::tests::in_french(|| {
+            assert_eq!(stability_text(0.4), "0,4\u{a0}jour");
+            assert_eq!(stability_text(1.5), "1,5\u{a0}jour");
+            assert_eq!(stability_text(12.4), "12,4\u{a0}jours");
+            assert_eq!(stability_text(1.0), "1\u{a0}jour");
+            assert_eq!(stability_text(130.4), "130\u{a0}jours");
+        });
     }
 }

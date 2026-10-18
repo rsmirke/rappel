@@ -68,7 +68,7 @@ Rappel uses gettext, laid out as GNOME projects are (ADR 0059): `po/LINGUAS` lis
   RAPPEL_UPDATE_TRANSLATIONS=1 cargo test -p rappel the_template_is_up_to_date
   ```
   The gate fails while a string is unmarked, the template is out of date, or a catalog misses a message, keeps one fuzzy, or changes its placeholders.
-- **Add a language**: add its code to `po/LINGUAS`, copy `po/rappel.pot` to `po/<lang>.po`, fill in its header (`Language:` and `Plural-Forms:`), and translate every entry.
+- **Add a language**: copy `po/rappel.pot` to `po/<lang>.po`, fill in its header (`Language:` and `Plural-Forms:`), translate every entry, then add its code to `po/LINGUAS`. A language cannot land partly translated: once it is in `LINGUAS`, the gate refuses its catalog while any message is missing, empty or fuzzy, so finish the translation before listing it.
 
 ## Recovering your data
 

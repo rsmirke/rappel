@@ -28,6 +28,10 @@ pub struct Message {
     /// The file, relative to the repository.
     pub file: String,
     pub line: usize,
+    /// The call that shows a toast ([`TOAST_CALLS`]) this call is written
+    /// inside, if any; messages that reach one through a function are not
+    /// seen here.
+    pub toast: Option<String>,
 }
 
 /// What a scan of one file found.
@@ -370,6 +374,21 @@ const LOGGED_ARGUMENTS: [(&str, usize); 6] = [
     (".show_error", 0),
 ];
 
+/// Calls that show their text in a toast: the toast helpers of `ui::toast`,
+/// `ErrorSlot::show` and `show_in_preferences`, the pages' `error_toast`
+/// and the clean-up's `show_error` (methods with a leading ".").
+const TOAST_CALLS: [&str; 9] = [
+    "info_toast",
+    "persistent_toast",
+    "undo_toast",
+    "show_error",
+    ".show_error",
+    ".show",
+    ".show_in_preferences",
+    ".error_toast",
+    "fitted_toast",
+];
+
 /// An open bracket of the Rust parse.
 #[derive(Debug, Default)]
 struct Frame {
@@ -389,6 +408,7 @@ struct Frame {
 #[derive(Debug)]
 struct Call {
     keyword: usize,
+    toast: Option<String>,
     line: usize,
     comment: Option<String>,
     args: Vec<Option<String>>,
@@ -525,8 +545,15 @@ pub fn scan_rust(file: &str, src: &str) -> Scan {
                         .take()
                         .filter(|waiting| line - waiting.last_line <= COMMENT_REACH)
                         .map(|waiting| waiting.text);
+                    let toast = stack
+                        .iter()
+                        .rev()
+                        .filter_map(|frame| frame.callee.as_deref())
+                        .find(|name| TOAST_CALLS.contains(name))
+                        .map(str::to_owned);
                     frame.call = Some(Call {
                         keyword,
+                        toast,
                         line,
                         comment,
                         args: Vec::new(),
@@ -615,6 +642,7 @@ fn finish_call(file: &str, call: Call, scan: &mut Scan) {
                 comment: call.comment,
                 file: file.to_owned(),
                 line: call.line,
+                toast: call.toast,
             });
         }
         _ => scan.errors.push(format!(
@@ -772,6 +800,7 @@ pub fn scan_blueprint(file: &str, src: &str) -> Scan {
                             comment,
                             file: file.to_owned(),
                             line,
+                            toast: None,
                         });
                         i += length;
                         continue;
@@ -887,19 +916,31 @@ pub fn template(messages: &[Message]) -> Result<Vec<Entry>, Vec<String>> {
 /// A language's catalog brought up to date with the template, as
 /// `msgmerge` does: its own header, the template's messages in the
 /// template's order with their translations, flags and translators'
-/// comments kept, new ones untranslated (`forms` empty strings for a
-/// plural); messages no longer in the template are returned apart, to be
-/// kept as obsolete (`#~`) so no translation is lost.
-pub fn merge(template: &[Entry], old: &[Entry], forms: usize) -> (Vec<Entry>, Vec<Entry>) {
+/// comments kept (from `old`, else from its obsolete entries `kept`, so a
+/// message that comes back gets its translation back), new ones
+/// untranslated (`forms` empty strings for a plural). The translated
+/// messages no longer in the template, old and new, are returned apart,
+/// to be kept as obsolete (`#~`) so no translation is lost.
+pub fn merge(
+    template: &[Entry],
+    old: &[Entry],
+    kept: &[Entry],
+    forms: usize,
+) -> (Vec<Entry>, Vec<Entry>) {
     let mut by_key: HashMap<String, &Entry> =
         old.iter().map(|entry| (entry.key(), entry)).collect();
+    let mut by_key_kept: HashMap<String, &Entry> =
+        kept.iter().map(|entry| (entry.key(), entry)).collect();
     let mut merged = Vec::with_capacity(template.len());
     if let Some(header) = by_key.remove("") {
         merged.push(header.clone());
     }
     for wanted in template.iter().filter(|entry| !entry.id.is_empty()) {
         let mut entry = wanted.clone();
-        match by_key.remove(&wanted.key()) {
+        let key = wanted.key();
+        let had = by_key.remove(&key);
+        let had_kept = by_key_kept.remove(&key);
+        match had.or(had_kept) {
             Some(had) if had.plural.is_some() == wanted.plural.is_some() => {
                 entry.strs.clone_from(&had.strs);
                 entry.flags.clone_from(&had.flags);
@@ -918,10 +959,23 @@ pub fn merge(template: &[Entry], old: &[Entry], forms: usize) -> (Vec<Entry>, Ve
     let mut obsolete: Vec<Entry> = old
         .iter()
         .filter(|entry| by_key.contains_key(&entry.key()))
+        .chain(kept.iter().filter(|entry| {
+            by_key_kept.contains_key(&entry.key()) && !by_key.contains_key(&entry.key())
+        }))
         .cloned()
         .collect();
     obsolete.retain(Entry::is_translated);
     (merged, obsolete)
+}
+
+/// The obsolete (`#~`) entries of a catalog's text.
+pub fn parse_obsolete(text: &str) -> Result<Vec<Entry>, String> {
+    // Blank lines mean nothing to the reader: entries part at each msgid.
+    let lines: Vec<&str> = text
+        .lines()
+        .filter_map(|line| line.strip_prefix("#~ "))
+        .collect();
+    po::parse(&lines.join("\n"))
 }
 
 /// Obsolete entries as `#~` lines, which every reader skips.

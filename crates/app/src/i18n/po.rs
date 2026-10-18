@@ -56,7 +56,10 @@ enum Field {
     Context,
     Id,
     Plural,
-    Str(usize),
+    /// `msgstr`, of a message without a plural.
+    Str,
+    /// `msgstr[N]`, of a message with a plural.
+    Form(usize),
 }
 
 /// Reads a `.po` file. An error names the line.
@@ -106,7 +109,8 @@ pub fn parse(text: &str) -> Result<Vec<Entry>, String> {
                 Some(Field::Context) => push(&mut entry.context, &value),
                 Some(Field::Id) => entry.id.push_str(&value),
                 Some(Field::Plural) => push(&mut entry.plural, &value),
-                Some(Field::Str(n)) => entry.strs[n].push_str(&value),
+                Some(Field::Str) => entry.strs[0].push_str(&value),
+                Some(Field::Form(n)) => entry.strs[n].push_str(&value),
                 None => return Err(fail("a string without a keyword")),
             }
             continue;
@@ -119,27 +123,30 @@ pub fn parse(text: &str) -> Result<Vec<Entry>, String> {
             "msgctxt" => Field::Context,
             "msgid" => Field::Id,
             "msgid_plural" => Field::Plural,
-            "msgstr" => Field::Str(0),
+            "msgstr" => Field::Str,
             other => {
                 let n = other
                     .strip_prefix("msgstr[")
                     .and_then(|rest| rest.strip_suffix(']'))
                     .and_then(|n| n.parse::<usize>().ok())
                     .ok_or_else(|| fail(&format!("unknown keyword {other}")))?;
-                Field::Str(n)
+                Field::Form(n)
             }
         };
         // A msgctxt or msgid after the strings starts the next entry.
-        if matches!(next, Field::Context | Field::Id) && matches!(field, Some(Field::Str(_))) {
+        if matches!(next, Field::Context | Field::Id)
+            && matches!(field, Some(Field::Str | Field::Form(_)))
+        {
             entries.push(std::mem::take(&mut entry));
             field = None;
         }
         let in_order = match (field, next) {
             (None, Field::Context | Field::Id)
             | (Some(Field::Context), Field::Id)
-            | (Some(Field::Id), Field::Plural | Field::Str(0))
-            | (Some(Field::Plural), Field::Str(0)) => true,
-            (Some(Field::Str(m)), Field::Str(n)) => entry.plural.is_some() && n == m + 1,
+            // A plain msgstr only without msgid_plural, msgstr[N] only with it.
+            | (Some(Field::Id), Field::Plural | Field::Str)
+            | (Some(Field::Plural), Field::Form(0)) => true,
+            (Some(Field::Form(m)), Field::Form(n)) => n == m + 1,
             _ => false,
         };
         if !in_order {
@@ -149,17 +156,29 @@ pub fn parse(text: &str) -> Result<Vec<Entry>, String> {
             Field::Context => entry.context = Some(value),
             Field::Id => entry.id = value,
             Field::Plural => entry.plural = Some(value),
-            Field::Str(_) => entry.strs.push(value),
+            Field::Str | Field::Form(_) => entry.strs.push(value),
         }
         field = Some(next);
     }
     if field.is_some() {
         entries.push(entry);
     }
+    check_entries(&entries)?;
+    Ok(entries)
+}
+
+/// What a whole catalog must hold: a translation for each message, and no
+/// message twice, which `msgfmt` refuses too (which translation would win?).
+fn check_entries(entries: &[Entry]) -> Result<(), String> {
     if let Some(entry) = entries.iter().find(|entry| entry.strs.is_empty()) {
         return Err(format!("msgid {:?} has no msgstr", entry.id));
     }
-    Ok(entries)
+    let mut keys: Vec<String> = entries.iter().map(Entry::key).collect();
+    keys.sort_unstable();
+    if let Some([first, _]) = keys.windows(2).find(|pair| pair[0] == pair[1]) {
+        return Err(format!("msgid {first:?} is there twice"));
+    }
+    Ok(())
 }
 
 fn push(field: &mut Option<String>, value: &str) {
@@ -282,8 +301,8 @@ pub fn mo(entries: &[Entry]) -> Vec<u8> {
         .collect();
     // Sorted by the original's bytes: without a hash table, `gettext`
     // finds a message by binary search.
+    // `parse` refuses a message twice, so no two originals are equal.
     pairs.sort();
-    pairs.dedup_by(|a, b| a.0 == b.0);
 
     let count = pairs.len();
     let header = 28;

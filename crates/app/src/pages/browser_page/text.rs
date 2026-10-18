@@ -128,11 +128,11 @@ pub fn reset_offered(is_new: impl IntoIterator<Item = bool>) -> bool {
 
 /// The note when a reset of `n` cards found them all new already.
 pub fn no_progress_text(n: usize) -> String {
-    if n == 1 {
-        gettext("This card has no progress to reset")
-    } else {
-        gettext("These cards have no progress to reset")
-    }
+    ngettext(
+        "This card has no progress to reset",
+        "These cards have no progress to reset",
+        n,
+    )
 }
 
 /// What the list area shows when it has no row.

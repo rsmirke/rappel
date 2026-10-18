@@ -30,8 +30,8 @@ use std::{
 #[path = "src/i18n/po.rs"]
 #[expect(
     dead_code,
-    reason = "the build only compiles catalogs; the comment fields and the .po writer serve \
-              the tests"
+    reason = "the build only reads catalogs and writes .mo files; `quote` and `write`, the \
+              .po writer, serve the tests' update of po/"
 )]
 mod po;
 

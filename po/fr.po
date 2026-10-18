@@ -895,7 +895,6 @@ msgstr "Polices KaTeX"
 msgid "These fonts are licensed under the <a href=\"https://openfontlicense.org\">SIL Open Font License, Version 1.1</a>. They are data shipped with Rappel, not part of its code."
 msgstr "Ces polices sont distribuées sous la <a href=\"https://openfontlicense.org\">SIL Open Font License, Version 1.1</a>. Ce sont des données livrées avec Rappel, pas une partie de son code."
 
-#. Translators: put your name here (one per line, with an e-mail address in <> if you like); libadwaita lists it under Translated by.
 #: crates/app/src/dialogs/about.rs
 msgid "translator-credits"
 msgstr "Claude (Anthropic)"
@@ -975,15 +974,15 @@ msgstr "{what} : {error}"
 
 #: crates/app/src/dialogs/card_editor/media.rs
 msgid "The image could not be added"
-msgstr "L’image n’a pas pu être ajoutée"
+msgstr "Image non ajoutée"
 
 #: crates/app/src/dialogs/card_editor/media.rs
 msgid "The audio file could not be added"
-msgstr "Le fichier audio n’a pas pu être ajouté"
+msgstr "Son non ajouté"
 
 #: crates/app/src/dialogs/card_editor/media.rs
 msgid "The file could not be added"
-msgstr "Le fichier n’a pas pu être ajouté"
+msgstr "Fichier non ajouté"
 
 #. Translators: a size in megabytes ("10 MB").
 #: crates/app/src/dialogs/card_editor/media.rs
@@ -1039,7 +1038,15 @@ msgid_plural "{list} and {count} more"
 msgstr[0] "{list} et {count} autre"
 msgstr[1] "{list} et {count} autres"
 
-#. Translators: a card's stability, in days, maybe with a decimal ("12.4 days").
+#. Translators: a card's stability with one decimal ("0.4 days", "12.4 days"). The count given for the plural is the whole part (0 for 0.4): English says "days" for every decimal, and French "jour" below 2 ("1,5 jour"); give the forms your language uses for decimals with that whole part.
+#: crates/app/src/dialogs/card_info/text.rs
+msgctxt "decimal number"
+msgid "{count} days"
+msgid_plural "{count} days"
+msgstr[0] "{count} jour"
+msgstr[1] "{count} jours"
+
+#. Translators: a card's stability, a whole number of days ("130 days").
 #. Translators: an interval in days ("3 days").
 #: crates/app/src/dialogs/card_info/text.rs
 #: crates/app/src/ui/text.rs
@@ -1270,13 +1277,10 @@ msgstr[0] "{count} sélectionnée"
 msgstr[1] "{count} sélectionnées"
 
 #: crates/app/src/pages/browser_page/text.rs
-#: crates/app/src/pages/deck_page.rs
 msgid "This card has no progress to reset"
-msgstr "Cette carte n’a pas de progression à réinitialiser"
-
-#: crates/app/src/pages/browser_page/text.rs
-msgid "These cards have no progress to reset"
-msgstr "Ces cartes n’ont pas de progression à réinitialiser"
+msgid_plural "These cards have no progress to reset"
+msgstr[0] "Cette carte est déjà nouvelle"
+msgstr[1] "Ces cartes sont déjà nouvelles"
 
 #: crates/app/src/pages/browser_page/text.rs
 msgid "Cards you add to your decks will show up here"
@@ -1350,7 +1354,7 @@ msgstr[1] "Choisissez l’étiquette à retirer de {count} cartes."
 
 #: crates/app/src/pages/browser_page/text.rs
 msgid "The chosen cards have no tags"
-msgstr "Les cartes choisies n’ont pas d’étiquettes"
+msgstr "Aucune étiquette à retirer"
 
 #. Translators: {count} is a number of cards.
 #: crates/app/src/pages/browser_page/text.rs
@@ -1490,7 +1494,7 @@ msgstr "Réinitialisation impossible : {error}"
 
 #: crates/app/src/pages/deck_page.rs
 msgid "The reset can no longer be undone"
-msgstr "La réinitialisation ne peut plus être annulée"
+msgstr "Réinitialisation non annulable"
 
 #. Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
 #: crates/app/src/pages/deck_page.rs
@@ -1554,7 +1558,7 @@ msgstr "Échec de la restauration : {error}"
 
 #: crates/app/src/pages/recovery_page.rs
 msgid "Restore stopped unexpectedly"
-msgstr "La restauration s’est arrêtée de façon inattendue"
+msgstr "Restauration interrompue"
 
 #: crates/app/src/pages/recovery_page.rs
 msgid "Finishing the restore stopped unexpectedly"
@@ -1608,7 +1612,7 @@ msgstr "La copie laissée en attente par la restauration est renommée en « ra
 
 #: crates/app/src/pages/recovery_page.rs
 msgid "The waiting copy is gone. Restart Rappel to check again."
-msgstr "La copie en attente a disparu. Redémarrez Rappel pour vérifier à nouveau."
+msgstr "Copie disparue. Redémarrez Rappel pour vérifier à nouveau."
 
 #. Translators: a toast; {error} is why, in English.
 #: crates/app/src/pages/recovery_page.rs
@@ -2023,7 +2027,7 @@ msgstr "L’export a échoué : {error}"
 
 #: crates/app/src/transfer/mod.rs
 msgid "The export stopped unexpectedly"
-msgstr "L’export s’est arrêté de façon inattendue"
+msgstr "Export interrompu"
 
 #: crates/app/src/transfer/mod.rs
 msgid "Import Data"
@@ -2040,7 +2044,7 @@ msgstr "_Fermer"
 
 #: crates/app/src/transfer/mod.rs
 msgid "The import stopped unexpectedly"
-msgstr "L’import s’est arrêté de façon inattendue"
+msgstr "Import interrompu"
 
 #: crates/app/src/transfer/mod.rs
 msgid "Rappel Exports"
@@ -2048,12 +2052,12 @@ msgstr "Exports Rappel"
 
 #: crates/app/src/transfer/mod.rs
 msgid "Choose a file on this computer"
-msgstr "Choisissez un fichier sur cet ordinateur"
+msgstr "Choisissez un fichier local"
 
 #. Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
 #: crates/app/src/transfer/mod.rs
 msgid "The file chooser failed: {error}"
-msgstr "Le sélecteur de fichiers a échoué : {error}"
+msgstr "Échec du sélecteur : {error}"
 
 #: crates/app/src/transfer/text.rs
 msgid "Export done"

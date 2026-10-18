@@ -284,8 +284,12 @@ fn the_template_is_up_to_date() {
         std::fs::write(root.join("po/POTFILES.in"), &potfiles).expect("po/POTFILES.in is writable");
         for language in languages() {
             let path = root.join(format!("po/{language}.po"));
-            let old = po::parse(&read(&path)).unwrap_or_else(|err| panic!("{language}.po: {err}"));
-            let (merged, obsolete) = extract::merge(&template, &old, 2);
+            let text = read(&path);
+            let old = po::parse(&text).unwrap_or_else(|err| panic!("{language}.po: {err}"));
+            let kept = extract::parse_obsolete(&text)
+                .unwrap_or_else(|err| panic!("{language}.po, obsolete entries: {err}"));
+            let forms = plural_forms(&old).unwrap_or_else(|err| panic!("{language}.po: {err}"));
+            let (merged, obsolete) = extract::merge(&template, &old, &kept, forms);
             let mut out = po::write(&merged);
             out.push_str(&extract::obsolete_text(&obsolete));
             std::fs::write(&path, out).expect("the catalog is writable");
@@ -422,6 +426,66 @@ fn has_mnemonic(text: &str) -> bool {
         .any(|pair| pair[0] == '_' && pair[1].is_alphabetic())
 }
 
+/// The number of plural forms a catalog's header gives, after checking
+/// that its `Plural-Forms` is well formed: `nplurals=N; plural=EXPR;` with N
+/// from 1 to 6 and an expression of `n`, numbers and C operators only.
+fn plural_forms(entries: &[Entry]) -> Result<usize, String> {
+    let header = entries
+        .iter()
+        .find(|entry| entry.id.is_empty())
+        .ok_or("no header")?;
+    let line = header.strs[0]
+        .lines()
+        .find_map(|line| line.strip_prefix("Plural-Forms:"))
+        .ok_or("no Plural-Forms in the header")?;
+    let bad = || format!("Plural-Forms is not `nplurals=N; plural=EXPR;`: {line:?}");
+    let rest = line.trim().strip_prefix("nplurals=").ok_or_else(bad)?;
+    let (n, rest) = rest.split_once(';').ok_or_else(bad)?;
+    let n: usize = n.trim().parse().map_err(|_| bad())?;
+    let expression = rest
+        .trim()
+        .strip_prefix("plural=")
+        .and_then(|e| e.strip_suffix(';'))
+        .ok_or_else(bad)?;
+    let allowed = |c: char| c == 'n' || c.is_ascii_digit() || " ()?:<>=!&|%+-*/".contains(c);
+    if !(1..=6).contains(&n) || expression.trim().is_empty() || !expression.chars().all(allowed) {
+        return Err(bad());
+    }
+    Ok(n)
+}
+
+/// What is wrong with `text`, the translation of `english` (one form of a
+/// message): placeholders dropped, added or renamed, a mnemonic or a final
+/// "…" lost or added, markup characters a plain text did not have, and in
+/// French its typography.
+fn form_problems(english: &str, text: &str, french: bool) -> Vec<String> {
+    let mut problems = Vec::new();
+    if placeholder_set(text) != placeholder_set(english) {
+        problems.push(format!("placeholders differ: {english:?} → {text:?}"));
+    }
+    if has_mnemonic(english) != has_mnemonic(text) {
+        problems.push(format!(
+            "mnemonic (_) lost or added: {english:?} → {text:?}"
+        ));
+    }
+    if english.ends_with('…') != text.ends_with('…') {
+        problems.push(format!("final … lost or added: {english:?} → {text:?}"));
+    }
+    for c in ['<', '&'] {
+        if text.contains(c) && !english.contains(c) {
+            problems.push(format!(
+                "{c} where the English has none (markup?): {text:?}"
+            ));
+        }
+    }
+    if french {
+        for problem in french_typography(text) {
+            problems.push(format!("{problem}: {text:?}"));
+        }
+    }
+    problems
+}
+
 #[test]
 fn the_catalogs_are_complete_and_correct() {
     let (_, template, _) = template_text();
@@ -433,6 +497,7 @@ fn the_catalogs_are_complete_and_correct() {
     for language in languages() {
         let path = repo().join(format!("po/{language}.po"));
         let entries = po::parse(&read(&path)).unwrap_or_else(|err| panic!("{language}.po: {err}"));
+        let forms = plural_forms(&entries).unwrap_or_else(|err| panic!("{language}.po: {err}"));
         let header = entries
             .iter()
             .find(|entry| entry.id.is_empty())
@@ -465,6 +530,9 @@ fn the_catalogs_are_complete_and_correct() {
             if entry.is_fuzzy() {
                 problems.push(format!("fuzzy: {id:?}"));
             }
+            if entry.plural.is_some() && entry.strs.len() != forms {
+                problems.push(format!("{} forms, not {forms}: {id:?}", entry.strs.len()));
+            }
             if !entry.is_translated() {
                 problems.push(format!("not translated: {id:?}"));
                 continue;
@@ -474,20 +542,7 @@ fn the_catalogs_are_complete_and_correct() {
                     (Some(plural), 1..) => plural,
                     _ => id,
                 };
-                if placeholder_set(text) != placeholder_set(english) {
-                    problems.push(format!("placeholders differ: {id:?} → {text:?}"));
-                }
-                if has_mnemonic(english) != has_mnemonic(text) {
-                    problems.push(format!("mnemonic (_) lost or added: {id:?} → {text:?}"));
-                }
-                if english.ends_with('…') != text.ends_with('…') {
-                    problems.push(format!("final … lost or added: {id:?} → {text:?}"));
-                }
-                if language == "fr" {
-                    for problem in french_typography(text) {
-                        problems.push(format!("{problem}: {text:?}"));
-                    }
-                }
+                problems.extend(form_problems(english, text, language == "fr"));
             }
         }
         assert!(
@@ -496,6 +551,75 @@ fn the_catalogs_are_complete_and_correct() {
             problems.join("\n")
         );
     }
+}
+
+#[test]
+fn a_bad_translation_is_caught() {
+    let fine = form_problems(
+        "{count} cards in {deck}",
+        "{count} cartes dans {deck}",
+        true,
+    );
+    assert_eq!(fine, Vec::<String>::new());
+    for bad in [
+        "{count} cartes",                    // a placeholder dropped
+        "{n} cartes dans {deck}",            // one renamed
+        "{count} cartes dans {deck} {deck}", // one added... the same name twice
+        "{count} <b>cartes</b> dans {deck}", // markup the English has not
+        "{count} cartes dans {deck} & co",
+    ] {
+        assert!(
+            !form_problems("{count} cards in {deck}", bad, false).is_empty(),
+            "{bad}"
+        );
+    }
+    assert_ne!(
+        form_problems("_Undo", "Annuler", false),
+        Vec::<String>::new()
+    );
+    assert_ne!(
+        form_problems("Export…", "Exporter", false),
+        Vec::<String>::new()
+    );
+}
+
+#[test]
+fn plural_forms_are_read_from_a_well_formed_header() {
+    let header = |forms: &str| {
+        vec![Entry {
+            strs: vec![format!("Language: x\nPlural-Forms: {forms}\n")],
+            ..Entry::default()
+        }]
+    };
+    assert_eq!(plural_forms(&header("nplurals=2; plural=(n > 1);")), Ok(2));
+    assert_eq!(
+        plural_forms(&header(
+            "nplurals=3; plural=(n%10==1 && n%100!=11 ? 0 : n%10>=2 && n%10<=4 && (n%100<10 || n%100>=20) ? 1 : 2);"
+        )),
+        Ok(3)
+    );
+    for bad in [
+        "nplurals=INTEGER; plural=EXPRESSION;",
+        "nplurals=2; plural=;",
+        "nplurals=0; plural=0;",
+        "nplurals=2 plural=(n > 1);",
+        "nplurals=2; plural=(x > 1);",
+    ] {
+        assert!(plural_forms(&header(bad)).is_err(), "{bad}");
+    }
+    assert!(plural_forms(&[]).is_err());
+}
+
+#[test]
+fn a_catalog_with_a_message_twice_or_forms_out_of_place_is_refused() {
+    let twice = "msgid \"a\"\nmsgstr \"x\"\n\nmsgid \"a\"\nmsgstr \"y\"\n";
+    assert!(po::parse(twice).unwrap_err().contains("twice"));
+    // The same msgid in two contexts is two messages.
+    let contexts = "msgctxt \"a\"\nmsgid \"a\"\nmsgstr \"x\"\n\nmsgid \"a\"\nmsgstr \"y\"\n";
+    assert!(po::parse(contexts).is_ok());
+    // msgstr[N] only with msgid_plural, a plain msgstr only without it.
+    assert!(po::parse("msgid \"a\"\nmsgstr[0] \"x\"\n").is_err());
+    assert!(po::parse("msgid \"a\"\nmsgid_plural \"b\"\nmsgstr \"x\"\n").is_err());
 }
 
 /// Reads back a `.mo` file: (original, translation) pairs, in file order.
@@ -699,16 +823,28 @@ fn a_merge_keeps_translations_and_puts_removed_ones_aside() {
         entry("Gone", &["Parti"]),
         entry("Kept", &["Gardé"]),
     ];
-    let (merged, obsolete) = extract::merge(&template, &old, 2);
+    let (merged, obsolete) = extract::merge(&template, &old, &[], 2);
     assert_eq!(
         merged,
-        vec![header, entry("Kept", &["Gardé"]), entry("New", &[""])]
+        vec![
+            header.clone(),
+            entry("Kept", &["Gardé"]),
+            entry("New", &[""])
+        ]
     );
     assert_eq!(obsolete, vec![entry("Gone", &["Parti"])]);
-    assert_eq!(
-        extract::obsolete_text(&obsolete),
-        "\n#~ msgid \"Gone\"\n#~ msgstr \"Parti\"\n"
-    );
+    let text = extract::obsolete_text(&obsolete);
+    assert_eq!(text, "\n#~ msgid \"Gone\"\n#~ msgstr \"Parti\"\n");
+    // A second update keeps the obsolete entries, and a message that comes
+    // back gets its translation back.
+    let kept = extract::parse_obsolete(&text).expect("obsolete entries read");
+    assert_eq!(kept, vec![entry("Gone", &["Parti"])]);
+    let (_, again) = extract::merge(&template, &merged, &kept, 2);
+    assert_eq!(again, vec![entry("Gone", &["Parti"])]);
+    let back = vec![entry("", &[""]), entry("Gone", &[""])];
+    let (merged, again) = extract::merge(&back, std::slice::from_ref(&header), &kept, 2);
+    assert_eq!(merged, vec![header, entry("Gone", &["Parti"])]);
+    assert_eq!(again, Vec::new());
 }
 
 #[test]
@@ -784,8 +920,12 @@ fn the_c_library_reads_the_french_catalog() {
         .args(["-i", "fr_FR", "-f", "UTF-8"])
         .arg(locales.path().join("fr_FR.UTF-8"))
         .output();
+    let locale = locales.path().join("fr_FR.UTF-8");
     match made {
         Ok(out) if out.status.success() => {}
+        // localedef exits with 1 when it only warned (localedef(1), "EXIT
+        // STATUS"); the locale is then written.
+        Ok(out) if out.status.code() == Some(1) && locale.join("LC_CTYPE").is_file() => {}
         other => panic!(
             "localedef could not make a French locale ({other:?}); install the `locales` \
              package (README.md), which has its sources"
@@ -863,4 +1003,157 @@ fn french_through_the_c_library() {
             Some("_Restaurer")
         );
     });
+}
+
+/// Messages that never reach a toast: labels, titles, row texts, dialog
+/// texts, chart texts. [`toasts_keep_their_titles_in_french`] checks every
+/// other message as if it could, so a new message is checked unless it is
+/// listed here; one written inside a toast call cannot be listed.
+const NOT_TOASTS: &[&str] = &[
+    "A card can have at most {limit} tags",
+    "A card is different in the file",
+    "A deck is different in the file",
+    "A tag has another name in the file",
+    "Add a card to start learning",
+    "_Clear Search and Filters",
+    "{count} older entry not shown",
+    "Database File Is Missing",
+    "{date} · {time} · next in {interval}",
+    "Looking for files no card uses…",
+    "Move selected cards to a deck",
+    "No reviews in the last 30 days",
+    "Not a Rappel Database",
+    "Nothing due in the next 14 days",
+    "On a tag’s remove button",
+    "Pass rate, last 30 days",
+    "Reset progress of selected cards",
+    "Restore Copy Cannot Be Used",
+    "Save and Add Another",
+    "Select a day to see its values",
+    "Select or Deselect Card",
+    "Start With an Empty Database?",
+    "Stop Selecting or Clear the Search",
+    "Tags of selected cards",
+    "The database could not be opened.",
+    "The data folder could not be used.",
+    "This adds {count} media file.",
+    "This puts {count} tag on cards.",
+    "Undo Last Answer (Ctrl+Z)",
+    "Unused files could not be counted",
+    "Update Rappel to Continue",
+    "While tags are suggested",
+    "Your data is backed up first.",
+];
+
+/// The titles of Undo toasts that reach `undo_toast` through a function
+/// (the ones written inside the call are found by the extraction). Each must
+/// fit beside Undo at 360 px, at 99,999, in every language.
+const UNDO_TITLES: &[&str] = &[
+    "{count} card moved",
+    "{count} card tagged",
+    "{count} card untagged",
+    "{count} card suspended",
+    "{count} card unsuspended",
+    "{count} card reset",
+    "{count} card deleted",
+    "{count} file trashed",
+    "Card deleted",
+    "Card suspended",
+    "Card unsuspended",
+];
+
+/// A sample value for a placeholder, as long as such a value usually is.
+fn sample(name: &str, french: bool) -> &'static str {
+    match (name, french) {
+        ("count" | "done" | "limit", false) => "99,999",
+        ("count" | "done" | "limit", true) => "99\u{202f}999",
+        ("error" | "reason", _) => "disk full",
+        _ => "Maths",
+    }
+}
+
+/// `text` with every placeholder filled by [`sample`].
+fn filled(text: &str, french: bool) -> String {
+    let names = super::placeholders(text);
+    let values: Vec<(&str, &str)> = names.iter().map(|n| (*n, sample(n, french))).collect();
+    super::fill(text, &values)
+}
+
+/// Whether a toast of `text` has a title of its own (the whole text, or its
+/// first clause), not the generic "Something went wrong". Run in the
+/// language of `text`: the generic title is looked up too.
+fn own_title(text: &str) -> bool {
+    use crate::ui::toast::{ToastText, fallback_title, toast_text};
+    match toast_text(text) {
+        ToastText::Whole(_) => true,
+        ToastText::Detailed { title, .. } => title != fallback_title(),
+    }
+}
+
+/// Every message that can reach a toast keeps a title of its own in French
+/// whenever it has one in English: a short notice must not turn into
+/// "Un problème est survenu" with Details (ADR 0058, 0059). Undo titles fit
+/// beside Undo in both.
+#[test]
+fn toasts_keep_their_titles_in_french() {
+    use crate::ui::toast::TOAST_FITS_WITH_BUTTON;
+    let scans = scan_all();
+    let (_, template, _) = template_text();
+    let french = po::parse(&read(&repo().join("po/fr.po"))).expect("po/fr.po reads");
+    let by_key: HashMap<String, &Entry> = french.iter().map(|e| (e.key(), e)).collect();
+    let mut problems = Vec::new();
+    for entry in template.iter().filter(|e| !e.id.is_empty()) {
+        if NOT_TOASTS.contains(&entry.id.as_str()) {
+            continue;
+        }
+        let Some(translated) = by_key.get(&entry.key()) else {
+            continue;
+        };
+        let mut english = vec![entry.id.as_str()];
+        english.extend(entry.plural.as_deref());
+        for (form, english) in english.into_iter().enumerate() {
+            let text = filled(&translated.strs[form.min(translated.strs.len() - 1)], true);
+            if own_title(&filled(english, false)) && !in_french(|| own_title(&text)) {
+                problems.push(format!("generic title in French: {text:?}"));
+            }
+        }
+    }
+    let written_in_undo: Vec<&str> = scans
+        .iter()
+        .flat_map(|(_, scan)| &scan.messages)
+        .filter(|m| m.toast.as_deref() == Some("undo_toast"))
+        .map(|m| m.id.as_str())
+        .collect();
+    for id in UNDO_TITLES.iter().copied().chain(written_in_undo) {
+        let entry = template
+            .iter()
+            .find(|e| e.id == id)
+            .unwrap_or_else(|| panic!("{id:?} is not in the template: update UNDO_TITLES"));
+        let translated = by_key.get(&entry.key()).map_or(&entry.strs, |e| &e.strs);
+        let forms = [
+            filled(&entry.id, false),
+            filled(entry.plural.as_deref().unwrap_or(&entry.id), false),
+        ];
+        let french_forms = translated.iter().map(|s| filled(s, true));
+        for title in forms.into_iter().chain(french_forms) {
+            if title.chars().count() > TOAST_FITS_WITH_BUTTON {
+                problems.push(format!("Undo title too long: {title:?}"));
+            }
+        }
+    }
+    for id in NOT_TOASTS {
+        if !template.iter().any(|e| e.id == *id) {
+            problems.push(format!("NOT_TOASTS lists {id:?}, which is gone"));
+        }
+        let in_toast = scans
+            .iter()
+            .flat_map(|(_, scan)| &scan.messages)
+            .any(|m| m.id == *id && m.toast.is_some());
+        if in_toast {
+            problems.push(format!(
+                "NOT_TOASTS lists {id:?}, which is written in a toast call"
+            ));
+        }
+    }
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
 }

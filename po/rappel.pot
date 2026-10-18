@@ -893,7 +893,6 @@ msgstr ""
 msgid "These fonts are licensed under the <a href=\"https://openfontlicense.org\">SIL Open Font License, Version 1.1</a>. They are data shipped with Rappel, not part of its code."
 msgstr ""
 
-#. Translators: put your name here (one per line, with an e-mail address in <> if you like); libadwaita lists it under Translated by.
 #: crates/app/src/dialogs/about.rs
 msgid "translator-credits"
 msgstr ""
@@ -1037,7 +1036,15 @@ msgid_plural "{list} and {count} more"
 msgstr[0] ""
 msgstr[1] ""
 
-#. Translators: a card's stability, in days, maybe with a decimal ("12.4 days").
+#. Translators: a card's stability with one decimal ("0.4 days", "12.4 days"). The count given for the plural is the whole part (0 for 0.4): English says "days" for every decimal, and French "jour" below 2 ("1,5 jour"); give the forms your language uses for decimals with that whole part.
+#: crates/app/src/dialogs/card_info/text.rs
+msgctxt "decimal number"
+msgid "{count} days"
+msgid_plural "{count} days"
+msgstr[0] ""
+msgstr[1] ""
+
+#. Translators: a card's stability, a whole number of days ("130 days").
 #. Translators: an interval in days ("3 days").
 #: crates/app/src/dialogs/card_info/text.rs
 #: crates/app/src/ui/text.rs
@@ -1268,13 +1275,10 @@ msgstr[0] ""
 msgstr[1] ""
 
 #: crates/app/src/pages/browser_page/text.rs
-#: crates/app/src/pages/deck_page.rs
 msgid "This card has no progress to reset"
-msgstr ""
-
-#: crates/app/src/pages/browser_page/text.rs
-msgid "These cards have no progress to reset"
-msgstr ""
+msgid_plural "These cards have no progress to reset"
+msgstr[0] ""
+msgstr[1] ""
 
 #: crates/app/src/pages/browser_page/text.rs
 msgid "Cards you add to your decks will show up here"

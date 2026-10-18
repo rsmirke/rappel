@@ -3,9 +3,8 @@
 //!
 //! Every text a user can see is a whole sentence marked with [`gettext`],
 //! [`pgettext`] (with a context, for a word that could be read several
-//! ways) or [`ngettext`] (a count, which picks the plural form of the
-//! language; the extraction also knows `npgettext`, for a count with a
-//! context, should one be needed). Their first arguments are string literals, so
+//! ways), [`ngettext`] (a count, which picks the plural form of the
+//! language) or [`npgettext`] (a count with a context). Their first arguments are string literals, so
 //! the tests can extract them into `po/rappel.pot` (`i18n::extract`). A
 //! number or a name goes into a translated sentence through a named
 //! placeholder, `{count}`, filled by [`fill`], so a translator can move it.
@@ -52,10 +51,26 @@ fn locale_dir(
     if let Some(dir) = at_run_time.filter(|dir| !dir.is_empty()) {
         return PathBuf::from(dir);
     }
-    if debug {
-        return PathBuf::from(env!("OUT_DIR")).join("locale");
+    if debug && let Some(dir) = build_locale_dir() {
+        return dir;
     }
     PathBuf::from(at_compile_time.unwrap_or(SYSTEM_LOCALEDIR))
+}
+
+/// The catalogs `build.rs` compiled, which only a debug build reads: a
+/// release build does not carry the build folder's path.
+#[cfg(debug_assertions)]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "the release build's twin has no folder to give"
+)]
+fn build_locale_dir() -> Option<PathBuf> {
+    Some(PathBuf::from(env!("OUT_DIR")).join("locale"))
+}
+
+#[cfg(not(debug_assertions))]
+fn build_locale_dir() -> Option<PathBuf> {
+    None
 }
 
 /// Binds the domain to the locale directory and makes it the default one,
@@ -122,6 +137,17 @@ pub fn ngettext(singular: &str, plural: &str, n: usize) -> String {
         return text;
     }
     gettextrs::ngettext(singular, plural, plural_n(n))
+}
+
+/// [`ngettext`] in `context`: the same English words counted another way
+/// ("{count} days" of a decimal number, which every language counts by its
+/// own rule for decimals).
+pub fn npgettext(context: &str, singular: &str, plural: &str, n: usize) -> String {
+    #[cfg(test)]
+    if let Some(text) = tests::translated(Some(context), singular, Some(plural), n) {
+        return text;
+    }
+    gettextrs::npgettext(context, singular, plural, plural_n(n))
 }
 
 /// `n` as the C library's `ngettext` takes it (an `unsigned long`, which
@@ -240,7 +266,7 @@ mod unit_tests {
         let empty = Some(OsString::new());
         assert_eq!(
             locale_dir(empty, true, None),
-            PathBuf::from(env!("OUT_DIR")).join("locale")
+            build_locale_dir().unwrap_or_else(|| PathBuf::from(SYSTEM_LOCALEDIR))
         );
         assert_eq!(
             locale_dir(None, false, None),

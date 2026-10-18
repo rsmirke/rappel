@@ -212,6 +212,9 @@ def main():
                    help="GTK's gtk-decoration-layout for the window's buttons, e.g. ':close' as GNOME and "
                         "phones have it (default: GTK's own, with minimize and maximize)")
     a = p.parse_args()
+    # Before anything starts: it goes into a settings file as it is.
+    if a.decoration_layout and not all(c.isalnum() or c in ":,-_" for c in a.decoration_layout):
+        sys.exit("--decoration-layout takes button names, ',' and ':' only")
     if not a.out or "/" in a.out or a.out.startswith("."):
         sys.exit("--out is a file name stem, not a path")
     extra = dict(kv.partition("=")[::2] for kv in a.env)
@@ -270,8 +273,6 @@ def main():
                    XDG_RUNTIME_DIR=os.path.join(work, "run"))
         os.makedirs(env["XDG_RUNTIME_DIR"], mode=0o700)
         if a.decoration_layout:
-            if not all(c.isalnum() or c in ":,-_" for c in a.decoration_layout):
-                sys.exit("--decoration-layout takes button names, ',' and ':' only")
             gtk_config = os.path.join(env["XDG_CONFIG_HOME"], "gtk-4.0")
             os.makedirs(gtk_config, mode=0o700)
             with open(os.path.join(gtk_config, "settings.ini"), "w") as f:
