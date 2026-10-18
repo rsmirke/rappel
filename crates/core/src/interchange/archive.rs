@@ -110,7 +110,7 @@ pub(super) fn write_archive(json: &[u8]) -> ZipResult<Vec<u8>> {
 #[cfg(test)]
 pub(super) fn read_cards_json(bytes: &[u8], limits: &Limits) -> Result<Vec<u8>, ImportProblem> {
     let mut archive = Archive::open(io::Cursor::new(bytes), bytes.len() as u64, limits)?;
-    let entry = archive.json_entry();
+    let entry = archive.json_entry()?;
     let mut reader = archive.open_entry(&entry, limits.json)?;
     let mut json = Vec::new();
     let read = reader.read_to_end(&mut json);
@@ -119,6 +119,77 @@ pub(super) fn read_cards_json(bytes: &[u8], limits: &Limits) -> Result<Vec<u8>, 
     }
     read.map_err(|e| io_problem(&e))?;
     Ok(json)
+}
+
+/// Which names an archive may have: a Rappel export's, or an Anki
+/// package's (ADR 0061).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Layout {
+    /// `cards.json`, `media/` and `media/<sha256>.<ext>`; any other name
+    /// refuses the file.
+    Rappel,
+    /// `meta`, `collection.anki2`, `collection.anki21`,
+    /// `collection.anki21b`, `media` and numbered media files; other names
+    /// are passed over (never read, never extracted), so a later Anki
+    /// adding an entry does not make its packages unreadable.
+    Anki,
+}
+
+/// An entry of an Anki package, by its central name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum AnkiName {
+    /// `meta`: the package version (protobuf), in packages since 2.1.50.
+    Meta,
+    /// `collection.anki2`: the collection of Anki 2.0 (schema 11), or a
+    /// placeholder in later packages.
+    Anki2,
+    /// `collection.anki21`: the collection of Anki 2.1 (schema 11).
+    Anki21,
+    /// `collection.anki21b`: the current collection (schema 18), zstd.
+    Anki21b,
+    /// `media`: the media list (JSON, or zstd protobuf in the current
+    /// format).
+    MediaMap,
+    /// A media file, named by its number in the media list.
+    File(u32),
+}
+
+impl AnkiName {
+    /// The entry named `name`, if it is one an Anki package has.
+    fn of(name: &[u8]) -> Option<Self> {
+        Some(match name {
+            b"meta" => Self::Meta,
+            b"collection.anki2" => Self::Anki2,
+            b"collection.anki21" => Self::Anki21,
+            b"collection.anki21b" => Self::Anki21b,
+            b"media" => Self::MediaMap,
+            _ => Self::File(file_number(name)?),
+        })
+    }
+
+    /// The name, for messages.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Meta => "meta",
+            Self::Anki2 => "collection.anki2",
+            Self::Anki21 => "collection.anki21",
+            Self::Anki21b => "collection.anki21b",
+            Self::MediaMap => "media",
+            Self::File(_) => "a media file",
+        }
+    }
+}
+
+/// A media file's number: decimal digits without a leading zero (except
+/// `0` itself), at most 9 of them, as Anki names them.
+pub(crate) fn file_number(name: &[u8]) -> Option<u32> {
+    if name.is_empty() || name.len() > 9 || (name.len() > 1 && name[0] == b'0') {
+        return None;
+    }
+    if !name.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    std::str::from_utf8(name).ok()?.parse().ok()
 }
 
 /// What an entry of the archive is.
@@ -130,6 +201,8 @@ pub(super) enum Role {
     MediaDir,
     /// `media/<sha256>.<ext>`, a media file, by its central name only.
     Media(MediaRef),
+    /// An entry of an Anki package.
+    Anki(AnkiName),
 }
 
 impl Role {
@@ -140,12 +213,16 @@ impl Role {
             Self::Json => JSON_ENTRY,
             Self::MediaDir => MEDIA_DIR,
             Self::Media(_) => "a media file",
+            Self::Anki(name) => name.name(),
         }
     }
 
-    /// The role of an entry named `name` (its central record's name), or
-    /// `None` for a name Rappel never writes.
-    fn of(name: &[u8]) -> Option<Self> {
+    /// The role of an entry named `name` (its central record's name) in an
+    /// archive of `layout`, or `None` for a name it never has.
+    fn of(name: &[u8], layout: Layout) -> Option<Self> {
+        if layout == Layout::Anki {
+            return AnkiName::of(name).map(Self::Anki);
+        }
         if name == JSON_ENTRY.as_bytes() {
             return Some(Self::Json);
         }
@@ -238,13 +315,15 @@ impl<R: Read + Seek> Seek for Window<R> {
 }
 
 /// A checked archive: its entries are exactly the ones a Rappel export
-/// has, each stored in a supported way, and they do not overlap.
+/// has (or, for an Anki package, the ones Anki writes, others passed
+/// over), each stored in a supported way, and they do not overlap.
 pub(super) struct Archive<R> {
     reader: Window<R>,
     entries: Vec<Entry>,
-    /// `cards.json`.
-    json: Entry,
-    /// The media entries' positions in `entries`, sorted by hash.
+    /// `cards.json` (a Rappel export only).
+    json: Option<Entry>,
+    /// The media entries' positions in `entries`, sorted by hash (a Rappel
+    /// export), or by number (an Anki package).
     media: Vec<u32>,
 }
 
@@ -267,6 +346,52 @@ impl<R: Read + Seek> Archive<R> {
     /// walk reads at most that size, keeps no name, and stops at the first
     /// record that is not one Rappel writes.
     pub(super) fn open(reader: R, len: u64, limits: &Limits) -> Result<Self, ImportProblem> {
+        let (reader, entries, directory_offset) = Self::walk(reader, len, limits, Layout::Rappel)?;
+        if !entries.iter().any(|e| e.role == Role::Json) {
+            return Err(ImportProblem::MissingEntry(JSON_ENTRY));
+        }
+        if !entries.iter().any(|e| e.role == Role::MediaDir) {
+            return Err(ImportProblem::MissingEntry(MEDIA_DIR));
+        }
+        check_layout(&entries, directory_offset)?;
+        let json = entries.iter().find(|e| e.role == Role::Json).cloned();
+        let media = media_by_hash(&entries)?;
+        Ok(Self {
+            reader,
+            entries,
+            json,
+            media,
+        })
+    }
+
+    /// [`Self::open`] for an Anki package: its entries are those Anki
+    /// writes, other names passed over, each name once, and at least one
+    /// collection. Reads no entry's data.
+    pub(super) fn open_anki(reader: R, len: u64, limits: &Limits) -> Result<Self, ImportProblem> {
+        let (reader, entries, directory_offset) = Self::walk(reader, len, limits, Layout::Anki)?;
+        let has = |name| entries.iter().any(|e| e.role == Role::Anki(name));
+        if !(has(AnkiName::Anki2) || has(AnkiName::Anki21) || has(AnkiName::Anki21b)) {
+            return Err(ImportProblem::MissingEntry("collection.anki2"));
+        }
+        check_layout(&entries, directory_offset)?;
+        let media = files_by_number(&entries)?;
+        Ok(Self {
+            reader,
+            entries,
+            json: None,
+            media,
+        })
+    }
+
+    /// The end record and the central directory, walked; each entry's
+    /// local header read. Returns the reader, the entries and where the
+    /// central directory starts.
+    fn walk(
+        reader: R,
+        len: u64,
+        limits: &Limits,
+        layout: Layout,
+    ) -> Result<(Window<R>, Vec<Entry>, u64), ImportProblem> {
         if len > limits.archive {
             return Err(ImportProblem::FileTooLarge {
                 limit: limits.archive,
@@ -290,29 +415,11 @@ impl<R: Read + Seek> Archive<R> {
             .checked_add(end.directory_size)
             .filter(|e| *e <= end.end_start)
             .ok_or_else(not_layout)?;
-        let mut entries = walk_directory(&mut reader, &end, limits)?;
+        let mut entries = walk_directory(&mut reader, &end, limits, layout)?;
         for entry in &mut entries {
             locate_data(&mut reader, entry)?;
         }
-        if !entries.iter().any(|e| e.role == Role::Json) {
-            return Err(ImportProblem::MissingEntry(JSON_ENTRY));
-        }
-        if !entries.iter().any(|e| e.role == Role::MediaDir) {
-            return Err(ImportProblem::MissingEntry(MEDIA_DIR));
-        }
-        check_layout(&entries, end.directory_offset)?;
-        let json = entries
-            .iter()
-            .find(|e| e.role == Role::Json)
-            .cloned()
-            .ok_or(ImportProblem::MissingEntry(JSON_ENTRY))?;
-        let media = media_by_hash(&entries)?;
-        Ok(Self {
-            reader,
-            entries,
-            json,
-            media,
-        })
+        Ok((reader, entries, end.directory_offset))
     }
 
     /// The entries, in archive order.
@@ -333,8 +440,28 @@ impl<R: Read + Seek> Archive<R> {
     }
 
     /// `cards.json`.
-    pub(super) fn json_entry(&self) -> Entry {
-        self.json.clone()
+    pub(super) fn json_entry(&self) -> Result<Entry, ImportProblem> {
+        self.json
+            .clone()
+            .ok_or(ImportProblem::MissingEntry(JSON_ENTRY))
+    }
+
+    /// The Anki package's entry `name` (not a media file), if it has one.
+    pub(super) fn anki_entry(&self, name: AnkiName) -> Option<Entry> {
+        self.entries
+            .iter()
+            .find(|e| e.role == Role::Anki(name))
+            .cloned()
+    }
+
+    /// The Anki package's media file number `n`, if it has one.
+    pub(super) fn anki_file(&self, n: u32) -> Option<Entry> {
+        let number = |i: &u32| match self.entries[*i as usize].role {
+            Role::Anki(AnkiName::File(n)) => n,
+            _ => u32::MAX,
+        };
+        let at = self.media.binary_search_by_key(&n, number).ok()?;
+        self.entries.get(self.media[at] as usize).cloned()
     }
 
     /// A reader of `entry`'s decompressed data that fails once more than
@@ -646,6 +773,7 @@ fn walk_directory<R: Read + Seek>(
     reader: &mut Window<R>,
     end: &EndRecord,
     limits: &Limits,
+    layout: Layout,
 ) -> Result<Vec<Entry>, ImportProblem> {
     let short = || ImportProblem::InvalidArchive("the list of entries is cut short".to_owned());
     reader
@@ -656,7 +784,7 @@ fn walk_directory<R: Read + Seek>(
     let mut entries: Vec<Entry> = Vec::with_capacity(capacity);
     let mut name = Vec::new();
     let mut extra = Vec::new();
-    let (mut seen_json, mut seen_dir) = (false, false);
+    let mut seen = Seen::default();
     for _ in 0..end.entries {
         let mut record = [0; CENTRAL_LEN];
         directory.read_exact(&mut record).map_err(|_| short())?;
@@ -687,17 +815,17 @@ fn walk_directory<R: Read + Seek>(
         if skipped != comment_len {
             return Err(short());
         }
-        let Some(role) = Role::of(&name) else {
+        let Some(role) = Role::of(&name, layout) else {
+            if layout == Layout::Anki {
+                // Never read: only the entries Anki writes are.
+                continue;
+            }
             return Err(ImportProblem::UnexpectedEntry(shown_name(&name)));
         };
         // A name used twice would make the archive mean two things. Media
         // names are compared once the walk is done ([`media_by_hash`]), by
         // sorting, so the check stays quick for 100,000 of them.
-        let repeated = match role {
-            Role::Json => std::mem::replace(&mut seen_json, true),
-            Role::MediaDir => std::mem::replace(&mut seen_dir, true),
-            Role::Media(_) => false,
-        };
+        let repeated = seen.repeated(role);
         if repeated {
             return Err(twice());
         }
@@ -712,7 +840,7 @@ fn walk_directory<R: Read + Seek>(
         // Bit 0: encrypted; bit 6: strong encryption.
         let encrypted = flags & 0x41 != 0;
         let supported = match role {
-            Role::Json | Role::Media(_) => matches!(method, STORED | DEFLATED),
+            Role::Json | Role::Media(_) | Role::Anki(_) => matches!(method, STORED | DEFLATED),
             Role::MediaDir => size == 0 && matches!(method, STORED | DEFLATED),
         };
         if encrypted || !supported {
@@ -754,6 +882,30 @@ fn walk_directory<R: Read + Seek>(
     Ok(entries)
 }
 
+/// The fixed names a walk has seen, one bit each.
+#[derive(Debug, Default)]
+struct Seen(u8);
+
+impl Seen {
+    /// Whether `role`'s name was seen before (never for numbered or hashed
+    /// media, which are compared by sorting once the walk is done).
+    fn repeated(&mut self, role: Role) -> bool {
+        let bit: u8 = match role {
+            Role::Media(_) | Role::Anki(AnkiName::File(_)) => return false,
+            Role::Json => 1,
+            Role::MediaDir => 2,
+            Role::Anki(AnkiName::Meta) => 4,
+            Role::Anki(AnkiName::Anki2) => 8,
+            Role::Anki(AnkiName::Anki21) => 16,
+            Role::Anki(AnkiName::Anki21b) => 32,
+            Role::Anki(AnkiName::MediaMap) => 64,
+        };
+        let seen = self.0 & bit != 0;
+        self.0 |= bit;
+        seen
+    }
+}
+
 /// A name used twice.
 fn twice() -> ImportProblem {
     ImportProblem::UnexpectedEntry("(a name used twice)".to_owned())
@@ -765,7 +917,7 @@ fn twice() -> ImportProblem {
 fn media_by_hash(entries: &[Entry]) -> Result<Vec<u32>, ImportProblem> {
     let hash = |i: u32| match entries[i as usize].role {
         Role::Media(media) => Some(*media.hash()),
-        Role::Json | Role::MediaDir => None,
+        Role::Json | Role::MediaDir | Role::Anki(_) => None,
     };
     let mut media: Vec<u32> = (0..entries.len())
         .filter_map(|i| u32::try_from(i).ok())
@@ -776,6 +928,24 @@ fn media_by_hash(entries: &[Entry]) -> Result<Vec<u32>, ImportProblem> {
         return Err(twice());
     }
     Ok(media)
+}
+
+/// The positions of an Anki package's numbered media files, sorted by
+/// number. A number used twice refuses the file.
+fn files_by_number(entries: &[Entry]) -> Result<Vec<u32>, ImportProblem> {
+    let number = |i: u32| match entries[i as usize].role {
+        Role::Anki(AnkiName::File(n)) => Some(n),
+        _ => None,
+    };
+    let mut files: Vec<u32> = (0..entries.len())
+        .filter_map(|i| u32::try_from(i).ok())
+        .filter(|&i| number(i).is_some())
+        .collect();
+    files.sort_unstable_by_key(|&i| number(i));
+    if files.windows(2).any(|w| number(w[0]) == number(w[1])) {
+        return Err(twice());
+    }
+    Ok(files)
 }
 
 /// The compressed size, size and local header offset of a central record,

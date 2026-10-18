@@ -48,7 +48,10 @@ libc = "0.2"
 thiserror = "2"
 
 # Storage (rappel-core). Bundled SQLite: same version everywhere, FTS5 included.
-rusqlite = { version = "0.40", default-features = false, features = ["bundled", "backup"] }
+# `collation` and `limits` (ADR 0061): an Anki collection's schema names a
+# `unicase` collation, which its tables cannot be read without, and an
+# untrusted collection is read with lowered length limits.
+rusqlite = { version = "0.40", default-features = false, features = ["bundled", "backup", "collation", "limits"] }
 
 # Scheduling (rappel-core): the reference FSRS implementation (ADR 0006).
 fsrs = "6.6"
@@ -79,12 +82,20 @@ crc32fast = "1.5"
 # rust-embed (the app's KaTeX fonts). No default features: no OIDs needed.
 sha2 = { version = "0.11", default-features = false }
 
+# Anki import (rappel-core, ADR 0061): the current Anki package format
+# compresses its collection and media files with zstd. A pure-Rust decoder
+# (no C library on the path of an untrusted file), read as a stream whose
+# window is capped, so a zstd bomb stops at our own cap. MIT.
+ruzstd = "0.9"
+
 # Card content (rappel-core, ADR 0019): CommonMark parser with tables,
 # strikethrough and math. No default features: they only add a CLI.
 pulldown-cmark = { version = "0.13", default-features = false }
 
 # Math (rappel app, ADR 0021): RaTeX parses and lays out LaTeX; the vendored
-# ratex-cairo (see [patch.crates-io]) draws it with cairo. Pinned: young
+# ratex-cairo (see [patch.crates-io]) draws it with cairo. rappel-core uses
+# ratex-parser alone (no UI) to check that a formula from Anki is one Rappel
+# can draw before it becomes math (ADR 0061). Pinned: young
 # project, review FONT_NOTICE.txt of ratex-katex-fonts at every bump.
 ratex-cairo = "=0.1.15"
 ratex-parser = "=0.1.15"

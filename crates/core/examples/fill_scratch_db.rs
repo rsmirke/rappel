@@ -3,7 +3,7 @@
 //! try studying without waiting days (ADR 0014).
 //!
 //! ```text
-//! cargo run -p rappel-core --example fill_scratch_db -- /tmp/rappel-scratch [count] [--due N] [--markdown] [--math] [--tags] [--suspended N] [--media] [--unused-media] [--demo]
+//! cargo run -p rappel-core --example fill_scratch_db -- /tmp/rappel-scratch [count] [--due N] [--markdown] [--math] [--tags] [--suspended N] [--media] [--unused-media] [--demo] [--anki PACKAGE]
 //! RAPPEL_DATA_DIR=/tmp/rappel-scratch cargo run -p rappel
 //! ```
 //!
@@ -32,6 +32,10 @@
 //! chemical elements, art history, calculus with formulas and flags drawn
 //! as images, with tags and a month of review history, so some cards are
 //! due and the statistics have days to show. `fill_scratch_db -- <dir> 0 --demo` adds only those.
+//! With `--anki PACKAGE`, it imports that Anki package (`.apkg` or
+//! `.colpkg`) as Import… does (ADR 0061), last; `fill_scratch_db -- <dir>
+//! 0 --anki crates/core/src/interchange/anki/fixtures/current.apkg` imports
+//! only the test package Anki made.
 //! The directory
 //! must be absolute and is never one of the
 //! app's own data directories, release or debug: this is for throwaway
@@ -67,7 +71,7 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<String, String> {
-    let usage = "usage: fill_scratch_db <absolute scratch dir> [count] [--due N] [--markdown] [--math] [--tags] [--suspended N] [--media] [--unused-media] [--demo]";
+    let usage = "usage: fill_scratch_db <absolute scratch dir> [count] [--due N] [--markdown] [--math] [--tags] [--suspended N] [--media] [--unused-media] [--demo] [--anki PACKAGE]";
     let number = |arg: Option<std::ffi::OsString>| {
         arg.as_ref()
             .and_then(|n| n.to_str())
@@ -78,6 +82,7 @@ fn run() -> Result<String, String> {
     let dir = PathBuf::from(args.next().ok_or(usage)?);
     let (mut count, mut due, mut markdown, mut math, mut tags) = (None, 0, false, false, false);
     let (mut suspended, mut media, mut unused_media, mut demo) = (0, false, false, false);
+    let mut anki: Option<PathBuf> = None;
     while let Some(arg) = args.next() {
         if arg == "--due" {
             due = number(args.next())?;
@@ -95,6 +100,8 @@ fn run() -> Result<String, String> {
             unused_media = true;
         } else if arg == "--demo" {
             demo = true;
+        } else if arg == "--anki" {
+            anki = Some(PathBuf::from(args.next().ok_or(usage)?));
         } else if count.is_none() {
             count = Some(number(Some(arg))?);
         } else {
@@ -102,28 +109,15 @@ fn run() -> Result<String, String> {
         }
     }
     let count = count.unwrap_or(DEFAULT_COUNT);
-    if count == 0 && !markdown && !math && !media && !unused_media && !demo {
+    if count == 0 && !markdown && !math && !media && !unused_media && !demo && anki.is_none() {
         return Err(
-            "nothing to add: count is 0 and no --markdown, --math, --media, --unused-media or --demo"
+            "nothing to add: count is 0 and no --markdown, --math, --media, --unused-media, --demo \
+             or --anki"
                 .to_owned(),
         );
     }
-    if due > count {
-        return Err(format!("--due {due} is more than the {count} cards"));
-    }
-    if due.saturating_add(suspended) > count {
-        return Err(format!(
-            "--due {due} and --suspended {suspended} are more than the {count} cards"
-        ));
-    }
-    if !dir.is_absolute() {
-        return Err(format!("{} is not an absolute path", dir.display()));
-    }
-    // `..` through a folder that does not exist yet would defeat the
-    // comparison below (it cannot be resolved before it is created).
-    if dir.components().any(|c| c == Component::ParentDir) {
-        return Err(format!("{} must not contain `..`", dir.display()));
-    }
+    check_counts(count, due, suspended)?;
+    check_dir(&dir)?;
     refuse_app_data_dirs(&dir)?;
 
     ensure_data_dir(&dir).map_err(|e| e.to_string())?;
@@ -165,10 +159,57 @@ fn run() -> Result<String, String> {
     if demo {
         added.push(fill_demo(&mut store)?);
     }
+    if let Some(package) = anki {
+        added.push(import_anki(&mut store, &package)?);
+    }
     Ok(format!(
         "Added {} in {}",
         added.join(" and "),
         dir.display()
+    ))
+}
+
+/// `--due` and `--suspended` fit in `count` cards.
+fn check_counts(count: usize, due: usize, suspended: usize) -> Result<(), String> {
+    if due > count {
+        return Err(format!("--due {due} is more than the {count} cards"));
+    }
+    if due.saturating_add(suspended) > count {
+        return Err(format!(
+            "--due {due} and --suspended {suspended} are more than the {count} cards"
+        ));
+    }
+    Ok(())
+}
+
+/// The scratch directory is absolute and has no `..`.
+fn check_dir(dir: &std::path::Path) -> Result<(), String> {
+    if !dir.is_absolute() {
+        return Err(format!("{} is not an absolute path", dir.display()));
+    }
+    // `..` through a folder that does not exist yet would defeat the
+    // comparison of `refuse_app_data_dirs` (it cannot be resolved before it
+    // is created).
+    if dir.components().any(|c| c == Component::ParentDir) {
+        return Err(format!("{} must not contain `..`", dir.display()));
+    }
+    Ok(())
+}
+
+/// `--anki`: imports `package` as Import… does. Returns what to report.
+fn import_anki(store: &mut Store, package: &std::path::Path) -> Result<String, String> {
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    let plan = store
+        .plan_anki_import(package, &cancel)
+        .map_err(|e| e.to_string())?;
+    let report = store
+        .apply_anki_import(&plan, &cancel)
+        .map_err(|e| e.to_string())?;
+    Ok(format!(
+        "{} cards and {} reviews from {}",
+        report.cards,
+        report.reviews,
+        package.display()
     ))
 }
 

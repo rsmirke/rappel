@@ -101,6 +101,12 @@ When Rappel finds its database damaged, it shows a recovery screen that lists th
 
 Import first shows what the file would add and what is already there, and writes nothing until you confirm. It adds what is new and brings back what you deleted; nothing you have is edited or deleted. A deck or card you deleted after exporting comes back with its review history if the file still has it, and a deck brings back the cards that were deleted with it. If the file disagrees with your data (for example a card edited in both places), nothing is imported and Rappel lists where they differ. Importing the same file twice changes nothing.
 
+### Coming from Anki
+
+In Anki, use **File › Export…**, choose **Anki Deck Package (.apkg)** or **Anki Collection Package (.colpkg)**, and tick **Include scheduling information** and **Include media**. Then in Rappel use **Import…** and choose that file. Packages from Anki 2.0, 2.1 and the current versions all import.
+
+Each Anki card becomes one Rappel card in Markdown, in a deck of the same name (`Languages::French` becomes "Languages › French"; a deck you already have with that name gets the cards). Reversed notes give a card per direction; a cloze card hides its cloze on the front and shows it in bold on the back. Tags, images, sounds, suspended cards and the review history come along: Again counts as Fail, Hard, Good and Easy as Pass, and Rappel works out the schedule from that history. Note types, card styling, add-ons and deck options do not. Before importing, Rappel lists what it leaves out or changes (for example an SVG image, a sound file missing from the package, or a template filter it does not know), and writes nothing until you confirm; your data is backed up first. A card already in Rappel (same deck, front and back) is not added again, so importing the same package twice adds nothing. Reading and importing a large collection can be cancelled from the notice at the bottom of the window.
+
 ### Coming from Cards
 
 Rappel was called Cards before 0.2.0. It does not read the old data folder (`~/.local/share/cards`). To move your data: in the last Cards build use **Export…**, then in Rappel use **Import…**. Old `.cards` exports import as they are; the import file chooser shows both `.rappel` and `.cards` files.

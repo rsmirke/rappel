@@ -27,6 +27,7 @@ msgstr "_Restaurer"
 #: crates/app/data/restore_dialog.blp
 #: crates/app/data/retention_dialog.blp
 #: crates/app/data/start_fresh_dialog.blp
+#: crates/app/src/transfer/anki.rs
 msgid "_Cancel"
 msgstr "_Annuler"
 
@@ -2019,6 +2020,299 @@ msgstr "Le dossier de données est inutilisable."
 msgid "The database could not be opened."
 msgstr "La base de données n’a pas pu être ouverte."
 
+#: crates/app/src/transfer/anki.rs
+#: crates/app/src/transfer/mod.rs
+msgid "Checking the file stopped unexpectedly"
+msgstr "La vérification du fichier s’est arrêtée de façon inattendue"
+
+#: crates/app/src/transfer/anki.rs
+#: crates/app/src/transfer/mod.rs
+#: crates/app/src/ui/toast.rs
+msgid "_Close"
+msgstr "_Fermer"
+
+#: crates/app/src/transfer/anki.rs
+#: crates/app/src/transfer/mod.rs
+msgid "The import stopped unexpectedly"
+msgstr "Import interrompu"
+
+#. Translators: {count} is a number of cards, {limit} the most tags a card keeps.
+#: crates/app/src/transfer/anki_text.rs
+msgid "{count} card with more than {limit} tags, the rest left out"
+msgid_plural "{count} cards with more than {limit} tags, the rest left out"
+msgstr[0] "{count} carte avec plus de {limit} étiquettes, le reste non importé"
+msgstr[1] "{count} cartes avec plus de {limit} étiquettes, le reste non importé"
+
+#. Translators: {count} is a number of cards; a line of the Anki import's report.
+#: crates/app/src/transfer/anki_text.rs
+msgid "{count} card already in Rappel"
+msgid_plural "{count} cards already in Rappel"
+msgstr[0] "{count} carte déjà dans Rappel"
+msgstr[1] "{count} cartes déjà dans Rappel"
+
+#. Translators: {count} is a number of cards.
+#: crates/app/src/transfer/anki_text.rs
+msgid "{count} card with an empty front"
+msgid_plural "{count} cards with an empty front"
+msgstr[0] "{count} carte au recto vide"
+msgstr[1] "{count} cartes au recto vide"
+
+#. Translators: a note is what Anki makes cards from.
+#: crates/app/src/transfer/anki_text.rs
+msgid "{count} card whose note is damaged"
+msgid_plural "{count} cards whose notes are damaged"
+msgstr[0] "{count} carte dont la note est endommagée"
+msgstr[1] "{count} cartes dont les notes sont endommagées"
+
+#. Translators: a template is how Anki lays out a card.
+#: crates/app/src/transfer/anki_text.rs
+msgid "{count} card whose template cannot be read"
+msgid_plural "{count} cards whose templates cannot be read"
+msgstr[0] "{count} carte dont le modèle est illisible"
+msgstr[1] "{count} cartes dont les modèles sont illisibles"
+
+#. Translators: {count} is a number of cards.
+#: crates/app/src/transfer/anki_text.rs
+msgid "{count} card too long for Rappel"
+msgid_plural "{count} cards too long for Rappel"
+msgstr[0] "{count} carte trop longue pour Rappel"
+msgstr[1] "{count} cartes trop longues pour Rappel"
+
+#. Translators: a filter is a part of an Anki template ({{filter:Field}}).
+#: crates/app/src/transfer/anki_text.rs
+msgid "{count} card with a template filter Rappel does not know, shown as it is"
+msgid_plural "{count} cards with a template filter Rappel does not know, shown as they are"
+msgstr[0] "{count} carte avec un filtre de modèle inconnu de Rappel, affichée telle quelle"
+msgstr[1] "{count} cartes avec un filtre de modèle inconnu de Rappel, affichées telles quelles"
+
+#. Translators: {count} is a number of cards.
+#: crates/app/src/transfer/anki_text.rs
+msgid "{count} card whose template names a missing field"
+msgid_plural "{count} cards whose templates name a missing field"
+msgstr[0] "{count} carte dont le modèle nomme un champ absent"
+msgstr[1] "{count} cartes dont les modèles nomment un champ absent"
+
+#. Translators: {count} is a number of formulas.
+#: crates/app/src/transfer/anki_text.rs
+msgid "{count} formula Rappel cannot draw, kept as text"
+msgid_plural "{count} formulas Rappel cannot draw, kept as text"
+msgstr[0] "{count} formule que Rappel ne peut pas dessiner, gardée en texte"
+msgstr[1] "{count} formules que Rappel ne peut pas dessiner, gardées en texte"
+
+#. Translators: {count} is a number of images.
+#: crates/app/src/transfer/anki_text.rs
+msgid "{count} image from the web, kept as its address and never downloaded"
+msgid_plural "{count} images from the web, kept as their addresses and never downloaded"
+msgstr[0] "{count} image du Web, gardée comme adresse et jamais téléchargée"
+msgstr[1] "{count} images du Web, gardées comme adresses et jamais téléchargées"
+
+#. Translators: media files are images and sounds.
+#: crates/app/src/transfer/anki_text.rs
+msgid "{count} media file missing from the package"
+msgid_plural "{count} media files missing from the package"
+msgstr[0] "{count} fichier multimédia absent du fichier Anki"
+msgstr[1] "{count} fichiers multimédias absents du fichier Anki"
+
+#. Translators: {count} is a number of media files.
+#: crates/app/src/transfer/anki_text.rs
+msgid "{count} media file of a kind Rappel does not show"
+msgid_plural "{count} media files of kinds Rappel does not show"
+msgstr[0] "{count} fichier multimédia d’un type que Rappel n’affiche pas"
+msgstr[1] "{count} fichiers multimédias de types que Rappel n’affiche pas"
+
+#. Translators: {count} is a number of media files.
+#: crates/app/src/transfer/anki_text.rs
+msgid "{count} media file too large for Rappel"
+msgid_plural "{count} media files too large for Rappel"
+msgstr[0] "{count} fichier multimédia trop volumineux pour Rappel"
+msgstr[1] "{count} fichiers multimédias trop volumineux pour Rappel"
+
+#. Translators: {count} is a number of media files.
+#: crates/app/src/transfer/anki_text.rs
+msgid "{count} damaged media file"
+msgid_plural "{count} damaged media files"
+msgstr[0] "{count} fichier multimédia endommagé"
+msgstr[1] "{count} fichiers multimédias endommagés"
+
+#. Translators: {count} is a number of media files.
+#: crates/app/src/transfer/anki_text.rs
+msgid "{count} media file with a name that cannot be used"
+msgid_plural "{count} media files with names that cannot be used"
+msgstr[0] "{count} fichier multimédia au nom inutilisable"
+msgstr[1] "{count} fichiers multimédias aux noms inutilisables"
+
+#. Translators: {count} is a number of media files.
+#: crates/app/src/transfer/anki_text.rs
+msgid "{count} media file no card uses"
+msgid_plural "{count} media files no card uses"
+msgstr[0] "{count} fichier multimédia qu’aucune carte n’utilise"
+msgstr[1] "{count} fichiers multimédias qu’aucune carte n’utilise"
+
+#. Translators: {count} is a number of tags (Anki's).
+#: crates/app/src/transfer/anki_text.rs
+msgid "{count} tag Rappel cannot have"
+msgid_plural "{count} tags Rappel cannot have"
+msgstr[0] "{count} étiquette que Rappel ne peut pas avoir"
+msgstr[1] "{count} étiquettes que Rappel ne peut pas avoir"
+
+#. Translators: {count} is a number of deck names.
+#: crates/app/src/transfer/anki_text.rs
+msgid "{count} deck name shortened to fit"
+msgid_plural "{count} deck names shortened to fit"
+msgstr[0] "{count} nom de paquet raccourci"
+msgstr[1] "{count} noms de paquets raccourcis"
+
+#. Translators: Anki's “Set Due Date” and “Forget”.
+#: crates/app/src/transfer/anki_text.rs
+msgid "{count} schedule change made by hand, not a review"
+msgid_plural "{count} schedule changes made by hand, not reviews"
+msgstr[0] "{count} changement de planification fait à la main, pas une révision"
+msgstr[1] "{count} changements de planification faits à la main, pas des révisions"
+
+#. Translators: {count} is a number of reviews.
+#: crates/app/src/transfer/anki_text.rs
+msgid "{count} review in a filtered deck that did not count"
+msgid_plural "{count} reviews in filtered decks that did not count"
+msgstr[0] "{count} révision dans un paquet filtré qui n’a pas compté"
+msgstr[1] "{count} révisions dans des paquets filtrés qui n’ont pas compté"
+
+#. Translators: {count} is a number of reviews.
+#: crates/app/src/transfer/anki_text.rs
+msgid "{count} damaged review"
+msgid_plural "{count} damaged reviews"
+msgstr[0] "{count} révision endommagée"
+msgstr[1] "{count} révisions endommagées"
+
+#. Translators: {count} is a number of things in a package.
+#: crates/app/src/transfer/anki_text.rs
+msgid "{count} item"
+msgid_plural "{count} items"
+msgstr[0] "{count} élément"
+msgstr[1] "{count} éléments"
+
+#. Translators: one example in the Anki import's report (a card's text, a file or tag name), in quotes.
+#: crates/app/src/transfer/anki_text.rs
+msgid "“{example}”"
+msgstr "« {example} »"
+
+#. Translators: {reason} is a line of the Anki import's report ("2 cards with an empty front"), {examples} a few of them in quotes.
+#: crates/app/src/transfer/anki_text.rs
+msgid "{reason} ({examples})"
+msgstr "{reason} ({examples})"
+
+#. Translators: the heading of the list of what an Anki import leaves out.
+#: crates/app/src/transfer/anki_text.rs
+msgid "Left out:"
+msgstr "Non importé :"
+
+#. Translators: the heading of the list of what an Anki import keeps differently.
+#: crates/app/src/transfer/anki_text.rs
+msgid "Changed:"
+msgstr "Modifié :"
+
+#: crates/app/src/transfer/anki_text.rs
+msgid "Every card of this package is already in Rappel."
+msgstr "Toutes les cartes de ce fichier sont déjà dans Rappel."
+
+#: crates/app/src/transfer/anki_text.rs
+msgid "No card of this package can be imported."
+msgstr "Aucune carte de ce fichier ne peut être importée."
+
+#: crates/app/src/transfer/anki_text.rs
+#: crates/app/src/transfer/text.rs
+msgid "Nothing to Import"
+msgstr "Rien à importer"
+
+#. Translators: {new} is a list of counts ("12 decks, 840 cards and 5,210 reviews").
+#: crates/app/src/transfer/anki_text.rs
+#: crates/app/src/transfer/text.rs
+msgid "This adds {new}."
+msgstr "Ceci ajoute {new}."
+
+#. Translators: {count} is a number of the user's decks that have the name of a deck of the Anki package.
+#: crates/app/src/transfer/anki_text.rs
+msgid "Cards also go into {count} deck you already have."
+msgid_plural "Cards also go into {count} decks you already have."
+msgstr[0] "Des cartes vont aussi dans {count} paquet que vous avez déjà."
+msgstr[1] "Des cartes vont aussi dans {count} paquets que vous avez déjà."
+
+#. Translators: {count} is a number of media files (images, sounds).
+#: crates/app/src/transfer/anki_text.rs
+#: crates/app/src/transfer/text.rs
+msgid "This adds {count} media file."
+msgid_plural "This adds {count} media files."
+msgstr[0] "Ceci ajoute {count} fichier multimédia."
+msgstr[1] "Ceci ajoute {count} fichiers multimédias."
+
+#. Translators: {count} is a number of cards suspended in Anki.
+#: crates/app/src/transfer/anki_text.rs
+msgid "{count} card stays suspended, as in Anki."
+msgid_plural "{count} cards stay suspended, as in Anki."
+msgstr[0] "{count} carte reste suspendue, comme dans Anki."
+msgstr[1] "{count} cartes restent suspendues, comme dans Anki."
+
+#: crates/app/src/transfer/anki_text.rs
+msgid "Some of the package is left out or changed, as listed below."
+msgstr "Une partie du fichier n’est pas importée ou est modifiée, comme indiqué ci-dessous."
+
+#: crates/app/src/transfer/anki_text.rs
+#: crates/app/src/transfer/text.rs
+msgid "Your data is backed up first."
+msgstr "Vos données sont d’abord sauvegardées."
+
+#. Translators: the question before an import from Anki.
+#: crates/app/src/transfer/anki_text.rs
+msgid "Import from Anki?"
+msgstr "Importer depuis Anki ?"
+
+#. Translators: what separates two sentences in a dialog's text.
+#: crates/app/src/transfer/anki_text.rs
+#: crates/app/src/transfer/text.rs
+msgctxt "sentence separator"
+msgid " "
+msgstr " "
+
+#: crates/app/src/transfer/anki_text.rs
+#: crates/app/src/transfer/text.rs
+msgid "Nothing was imported: everything was already here"
+msgstr "Rien n’a été importé : tout était déjà là"
+
+#. Translators: {added} is a list of counts ("1 deck and 2 cards").
+#. Translators: {added} is a list of "tags", "media files" and "settings".
+#: crates/app/src/transfer/anki_text.rs
+#: crates/app/src/transfer/text.rs
+msgid "Imported {added}"
+msgstr "Ajouts : {added}"
+
+#: crates/app/src/transfer/anki_text.rs
+#: crates/app/src/transfer/text.rs
+msgid "Import done"
+msgstr "Import terminé"
+
+#: crates/app/src/transfer/anki_text.rs
+msgid "Newer Anki package. Export it again in Anki with “Support older Anki versions” checked, then import that file"
+msgstr "Fichier Anki trop récent. Exportez-le à nouveau dans Anki en cochant « Prendre en charge les anciennes versions d’Anki », puis importez ce fichier"
+
+#. Translators: a toast: what is before ":" is its title, the rest is behind Details. {reason} is why, in English.
+#: crates/app/src/transfer/anki_text.rs
+#: crates/app/src/transfer/text.rs
+msgid "Cannot import this file: {reason}"
+msgstr "Import impossible : {reason}"
+
+#. Translators: a toast with a Cancel button while an Anki package is read; keep it short (it must fit a phone's width).
+#: crates/app/src/transfer/anki_text.rs
+msgid "Reading Anki package…"
+msgstr "Lecture du fichier Anki…"
+
+#. Translators: a toast with a Cancel button while an Anki package is imported; keep it short (it must fit a phone's width).
+#: crates/app/src/transfer/anki_text.rs
+msgid "Importing from Anki…"
+msgstr "Import depuis Anki…"
+
+#: crates/app/src/transfer/anki_text.rs
+msgid "Import cancelled"
+msgstr "Import annulé"
+
 #: crates/app/src/transfer/mod.rs
 msgid "Export Data"
 msgstr "Exporter les données"
@@ -2033,25 +2327,20 @@ msgid "The export stopped unexpectedly"
 msgstr "Export interrompu"
 
 #: crates/app/src/transfer/mod.rs
-msgid "Import Data"
-msgstr "Importer des données"
-
-#: crates/app/src/transfer/mod.rs
-msgid "Checking the file stopped unexpectedly"
-msgstr "La vérification du fichier s’est arrêtée de façon inattendue"
-
-#: crates/app/src/transfer/mod.rs
-#: crates/app/src/ui/toast.rs
-msgid "_Close"
-msgstr "_Fermer"
-
-#: crates/app/src/transfer/mod.rs
-msgid "The import stopped unexpectedly"
-msgstr "Import interrompu"
-
-#: crates/app/src/transfer/mod.rs
 msgid "Rappel Exports"
 msgstr "Exports Rappel"
+
+#: crates/app/src/transfer/mod.rs
+msgid "Rappel Exports and Anki Packages"
+msgstr "Exports Rappel et fichiers Anki"
+
+#: crates/app/src/transfer/mod.rs
+msgid "Anki Packages"
+msgstr "Fichiers Anki"
+
+#: crates/app/src/transfer/mod.rs
+msgid "Import Data"
+msgstr "Importer des données"
 
 #: crates/app/src/transfer/mod.rs
 msgid "Choose a file on this computer"
@@ -2082,11 +2371,6 @@ msgstr[1] "Fichiers omis. Exporté dans « {name} », sans {count} fichiers mu
 msgid "Early test version. This file was made by an early test version of Rappel and cannot be imported"
 msgstr "Ancienne version de test. Ce fichier a été créé par une ancienne version de test de Rappel et ne peut pas être importé"
 
-#. Translators: a toast: what is before ":" is its title, the rest is behind Details. {reason} is why, in English.
-#: crates/app/src/transfer/text.rs
-msgid "Cannot import this file: {reason}"
-msgstr "Import impossible : {reason}"
-
 #: crates/app/src/transfer/text.rs
 msgid "File changed. It changed while it was being checked; import it again."
 msgstr "Fichier modifié. Il a changé pendant sa vérification ; importez-le à nouveau."
@@ -2109,20 +2393,10 @@ msgstr "Rien n’a été importé. Le fichier a changé depuis sa vérification�
 msgid "The import failed: nothing was imported; {error}"
 msgstr "L’import a échoué : rien n’a été importé ; {error}"
 
-#: crates/app/src/transfer/text.rs
-msgid "Import done"
-msgstr "Import terminé"
-
 #. Translators: {added} and {revived} are lists of counts ("1 deck and 2 cards").
 #: crates/app/src/transfer/text.rs
 msgid "Imported {added}, and brought back {revived}"
 msgstr "Ajouts : {added} ; restaurations : {revived}"
-
-#. Translators: {added} is a list of counts ("1 deck and 2 cards").
-#. Translators: {added} is a list of "tags", "media files" and "settings".
-#: crates/app/src/transfer/text.rs
-msgid "Imported {added}"
-msgstr "Ajouts : {added}"
 
 #. Translators: {revived} is a list of counts ("1 deck and 2 cards") of things deleted earlier and back now.
 #: crates/app/src/transfer/text.rs
@@ -2142,10 +2416,6 @@ msgid "settings"
 msgstr "réglages"
 
 #: crates/app/src/transfer/text.rs
-msgid "Nothing was imported: everything was already here"
-msgstr "Rien n’a été importé : tout était déjà là"
-
-#: crates/app/src/transfer/text.rs
 msgid "Cannot Import"
 msgstr "Import impossible"
 
@@ -2157,17 +2427,8 @@ msgstr[0] "Ce fichier diffère de vos données en {count} endroit. Rien n’est 
 msgstr[1] "Ce fichier diffère de vos données en {count} endroits. Rien n’est importé et vos données restent telles quelles."
 
 #: crates/app/src/transfer/text.rs
-msgid "Nothing to Import"
-msgstr "Rien à importer"
-
-#: crates/app/src/transfer/text.rs
 msgid "Everything in this file is already here."
 msgstr "Tout le contenu de ce fichier est déjà là."
-
-#. Translators: {new} is a list of counts ("12 decks, 840 cards and 5,210 reviews").
-#: crates/app/src/transfer/text.rs
-msgid "This adds {new}."
-msgstr "Ceci ajoute {new}."
 
 #. Translators: {count} is a number of new tags.
 #: crates/app/src/transfer/text.rs
@@ -2183,13 +2444,6 @@ msgid_plural "This puts {count} tags on cards."
 msgstr[0] "Ceci pose {count} étiquette sur des cartes."
 msgstr[1] "Ceci pose {count} étiquettes sur des cartes."
 
-#. Translators: {count} is a number of media files (images, sounds).
-#: crates/app/src/transfer/text.rs
-msgid "This adds {count} media file."
-msgid_plural "This adds {count} media files."
-msgstr[0] "Ceci ajoute {count} fichier multimédia."
-msgstr[1] "Ceci ajoute {count} fichiers multimédias."
-
 #. Translators: {revived} is a list of counts ("2 decks and 30 cards") of things the user deleted.
 #: crates/app/src/transfer/text.rs
 msgid "This brings back {revived} you deleted."
@@ -2202,16 +2456,6 @@ msgstr "Vos réglages sont remplacés par ceux du fichier."
 #: crates/app/src/transfer/text.rs
 msgid "Your settings stay as they are."
 msgstr "Vos réglages restent tels quels."
-
-#: crates/app/src/transfer/text.rs
-msgid "Your data is backed up first."
-msgstr "Vos données sont d’abord sauvegardées."
-
-#. Translators: what separates two sentences in a dialog's text.
-#: crates/app/src/transfer/text.rs
-msgctxt "sentence separator"
-msgid " "
-msgstr " "
 
 #: crates/app/src/transfer/text.rs
 msgid "Import Data?"
@@ -2674,6 +2918,10 @@ msgstr "Recherche, étiquettes et statistiques"
 #: data/io.github.rsmirke.Rappel.metainfo.xml.in
 msgid "Automatic backups, and export to a single file"
 msgstr "Sauvegardes automatiques et export dans un seul fichier"
+
+#: data/io.github.rsmirke.Rappel.metainfo.xml.in
+msgid "Import from Anki, with your review history"
+msgstr "Import depuis Anki, avec votre historique de révisions"
 
 #: data/io.github.rsmirke.Rappel.metainfo.xml.in
 msgid "Works on phones and with the keyboard alone"

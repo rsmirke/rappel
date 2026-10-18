@@ -82,7 +82,7 @@ fn an_entry_streams_to_a_writer_with_its_hash_and_a_hard_cap() {
     let bytes = env.export();
     let json = read_cards_json(&bytes, &Limits::DEFAULT).unwrap();
     let mut archive = open(&bytes, &Limits::DEFAULT).unwrap();
-    let entry = archive.json_entry();
+    let entry = archive.json_entry().unwrap();
 
     let mut out = Vec::new();
     let copied = archive

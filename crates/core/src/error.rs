@@ -390,6 +390,15 @@ pub enum Error {
     #[error("cannot import this file: {0}")]
     ImportRefused(#[source] crate::interchange::ImportProblem),
 
+    /// The file is not an Anki package Rappel can read (ADR 0061).
+    /// Nothing was written.
+    #[error("cannot import this Anki package: {0}")]
+    AnkiRefused(#[source] crate::interchange::AnkiProblem),
+
+    /// The user cancelled an import. Nothing was written.
+    #[error("the import was cancelled")]
+    ImportCancelled,
+
     /// The import plan has conflicts with the database, so the whole
     /// import is refused. Nothing was written.
     #[error("cannot import: {0} conflicts with the existing data")]

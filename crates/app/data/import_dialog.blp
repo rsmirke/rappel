@@ -1,9 +1,10 @@
 using Gtk 4.0;
 using Adw 1;
 
-// The summary shown before an import. interchange.rs sets the heading and
-// body, and for "Cannot Import" and "Nothing to Import" removes Import and
-// relabels Cancel as Close.
+// The summary shown before an import. transfer/mod.rs (a Rappel export)
+// and transfer/anki.rs (an Anki package) set the heading and body, and for
+// "Cannot Import" and "Nothing to Import" remove Import and relabel Cancel
+// as Close.
 Adw.AlertDialog import_dialog {
   close-response: "cancel";
   default-response: "import";
@@ -13,8 +14,10 @@ Adw.AlertDialog import_dialog {
     import: _("_Import") suggested,
   ]
 
-  // The conflicts, one per line. Plain text: the names are the user's own,
-  // never the file's, but they are still untrusted card content.
+  // The conflicts (a Rappel export) or the report of what is left out (an
+  // Anki package), one per line. Plain text: the conflicts' names are the
+  // user's own, the report's examples the package's, all untrusted card
+  // content.
   extra-child: Gtk.Label conflicts_label {
     visible: false;
     use-markup: false;

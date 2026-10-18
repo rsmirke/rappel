@@ -6,6 +6,8 @@
 //! never freezes. The texts are pure functions in [`text`]; [`names`]
 //! looks up the user's own names that conflicts refer to.
 
+mod anki;
+mod anki_text;
 mod names;
 mod text;
 
@@ -15,7 +17,9 @@ use std::path::PathBuf;
 use adw::prelude::*;
 use gtk::{gio, glib};
 use rappel_core::Error;
-use rappel_core::interchange::{FILE_EXTENSION, IMPORT_EXTENSIONS, ImportPlan, ImportSummary};
+use rappel_core::interchange::{
+    ANKI_EXTENSIONS, FILE_EXTENSION, FileKind, IMPORT_EXTENSIONS, ImportPlan, ImportSummary,
+};
 
 use crate::state::AppState;
 use crate::ui::toast::{info_toast, persistent_toast, show_error};
@@ -72,14 +76,21 @@ pub async fn export(window: &RappelWindow, state: &AppState) {
 }
 
 /// Asks for a file, checks it on a worker thread, shows what it would do,
-/// and imports it on a worker thread if the user confirms.
+/// and imports it on a worker thread if the user confirms. An Anki package
+/// (by its name, else its content) goes to the Anki import ([`anki`]).
 pub async fn import(window: &RappelWindow, state: &AppState) {
-    let dialog = file_dialog(&gettext("Import Data"), &IMPORT_EXTENSIONS);
+    let dialog = import_dialog();
     let Some(path) = chosen_path(window, dialog.open_future(Some(window)).await) else {
         return;
     };
 
     let data_dir = state.data_dir().to_path_buf();
+    let sniffed = path.clone();
+    let kind = worker::run(window, move || AppState::file_kind_on_worker(&sniffed)).await;
+    if let Ok(Some(FileKind::Anki)) = kind {
+        anki::import(window, data_dir, path).await;
+        return;
+    }
     let worker_dir = data_dir.clone();
     let result = worker::run(window, move || {
         AppState::plan_import_on_worker(&worker_dir, &path)
@@ -171,15 +182,20 @@ async fn apply(window: &RappelWindow, data_dir: PathBuf, plan: ImportPlan) {
     }
 }
 
-/// A modal file chooser for `.rappel` files. It also shows `.cards` files,
-/// the name exports had before the rename (ADR 0020), so old exports import.
-/// Saving offers only `.rappel`, so an old export is not overwritten by accident.
-fn file_dialog(title: &str, extensions: &[&str]) -> gtk::FileDialog {
+/// A file filter named `name` for the name `extensions`.
+fn suffix_filter(name: &str, extensions: &[&str]) -> gtk::FileFilter {
     let filter = gtk::FileFilter::new();
-    filter.set_name(Some(&gettext("Rappel Exports")));
+    filter.set_name(Some(name));
     for extension in extensions {
         filter.add_suffix(extension);
     }
+    filter
+}
+
+/// A modal file chooser for `.rappel` files, for saving an export: only
+/// `.rappel`, so an old `.cards` export is not overwritten by accident.
+fn file_dialog(title: &str, extensions: &[&str]) -> gtk::FileDialog {
+    let filter = suffix_filter(&gettext("Rappel Exports"), extensions);
     let filters = gio::ListStore::new::<gtk::FileFilter>();
     filters.append(&filter);
     gtk::FileDialog::builder()
@@ -187,6 +203,32 @@ fn file_dialog(title: &str, extensions: &[&str]) -> gtk::FileDialog {
         .modal(true)
         .filters(&filters)
         .default_filter(&filter)
+        .build()
+}
+
+/// The modal file chooser of Import…: Rappel exports (`.rappel`, and
+/// `.cards`, the name exports had before the rename, ADR 0020) and Anki
+/// packages (`.apkg`, `.colpkg`, ADR 0061), together by default, or each
+/// kind alone.
+fn import_dialog() -> gtk::FileDialog {
+    let all: Vec<&str> = IMPORT_EXTENSIONS
+        .iter()
+        .chain(&ANKI_EXTENSIONS)
+        .copied()
+        .collect();
+    let both = suffix_filter(&gettext("Rappel Exports and Anki Packages"), &all);
+    let filters = gio::ListStore::new::<gtk::FileFilter>();
+    filters.append(&both);
+    filters.append(&suffix_filter(
+        &gettext("Rappel Exports"),
+        &IMPORT_EXTENSIONS,
+    ));
+    filters.append(&suffix_filter(&gettext("Anki Packages"), &ANKI_EXTENSIONS));
+    gtk::FileDialog::builder()
+        .title(gettext("Import Data"))
+        .modal(true)
+        .filters(&filters)
+        .default_filter(&both)
         .build()
 }
 

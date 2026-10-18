@@ -6,12 +6,15 @@ use std::collections::HashSet;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use rappel_core::domain::{
     Card, CardState, Deck, DeckSummary, Grade, ReviewEvent, SettingKey, Settings, Tag, TaggedCard,
 };
-use rappel_core::interchange::{ExportSummary, ImportPlan, ImportReport};
+use rappel_core::interchange::{
+    AnkiPlan, AnkiReport, ExportSummary, FileKind, ImportPlan, ImportReport, file_kind,
+};
 use rappel_core::media::{CleanedUp, MediaRef, TrashTidied, UnusedMedia};
 use rappel_core::scheduling::StudyInput;
 use rappel_core::stats::{CardInfo, DayGrid, Stats};
@@ -169,6 +172,35 @@ impl AppState {
         Store::open_concurrent(data_dir)?.plan_import(path)
     }
 
+    /// Whether `path` is a Rappel export or an Anki package, by its name,
+    /// else by its content ([`file_kind`]). Blocking: it may read the
+    /// file's list of entries.
+    pub fn file_kind_on_worker(path: &Path) -> Option<FileKind> {
+        file_kind(path)
+    }
+
+    /// Reads the Anki package `path` and compares it with the database in
+    /// `data_dir` (see [`Store::plan_anki_import`]); stops when `cancel` is
+    /// set. Blocking; on its own connection like [`Self::export_on_worker`].
+    pub fn plan_anki_import_on_worker(
+        data_dir: &Path,
+        path: &Path,
+        cancel: &AtomicBool,
+    ) -> rappel_core::Result<AnkiPlan> {
+        Store::open_concurrent(data_dir)?.plan_anki_import(path, cancel)
+    }
+
+    /// Applies an Anki import `plan` (see [`Store::apply_anki_import`]);
+    /// writes nothing if `cancel` is set before it commits. Blocking; on
+    /// its own connection like [`Self::export_on_worker`].
+    pub fn apply_anki_import_on_worker(
+        data_dir: &Path,
+        plan: &AnkiPlan,
+        cancel: &AtomicBool,
+    ) -> rappel_core::Result<AnkiReport> {
+        Store::open_concurrent(data_dir)?.apply_anki_import(plan, cancel)
+    }
+
     /// Applies `plan` to the database in `data_dir` (see
     /// [`Store::apply_import`]). Blocking; on its own connection like
     /// [`Self::export_on_worker`]. A change made meanwhile on the main
@@ -273,6 +305,8 @@ impl AppState {
     /// purges the old ones nothing uses (see [`Store::tidy_media_trash`]).
     /// Blocking (it may read every backup); on its own connection.
     pub fn tidy_media_trash_on_worker(data_dir: &Path) -> rappel_core::Result<TrashTidied> {
+        // A temporary copy an Anki import left after a crash goes too.
+        rappel_core::interchange::remove_stale_anki_temps(data_dir);
         Store::open_concurrent(data_dir)?.tidy_media_trash()
     }
 

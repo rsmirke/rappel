@@ -610,7 +610,7 @@ fn read_json<'a, R: Read + Seek + 'a, T>(
     limits: &Limits,
     parse: impl FnOnce(&mut JsonInput<'a, R>) -> serde_json::Result<T>,
 ) -> Result<ReadEnd<T>, ImportProblem> {
-    let entry = archive.json_entry();
+    let entry = archive.json_entry()?;
     let mut input = JsonInput {
         entry: archive.open_entry(&entry, limits.json)?,
         strings: Strings::default(),

@@ -22,12 +22,13 @@ use crate::ui::text::group_digits;
 /// The most suggestions shown at once.
 pub const MAX_SUGGESTIONS: usize = 8;
 
-/// The most tags the field lets a card have (ADR 0050, row 30). The store
-/// has no limit, so a card imported with more keeps them all, but the field
-/// adds none past this: a pasted list of thousands of names would make a
-/// pill for each, and no one tags a card a hundred times on purpose. A name
-/// past the limit stays in the text, with an error under the field.
-pub const MAX_TAGS_PER_CARD: usize = 100;
+/// The most tags the field lets a card have (ADR 0050, row 30; core's
+/// limit, which the Anki import keeps too). The store has no limit, so a
+/// card imported with more keeps them all, but the field adds none past
+/// this: a pasted list of thousands of names would make a pill for each,
+/// and no one tags a card a hundred times on purpose. A name past the
+/// limit stays in the text, with an error under the field.
+pub use rappel_core::domain::MAX_TAGS_PER_CARD;
 
 /// The most tags the field lets a card have, which had `loaded` tags when
 /// the editor opened: [`MAX_TAGS_PER_CARD`], or `loaded` if more (a card

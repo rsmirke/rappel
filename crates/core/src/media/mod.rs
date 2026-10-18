@@ -82,7 +82,7 @@ pub struct MediaRef {
 impl MediaRef {
     /// The file with SHA-256 `hash`, of `kind`.
     #[must_use]
-    pub fn new(hash: [u8; 32], kind: MediaKind) -> Self {
+    pub const fn new(hash: [u8; 32], kind: MediaKind) -> Self {
         Self { hash, kind }
     }
 
