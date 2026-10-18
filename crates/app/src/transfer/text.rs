@@ -2,10 +2,11 @@
 
 use std::path::Path;
 
-use rappel_core::content;
 use rappel_core::interchange::{
     Conflict, FILE_EXTENSION, ImportProblem, ImportReport, ImportSummary, SettingsImport,
 };
+
+use rappel_core::{Error, content};
 
 use super::names::Lookup;
 use crate::ui::text::{count, decks_cards_reviews};
@@ -58,6 +59,32 @@ pub(super) fn refused_text(problem: &ImportProblem) -> String {
                 .to_owned()
         }
         other => format!("This file cannot be imported: {other}"),
+    }
+}
+
+/// The toast when checking a file failed for a reason other than the
+/// file being refused ([`refused_text`]).
+pub(super) fn check_failed_text(err: &Error) -> String {
+    match err {
+        Error::ImportFileChanged => {
+            "The file changed while it was being checked. Import it again.".to_owned()
+        }
+        other => format!("The file could not be checked: {other}"),
+    }
+}
+
+/// The toast when an import the user confirmed failed. Nothing was
+/// imported in every case (ADR 0018, ADR 0053).
+pub(super) fn import_failed_text(err: &Error) -> String {
+    match err {
+        Error::ImportPlanStale => "Your data changed while the file was being checked. \
+             Nothing was imported; import it again."
+            .to_owned(),
+        Error::ImportFileChanged => {
+            "The file changed since it was checked. Nothing was imported; import it again."
+                .to_owned()
+        }
+        other => format!("The import failed, and nothing was imported: {other}"),
     }
 }
 
@@ -485,6 +512,31 @@ mod tests {
         assert_eq!(
             refused_text(&ImportProblem::NotAFile),
             "This file cannot be imported: it is not a regular file (a folder, a pipe or a device)"
+        );
+    }
+
+    #[test]
+    fn a_changed_file_says_so_and_nothing_was_imported() {
+        assert_eq!(
+            check_failed_text(&Error::ImportFileChanged),
+            "The file changed while it was being checked. Import it again."
+        );
+        assert_eq!(
+            import_failed_text(&Error::ImportFileChanged),
+            "The file changed since it was checked. Nothing was imported; import it again."
+        );
+        assert_eq!(
+            import_failed_text(&Error::ImportPlanStale),
+            "Your data changed while the file was being checked. \
+             Nothing was imported; import it again."
+        );
+        assert_eq!(
+            import_failed_text(&Error::NoBackupDir),
+            "The import failed, and nothing was imported: \
+             this database cannot be backed up, so nothing can be imported into it"
+        );
+        assert!(
+            check_failed_text(&Error::NoBackupDir).starts_with("The file could not be checked: ")
         );
     }
 

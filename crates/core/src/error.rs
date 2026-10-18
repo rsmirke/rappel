@@ -400,6 +400,12 @@ pub enum Error {
     #[error("the data changed since the import was checked; check the file again")]
     ImportPlanStale,
 
+    /// The file changed since it was checked (or while it was read), so it
+    /// is not the file the plan describes. Nothing was written; check it
+    /// again (ADR 0053).
+    #[error("the file changed since it was checked; check it again")]
+    ImportFileChanged,
+
     /// This store has no backup directory (an in-memory store), so an
     /// import, which needs a backup first, cannot run.
     #[error("this database cannot be backed up, so nothing can be imported into it")]

@@ -22,7 +22,8 @@ use crate::ui::{dialog, worker};
 use crate::window::RappelWindow;
 use names::Names;
 use text::{
-    conflicts_text, export_file_name, exported_text, imported_text, plan_view, refused_text,
+    check_failed_text, conflicts_text, export_file_name, exported_text, import_failed_text,
+    imported_text, plan_view, refused_text,
 };
 
 /// Asks where to save, then exports there on a worker thread.
@@ -68,11 +69,7 @@ pub async fn import(window: &RappelWindow, state: &AppState) {
             return;
         }
         Ok(Err(err)) => {
-            show_error(
-                window,
-                "an import check",
-                &format!("The file could not be checked: {err}"),
-            );
+            show_error(window, "an import check", &check_failed_text(&err));
             return;
         }
         Err(_) => {
@@ -142,16 +139,7 @@ async fn apply(window: &RappelWindow, data_dir: PathBuf, plan: ImportPlan) {
             window.add_toast(info_toast(&imported_text(&report)));
             window.data_changed();
         }
-        Ok(Err(Error::ImportPlanStale)) => show_error(
-            window,
-            "an import",
-            "Your data changed while the file was being checked. Nothing was imported; import it again.",
-        ),
-        Ok(Err(err)) => show_error(
-            window,
-            "an import",
-            &format!("The import failed, and nothing was imported: {err}"),
-        ),
+        Ok(Err(err)) => show_error(window, "an import", &import_failed_text(&err)),
         Err(_) => show_error(window, "an import", "The import stopped unexpectedly"),
     }
 }

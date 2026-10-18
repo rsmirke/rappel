@@ -278,15 +278,19 @@ fn diverged() -> (Env, Env, String, String) {
     (source, target, deck, card)
 }
 
+mod archive_reader;
 mod concurrent;
 mod conflicts;
 mod format;
 mod fuzz;
 mod large;
 mod log_and_tags;
+mod oracle;
 mod property;
 mod refused;
 mod revive;
 mod round_trip;
 mod settings;
+mod streaming;
 mod suspended;
+mod zip_attacks;
