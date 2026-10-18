@@ -8,6 +8,7 @@
 //! This state belongs to one device. A missing or broken file gives the
 //! defaults, and a failed save is only logged: neither may stop the app.
 
+use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
@@ -36,6 +37,9 @@ const MAX_SIDE: i32 = 16_384;
 /// Deck ids are 36-character `UUIDv7` strings; anything much longer was
 /// not written by us.
 const MAX_DECK_ID_BYTES: usize = 64;
+/// The file Rappel writes is about 100 bytes; a larger one was not written
+/// by it, and is not read (ADR 0050, row 33).
+const MAX_FILE_BYTES: u64 = 4 * 1024;
 
 /// What is remembered between runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,20 +102,103 @@ fn path(data_dir: &Path) -> PathBuf {
     data_dir.join(FILE_NAME)
 }
 
-/// The state saved in `data_dir`, or the defaults if there is none or it
-/// cannot be read.
-pub fn load(data_dir: &Path) -> WindowState {
+/// Why the file was not read.
+#[derive(Debug)]
+enum Unread {
+    /// There is no file (the first run).
+    Missing,
+    /// Something else: logged at debug level.
+    Refused(String),
+}
+
+/// The file's bytes, if it is a regular file of at most
+/// [`MAX_FILE_BYTES`]. The file is untrusted (ADR 0050, row 33): a symbolic
+/// link is not followed, and a pipe, a device or a folder is never opened,
+/// so reading can neither block nor run on without end. The checks are made
+/// before opening, on the name, and again on the open file, with its read
+/// cut one byte past the limit. A file swapped in between the two can only
+/// be another regular file of the user's, as for an import (ADR 0025,
+/// row 6).
+fn read_bounded(path: &Path) -> Result<Vec<u8>, Unread> {
+    let refuse = |what: &str| Unread::Refused(what.to_owned());
+    let meta = match std::fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Err(Unread::Missing),
+        Err(err) => return Err(Unread::Refused(err.to_string())),
+    };
+    if !meta.file_type().is_file() {
+        return Err(refuse("not a regular file"));
+    }
+    if meta.len() > MAX_FILE_BYTES {
+        return Err(refuse("too large"));
+    }
+    let file = std::fs::File::open(path).map_err(|err| Unread::Refused(err.to_string()))?;
+    let open = file
+        .metadata()
+        .map_err(|err| Unread::Refused(err.to_string()))?;
+    if !open.file_type().is_file() {
+        return Err(refuse("not a regular file"));
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|err| Unread::Refused(err.to_string()))?;
+    if bytes.len() as u64 > MAX_FILE_BYTES {
+        return Err(refuse("too large"));
+    }
+    Ok(bytes)
+}
+
+/// The state in the file's `bytes`: every missing or bad value takes its
+/// default, and bytes that are not a key file give the defaults. So do
+/// bytes that are not UTF-8 or hold a NUL, which no key file has
+/// (`g_key_file_load_from_data` takes a C string: the binding would panic
+/// on a NUL).
+fn parse(bytes: &[u8]) -> WindowState {
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return WindowState::default();
+    };
+    if text.contains('\0') {
+        return WindowState::default();
+    }
     let file = glib::KeyFile::new();
-    match file.load_from_file(path(data_dir), glib::KeyFileFlags::NONE) {
+    match file.load_from_data(text, glib::KeyFileFlags::NONE) {
         Ok(()) => from_key_file(&file),
         Err(err) => {
-            // Missing on the first run; anything else is worth a debug line.
-            if !err.matches(glib::FileError::Noent) {
-                tracing::debug!("window state not read, using the defaults: {err}");
-            }
+            tracing::debug!("window state not read, using the defaults: {err}");
             WindowState::default()
         }
     }
+}
+
+/// The state saved in `data_dir`, or the defaults if there is none or it
+/// cannot be read. Never fails, never blocks.
+pub fn load(data_dir: &Path) -> WindowState {
+    match read_bounded(&path(data_dir)) {
+        Ok(bytes) => parse(&bytes),
+        Err(Unread::Missing) => WindowState::default(),
+        Err(Unread::Refused(why)) => {
+            tracing::debug!("window state not read, using the defaults: {why}");
+            WindowState::default()
+        }
+    }
+}
+
+/// `width` × `height`, made to fit the largest of `monitors` (each a
+/// width and a height in application pixels), so a size saved on a larger
+/// screen, or edited by hand, never opens a window larger than the screen.
+/// Never below the window's minimum; unchanged when no monitor is known.
+pub fn fit_to_monitors(width: i32, height: i32, monitors: &[(i32, i32)]) -> (i32, i32) {
+    let widest = monitors.iter().map(|m| m.0).max();
+    let tallest = monitors.iter().map(|m| m.1).max();
+    let fit = |side: i32, screen: Option<i32>, min: i32| match screen {
+        Some(screen) if screen > 0 => side.min(screen).max(min),
+        _ => side,
+    };
+    (
+        fit(width, widest, MIN_WIDTH),
+        fit(height, tallest, MIN_HEIGHT),
+    )
 }
 
 /// Saves `state` in `data_dir`. `g_file_set_contents_full` with
@@ -161,10 +248,7 @@ mod tests {
     const DECK_ID: &str = "019a0000-0000-7000-8000-000000000001";
 
     fn parse(text: &str) -> WindowState {
-        let file = glib::KeyFile::new();
-        // A file that does not parse at all is treated by `load` as missing.
-        let _ = file.load_from_data(text, glib::KeyFileFlags::NONE);
-        from_key_file(&file)
+        super::parse(text.as_bytes())
     }
 
     #[test]
@@ -244,6 +328,116 @@ mod tests {
         assert_eq!(load(dir.path()), WindowState::default());
         std::fs::write(dir.path().join(FILE_NAME), b"\xff\xfe garbage")?;
         assert_eq!(load(dir.path()), WindowState::default());
+        Ok(())
+    }
+
+    #[test]
+    fn hostile_values_never_make_a_strange_window() {
+        for text in [
+            "[window]\nwidth=nan\nheight=NaN\n",
+            "[window]\nwidth=inf\nheight=-inf\n",
+            "[window]\nwidth=800.5\nheight=6e2\n",
+            "[window]\nwidth=0\nheight=0\n",
+            "[window]\nwidth=-2147483648\nheight=2147483647\n",
+            "[window]\nwidth=99999999999999999999\nheight=0x300\n",
+            "[window]\nwidth= 800\nheight=\u{663}\u{660}\u{660}\n",
+            "[window]\nwidth=800\nwidth=900\n[window]\nheight=50\n",
+            "[window]\nwidth=800\0\n",
+            "\u{feff}[window]\nwidth=800\n",
+        ] {
+            let state = parse(text);
+            assert!(
+                (MIN_WIDTH..=MAX_SIDE).contains(&state.width)
+                    && (MIN_HEIGHT..=MAX_SIDE).contains(&state.height),
+                "{text:?}: {state:?}"
+            );
+        }
+        // A NUL anywhere: the defaults.
+        let state = parse("[window]\nmaximized=true\ndeck=../../etc\u{0}\n");
+        assert_eq!(state, WindowState::default());
+        // Not UTF-8: the defaults.
+        assert_eq!(
+            super::parse(b"[window]\nwidth=\xff800\n"),
+            WindowState::default()
+        );
+    }
+
+    #[test]
+    fn a_saved_size_fits_the_largest_screen() {
+        let screens = [(1920, 1080), (1280, 1024)];
+        assert_eq!(fit_to_monitors(1200, 800, &screens), (1200, 800));
+        assert_eq!(fit_to_monitors(16_384, 16_384, &screens), (1920, 1080));
+        assert_eq!(fit_to_monitors(1800, 1050, &[(1280, 1024)]), (1280, 1024));
+        // Never below the window's minimum, even on a tiny screen.
+        assert_eq!(
+            fit_to_monitors(640, 560, &[(320, 240)]),
+            (MIN_WIDTH, MIN_HEIGHT)
+        );
+        // No monitor, or one reporting no size: unchanged.
+        assert_eq!(fit_to_monitors(16_384, 900, &[]), (16_384, 900));
+        assert_eq!(fit_to_monitors(1200, 900, &[(0, -1)]), (1200, 900));
+    }
+
+    #[test]
+    fn only_a_small_regular_file_is_read() -> Result<(), std::io::Error> {
+        let dir = tempfile::tempdir()?;
+        let file = dir.path().join(FILE_NAME);
+        let saved = "[window]\nwidth=900\nheight=700\n";
+        // A symbolic link to a real state file is not followed.
+        let elsewhere = dir.path().join("elsewhere.ini");
+        std::fs::write(&elsewhere, saved)?;
+        std::os::unix::fs::symlink(&elsewhere, &file)?;
+        assert_eq!(load(dir.path()), WindowState::default());
+        // Saving replaces the link with a file of its own, and leaves the
+        // file it pointed to alone.
+        let state = WindowState {
+            width: 1000,
+            ..WindowState::default()
+        };
+        save(dir.path(), &state);
+        assert!(std::fs::symlink_metadata(&file)?.file_type().is_file());
+        assert_eq!(std::fs::read_to_string(&elsewhere)?, saved);
+        assert_eq!(load(dir.path()), state);
+        // A link to a device that never ends.
+        std::fs::remove_file(&file)?;
+        std::os::unix::fs::symlink("/dev/zero", &file)?;
+        assert_eq!(load(dir.path()), WindowState::default());
+        // A folder.
+        std::fs::remove_file(&file)?;
+        std::fs::create_dir(&file)?;
+        assert_eq!(load(dir.path()), WindowState::default());
+        std::fs::remove_dir(&file)?;
+        // Too large: a valid state padded past the limit.
+        let padded = format!("{saved}#{}\n", "x".repeat(8_192));
+        std::fs::write(&file, padded)?;
+        assert_eq!(load(dir.path()), WindowState::default());
+        // At the limit, it is read.
+        let at_limit = format!("{saved}#{}\n", "x".repeat(4_096 - saved.len() - 2));
+        assert_eq!(at_limit.len(), 4_096);
+        std::fs::write(&file, at_limit)?;
+        assert_eq!(load(dir.path()).width, 900);
+        // A wider mode is read (the values are checked anyway) and
+        // narrowed to 0600 by the next save.
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o666))?;
+        assert_eq!(load(dir.path()).width, 900);
+        Ok(())
+    }
+
+    /// A pipe in place of the file would block a plain open for ever; it is
+    /// never opened. Bounded by the hang limit of `testing::within`.
+    #[test]
+    fn a_pipe_in_place_of_the_file_does_not_block() -> Result<(), std::io::Error> {
+        let dir = tempfile::tempdir()?;
+        let fifo = dir.path().join(FILE_NAME);
+        let made = std::process::Command::new("mkfifo").arg(&fifo).status()?;
+        assert!(made.success(), "mkfifo");
+        let data_dir = dir.path().to_path_buf();
+        let state = crate::testing::within(
+            std::time::Duration::from_millis(100),
+            "reading a pipe",
+            move || load(&data_dir),
+        );
+        assert_eq!(state, WindowState::default());
         Ok(())
     }
 

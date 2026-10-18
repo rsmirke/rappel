@@ -245,7 +245,9 @@ impl RappelWindow {
             return;
         };
         let saved = window_state::load(state.data_dir());
-        self.set_default_size(saved.width, saved.height);
+        let (width, height) =
+            window_state::fit_to_monitors(saved.width, saved.height, &monitor_sizes(self));
+        self.set_default_size(width, height);
         if saved.maximized {
             // "It's permitted to call this function before showing a window,
             // in which case the window will be maximized when it appears
@@ -505,6 +507,19 @@ fn recovered_message(how: Recovered, replaced: Option<&Path>, set_aside: Option<
         message.push_str(&path.display().to_string());
     }
     message
+}
+
+/// The size of each monitor of `widget`'s display, in application pixels
+/// (`gdk_monitor_get_geometry`), for fitting a saved window size to them.
+fn monitor_sizes(widget: &impl IsA<gtk::Widget>) -> Vec<(i32, i32)> {
+    let monitors = widget.display().monitors();
+    (0..monitors.n_items())
+        .filter_map(|i| monitors.item(i).and_downcast::<gtk::gdk::Monitor>())
+        .map(|monitor| {
+            let geometry = monitor.geometry();
+            (geometry.width(), geometry.height())
+        })
+        .collect()
 }
 
 #[cfg(test)]
