@@ -24,6 +24,9 @@ use crate::ui::worker;
 /// reset, once no stored setting is damaged any more.
 type OnReset = dyn Fn(PathBuf, Store, SettingKey);
 
+/// The status page's icon, left out on a short window.
+const ICON: &str = "dialog-warning-symbolic";
+
 mod imp {
     use std::cell::{Cell, RefCell};
     use std::path::PathBuf;
@@ -39,6 +42,8 @@ mod imp {
     #[derive(Debug, Default, gtk::CompositeTemplate)]
     #[template(resource = "/io/github/rsmirke/Rappel/setting_page.ui")]
     pub struct SettingPage {
+        #[template_child]
+        pub short_breakpoint: TemplateChild<adw::Breakpoint>,
         #[template_child]
         pub status: TemplateChild<adw::StatusPage>,
         #[template_child]
@@ -74,6 +79,17 @@ mod imp {
         fn constructed(&self) {
             self.parent_constructed();
             crate::ui::focus::unselect_on_first_focus(&self.path_label);
+            let status = self.status.downgrade();
+            crate::ui::breakpoint::follow(&self.short_breakpoint, move |short| {
+                if let Some(status) = status.upgrade() {
+                    if short {
+                        status.add_css_class("compact");
+                    } else {
+                        status.remove_css_class("compact");
+                    }
+                    status.set_icon_name((!short).then_some(super::ICON));
+                }
+            });
             // No confirmation: a backup is made first, and only the one
             // damaged value, which nothing can read, is replaced.
             self.reset_button.connect_clicked(glib::clone!(

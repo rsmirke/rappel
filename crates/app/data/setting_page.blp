@@ -4,47 +4,61 @@ using Adw 1;
 // The window's page for a damaged stored setting (ADR 0052). Its texts are
 // set by pages/setting_page.rs from startup.rs.
 template $RappelSettingPage: Adw.Bin {
-  child: Adw.StatusPage status {
-    icon-name: "dialog-warning-symbolic";
-    title: _("A Setting Is Damaged");
+  child: Adw.BreakpointBin {
+    width-request: 360;
+    height-request: 294;
 
-    child: Adw.Clamp {
-      maximum-size: 480;
+    // A short window (a phone held sideways) makes the status page
+    // `compact` without its icon, so Reset This Setting is on screen at
+    // 640 × 360 without scrolling. A setter can neither add a style class
+    // nor unset the icon, so the page does both on `apply` and undoes them
+    // on `unapply`, as the review page's summary does (ADR 0045).
+    Adw.Breakpoint short_breakpoint {
+      condition ("max-height: 450sp")
+    }
 
-      child: Gtk.Box {
-        orientation: vertical;
-        spacing: 18;
+    child: Adw.StatusPage status {
+      icon-name: "dialog-warning-symbolic";
+      title: _("A Setting Is Damaged");
 
-        Gtk.Button reset_button {
-          label: _("_Reset This Setting");
-          use-underline: true;
-          halign: center;
+      child: Adw.Clamp {
+        maximum-size: 480;
 
-          styles [
-            "pill",
-            "suggested-action",
-          ]
-        }
+        child: Gtk.Box {
+          orientation: vertical;
+          spacing: 18;
 
-        // While the reset runs (a backup, and for the retention a rebuild
-        // of every card's schedule).
-        Adw.Spinner spinner {
-          visible: false;
-          halign: center;
-          width-request: 32;
-          height-request: 32;
-        }
+          Gtk.Button reset_button {
+            label: _("_Reset This Setting");
+            use-underline: true;
+            halign: center;
 
-        Gtk.Label path_label {
-          wrap: true;
-          wrap-mode: word_char;
-          selectable: true;
-          justify: center;
+            styles [
+              "pill",
+              "suggested-action",
+            ]
+          }
 
-          styles [
-            "dimmed",
-          ]
-        }
+          // While the reset runs (a backup, and for the retention a
+          // rebuild of every card's schedule).
+          Adw.Spinner spinner {
+            visible: false;
+            halign: center;
+            width-request: 32;
+            height-request: 32;
+          }
+
+          Gtk.Label path_label {
+            wrap: true;
+            wrap-mode: word_char;
+            selectable: true;
+            justify: center;
+
+            styles [
+              "dimmed",
+            ]
+          }
+        };
       };
     };
   };
