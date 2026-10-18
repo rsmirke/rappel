@@ -167,6 +167,12 @@ impl CardAudio {
             audio.set_state(State::Unavailable);
             return audio;
         };
+        // Without GStreamer's playbin, GstPlay would abort the process
+        // (`g_error`) when the stream is made: nothing is read or played.
+        if !super::playback::available() {
+            audio.set_state(State::NoPlayback);
+            return audio;
+        }
         let path = folder.join(media.file_name());
         imp.path.replace(Some(path.clone()));
         audio.set_state(State::Ready);
@@ -373,7 +379,7 @@ impl CardAudio {
                 }
             }
             State::Failed => self.play_from_start(),
-            State::Unavailable | State::TooMany => {}
+            State::Unavailable | State::TooMany | State::NoPlayback => {}
         }
     }
 
@@ -472,6 +478,10 @@ impl CardAudio {
     /// left the screen meanwhile.
     fn start(&self, bytes: Vec<u8>, generation: u64) {
         let imp = self.imp();
+        if !super::playback::available() {
+            self.set_state(State::NoPlayback);
+            return;
+        }
         if !self.is_mapped() {
             self.set_state(State::Ready);
             return;
@@ -712,8 +722,12 @@ mod tests {
                 media.reference(),
                 "ee".repeat(32)
             );
+            // Nothing is played here, so playback may be taken as there
+            // whatever is installed.
+            super::super::playback::force(Some(true));
             let images = Images::new(state.media_folder(), 720);
             let side = render(&rappel_core::content::parse(&md), &images);
+            super::super::playback::force(None);
             let controls = audio_controls(&side);
             assert_eq!(controls.len(), 2);
             let (tone, missing) = (&controls[0], &controls[1]);
@@ -755,6 +769,44 @@ mod tests {
             // R (or a click) on it does nothing.
             missing.play_from_start();
             assert_eq!(missing.plays(), 0);
+        });
+    }
+
+    /// Without `GStreamer`'s base plugins (forced here), no control is made
+    /// playable, no stream is made (`GstPlay` would abort the process), and
+    /// R or a click does nothing.
+    #[test]
+    fn without_gstreamer_s_playbin_nothing_is_played() {
+        crate::testing::with_widgets(|| {
+            let (tmp, state) = crate::testing::temporary_state();
+            let media = AppState::add_media_bytes_on_worker(
+                &tmp.path().join("data"),
+                &crate::testing::wav_bytes(800),
+                Accept::Audio,
+            )
+            .unwrap();
+            super::super::playback::force(Some(false));
+            let folder = state.media_folder().unwrap();
+            let column = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            let audio = CardAudio::new(Some(&folder), media, "tone");
+            column.append(&audio);
+            let window = on_screen(&column);
+            assert_eq!(audio.state(), State::NoPlayback);
+            assert!(!audio.is_available());
+            assert!(!audio.button().is_sensitive());
+            let note = audio.imp().note.get().unwrap();
+            assert_eq!(
+                note.text(),
+                "Audio playback is not available on this system"
+            );
+            audio.play_from_start();
+            audio.button().emit_clicked();
+            crate::testing::settle_until(|| false, Duration::from_millis(200));
+            assert_eq!(audio.plays(), 0);
+            assert!(audio.imp().stream.borrow().is_none());
+            assert_eq!(audio.state(), State::NoPlayback);
+            super::super::playback::force(None);
+            window.close();
         });
     }
 
@@ -812,6 +864,13 @@ mod tests {
             column.append(&first);
             column.append(&second);
             let window = on_screen(&column);
+            if !super::super::playback::available() {
+                // No GStreamer playbin here: nothing can play (see
+                // `without_gstreamer_s_playbin_nothing_is_played`).
+                assert_eq!(first.state(), State::NoPlayback);
+                window.close();
+                return;
+            }
             first.play_from_start();
             assert_eq!(first.state(), State::Loading);
             let played = settle_loaded(&first, Duration::from_secs(20));
@@ -910,6 +969,11 @@ mod tests {
             // Refused before GStreamer sees a byte: only the noise (whole
             // MP3 frames) reaches it.
             let refused_first = |what: &str| what != "20 MB of MP3 noise";
+            if !super::super::playback::available() {
+                // No GStreamer playbin here: nothing reaches it at all.
+                eprintln!("GStreamer's base plugins are missing: hostile audio not played");
+                return;
+            }
             let column = gtk::Box::new(gtk::Orientation::Vertical, 0);
             let window = on_screen(&column);
             for (seed, (ext, bytes, what)) in (1_u8..).zip(cases) {

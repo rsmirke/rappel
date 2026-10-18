@@ -23,7 +23,8 @@ You need:
   have them; ADR 0056): the base and good plugins, and an AAC decoder for M4A files
   (Fedora: `gstreamer1-plugins-base gstreamer1-plugins-good gstreamer1-plugin-libav`;
   Debian/Ubuntu: `gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-libav`).
-  The tests do not need them.
+  Without the base plugins (`playbin3`), every audio button says "Audio playback is not available on this
+  system" and nothing is played. CI installs the base and good plugins so the audio tests play for real.
 - `blueprint-compiler` and `glib-compile-resources` (from GLib) on your `PATH`
 - [`cargo-deny`](https://github.com/EmbarkStudios/cargo-deny) for the quality gate (`cargo install cargo-deny`)
 

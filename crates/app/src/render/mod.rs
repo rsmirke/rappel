@@ -33,6 +33,7 @@ mod math_paragraph;
 mod math_view;
 mod media_file;
 mod picture;
+mod playback;
 mod style;
 
 use std::cell::RefCell;
@@ -51,6 +52,8 @@ use math::{Budget, Placement};
 use math_paragraph::MathParagraph;
 use math_view::MathView;
 use picture::CardImage;
+#[cfg(test)]
+pub(crate) use playback::force as force_playback;
 
 #[cfg(test)]
 pub(crate) use picture::full_size_layout;

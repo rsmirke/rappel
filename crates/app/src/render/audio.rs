@@ -44,6 +44,9 @@ pub enum State {
     Unavailable,
     /// Past [`MAX_AUDIO_PER_SIDE`]: disabled, never read.
     TooMany,
+    /// `GStreamer`'s base plugins are not installed (`playback::available`):
+    /// disabled, never read, nothing given to GTK's media stream.
+    NoPlayback,
     /// `GStreamer` could not play it (damaged, no decoder, no sound device,
     /// or too slow to start). It can be pressed again to try again.
     Failed,
@@ -52,7 +55,7 @@ pub enum State {
 impl State {
     /// Whether the button can be pressed.
     pub fn enabled(self) -> bool {
-        !matches!(self, Self::Unavailable | Self::TooMany)
+        !matches!(self, Self::Unavailable | Self::TooMany | Self::NoPlayback)
     }
 
     /// Whether pressing it would pause.
@@ -65,7 +68,7 @@ impl State {
         match self {
             Self::Ready => "media-playback-start-symbolic",
             Self::Loading | Self::Playing => "media-playback-pause-symbolic",
-            Self::Unavailable | Self::TooMany => "audio-x-generic-symbolic",
+            Self::Unavailable | Self::TooMany | Self::NoPlayback => "audio-x-generic-symbolic",
             Self::Failed => "dialog-warning-symbolic",
         }
     }
@@ -76,6 +79,7 @@ impl State {
             Self::Ready => "Play",
             Self::Loading | Self::Playing => "Pause",
             Self::Unavailable | Self::TooMany => "Audio not available",
+            Self::NoPlayback => "GStreamer's base plugins are not installed",
             Self::Failed => "Audio could not be played",
         }
     }
@@ -88,6 +92,7 @@ impl State {
             Self::Unavailable => Some("Audio not available"),
             Self::TooMany => Some("Audio not available: too many on this side"),
             Self::Failed => Some("Could not be played"),
+            Self::NoPlayback => Some("Audio playback is not available on this system"),
         }
     }
 }
@@ -193,6 +198,12 @@ mod tests {
         }
         assert!(!Unavailable.enabled());
         assert!(!TooMany.enabled());
+        assert!(!State::NoPlayback.enabled());
+        assert_eq!(
+            State::NoPlayback.note(),
+            Some("Audio playback is not available on this system")
+        );
+        assert!(State::NoPlayback.tooltip().contains("GStreamer"));
         assert_eq!(Ready.tooltip(), "Play");
         assert_eq!(Playing.tooltip(), "Pause");
         assert_eq!(Ready.icon(), "media-playback-start-symbolic");

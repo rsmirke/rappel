@@ -1375,6 +1375,9 @@ mod tests {
                     "No audio".to_owned(),
                 ),
             ];
+            // The page is never on screen, so no stream is made: playback
+            // may be taken as there whatever is installed.
+            crate::render::force_playback(Some(true));
             let (page, ids) = page_over(&state, &sides);
             let _window = in_window(&page);
             let imp = page.imp();
@@ -1404,6 +1407,7 @@ mod tests {
                 page.key(Key::Pass);
             }
             assert_eq!(current(&page), None);
+            crate::render::force_playback(None);
         });
     }
 
