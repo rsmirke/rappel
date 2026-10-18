@@ -362,6 +362,15 @@ fn bulk_writes_on_five_thousand_cards_are_fast() {
         store.release_tag_from_cards(&had, &bulk.id).unwrap()
     });
     assert_eq!(n, CARDS);
+    let several: Vec<String> = ["bulk", "exam", "later"].map(String::from).to_vec();
+    let (tagged_several, added) = fastest("add_tags_to_cards (3 tags, 5,000)", 1, || {
+        store.add_tags_to_cards_at(&ids, &several, 100, T0).unwrap()
+    });
+    assert_eq!(added.cards.len(), CARDS);
+    let (released_several, n) = fastest("release_tags (15,000 links)", 1, || {
+        store.release_tags(&added.links).unwrap()
+    });
+    assert_eq!(n, CARDS);
     let (reset, events) = fastest("reset_cards (5,000)", 1, || {
         store.reset_cards(&ids, NOW).unwrap()
     });
@@ -378,7 +387,18 @@ fn bulk_writes_on_five_thousand_cards_are_fast() {
     assert_eq!(back, CARDS);
     assert_eq!(store.list_cards(&deck).unwrap().len(), CARDS);
     for t in [
-        suspend, moved, unmove, tagged, untagged, retagged, released, reset, undo, deleted,
+        suspend,
+        moved,
+        unmove,
+        tagged,
+        untagged,
+        retagged,
+        released,
+        tagged_several,
+        released_several,
+        reset,
+        undo,
+        deleted,
         undeleted,
     ] {
         assert_cpu_within(t, ms(BULK_MS), "a bulk write");

@@ -5,6 +5,8 @@
 //! nothing is written. Each returns exactly what it changed, so the Undo of
 //! the caller reverses only that and leaves alone what was already as asked.
 
+use std::collections::HashSet;
+
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use super::Store;
@@ -12,7 +14,7 @@ use super::decks::ensure_live_deck;
 use super::review::{reset_in, undo_in};
 use super::settings::scheduler_in;
 use super::tags::find_or_create_tag;
-use crate::domain::{ReviewEvent, Tag, check_tag_name};
+use crate::domain::{ReviewEvent, Tag, check_tag_name, name_key};
 use crate::error::{Error, Result};
 use crate::time::now_ms;
 
@@ -25,6 +27,22 @@ pub struct Moved {
     pub from: String,
     /// The deck it was moved to; an Undo only moves it back from here.
     pub to: String,
+}
+
+/// What [`Store::add_tags_to_cards`] did.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TagsAdded {
+    /// The tags named, found or created, one per name key, in the order
+    /// named. Empty when nothing was written.
+    pub tags: Vec<Tag>,
+    /// Each new link, as (card id, tag id), for the Undo
+    /// ([`Store::release_tags`]).
+    pub links: Vec<(String, String)>,
+    /// The cards that got at least one tag, in the order given.
+    pub cards: Vec<String>,
+    /// The cards left out because the tags they lack would take them past
+    /// the limit, in the order given.
+    pub full: Vec<String>,
 }
 
 impl Store {
@@ -138,6 +156,7 @@ impl Store {
     /// Gives the cards `ids` the tag named `name` (found by name key or
     /// created). Returns the tag and the ids that did not have it. Tags
     /// are not part of a card's content, so `updated_at` stays (ADR 0029).
+    /// No limit on a card's tags: [`Self::add_tags_to_cards`] has one.
     ///
     /// # Errors
     /// [`Error::CardNotFound`] if an id is not a live card; the errors of
@@ -172,6 +191,86 @@ impl Store {
         drop(link);
         tx.commit()?;
         Ok((tag, changed))
+    }
+
+    /// Gives the cards `ids` the tags named `names` (each found by name key
+    /// or created; names with the same key are one tag), in one
+    /// transaction (ADR 0051). A card gets the tags it lacks only if that
+    /// leaves it with at most `max_per_card` tags; else it gets none of
+    /// them and is listed in [`TagsAdded::full`]. A card already over the
+    /// limit (from an import) thus gets no more, as in the card editor's
+    /// tags field (ADR 0050, row 30). When no card gets a tag, nothing is
+    /// written, not even a new tag. `updated_at` stays (ADR 0029).
+    ///
+    /// # Errors
+    /// [`Error::CardNotFound`] if an id is not a live card; the errors of
+    /// [`check_tag_name`] for any name; SQLite errors. On error nothing is
+    /// written.
+    pub fn add_tags_to_cards(
+        &mut self,
+        ids: &[String],
+        names: &[String],
+        max_per_card: usize,
+    ) -> Result<TagsAdded> {
+        self.add_tags_to_cards_at(ids, names, max_per_card, now_ms())
+    }
+
+    /// [`Self::add_tags_to_cards`] at time `now` (UTC milliseconds).
+    pub(super) fn add_tags_to_cards_at(
+        &mut self,
+        ids: &[String],
+        names: &[String],
+        max_per_card: usize,
+        now: i64,
+    ) -> Result<TagsAdded> {
+        // Every name is checked, and repeats merged, before any write.
+        let mut keys = HashSet::new();
+        let mut checked = Vec::new();
+        for name in names {
+            let name = check_tag_name(name)?;
+            if keys.insert(name_key(name)) {
+                checked.push(name);
+            }
+        }
+        let ids = unique(ids);
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        ensure_live_cards(&tx, &ids)?;
+        let mut tags = Vec::with_capacity(checked.len());
+        for name in checked {
+            tags.push(find_or_create_tag(&tx, &mut self.ids, name, now)?);
+        }
+        let mut added = TagsAdded::default();
+        let mut has = tx.prepare("SELECT tag_id FROM card_tags WHERE card_id = ?1")?;
+        let mut link = tx.prepare("INSERT INTO card_tags (card_id, tag_id) VALUES (?1, ?2)")?;
+        for id in &ids {
+            let own: HashSet<String> = has
+                .query_map([id], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
+            let lacking: Vec<&Tag> = tags.iter().filter(|t| !own.contains(&t.id)).collect();
+            if lacking.is_empty() {
+                continue;
+            }
+            if own.len().saturating_add(lacking.len()) > max_per_card {
+                added.full.push(id.clone());
+                continue;
+            }
+            for tag in lacking {
+                link.execute(params![id, tag.id])?;
+                added.links.push((id.clone(), tag.id.clone()));
+            }
+            added.cards.push(id.clone());
+        }
+        drop((has, link));
+        if added.links.is_empty() {
+            // Dropping the transaction rolls it back: no new tag is left
+            // that no card has.
+            return Ok(added);
+        }
+        tx.commit()?;
+        added.tags = tags;
+        Ok(added)
     }
 
     /// Takes tag `tag_id` off the cards `ids`. Returns the ids that had it.
@@ -232,6 +331,32 @@ impl Store {
         }
         tx.commit()?;
         Ok(released)
+    }
+
+    /// Undoes [`Self::add_tags_to_cards`]: removes the `links` (card id,
+    /// tag id) whose card is still live; the others are left out, not an
+    /// error. Returns how many cards lost at least one tag. The tags stay
+    /// (ADR 0029).
+    ///
+    /// # Errors
+    /// SQLite errors.
+    pub fn release_tags(&mut self, links: &[(String, String)]) -> Result<usize> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut cards = HashSet::new();
+        let mut unlink = tx.prepare(
+            "DELETE FROM card_tags WHERE card_id = ?1 AND tag_id = ?2
+               AND EXISTS (SELECT 1 FROM cards WHERE id = ?1 AND deleted_at IS NULL)",
+        )?;
+        for (card_id, tag_id) in links {
+            if unlink.execute(params![card_id, tag_id])? == 1 {
+                cards.insert(card_id.as_str());
+            }
+        }
+        drop(unlink);
+        tx.commit()?;
+        Ok(cards.len())
     }
 
     /// Re-links `tag_id` to `card_ids` that are still live, for the Undo of
@@ -363,7 +488,7 @@ impl Store {
 
 /// `ids` without repeats, in order.
 fn unique(ids: &[String]) -> Vec<String> {
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = HashSet::new();
     ids.iter()
         .filter(|id| seen.insert(id.as_str()))
         .cloned()

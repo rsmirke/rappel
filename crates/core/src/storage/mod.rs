@@ -28,7 +28,7 @@ use crate::time::now_ms;
 pub use backup::{BackupInfo, list_backups};
 use backup::{check_rows, has_backup_for_day};
 pub(crate) use backup::{create_backup, prune_backups};
-pub use bulk::Moved;
+pub use bulk::{Moved, TagsAdded};
 use migrations::{MIGRATIONS, Migration, latest, migrate};
 pub use restore::{Restored, finish_restore, is_unusable_copy, restore_backup, start_fresh};
 pub(crate) use schedule::rebuild_cards;
