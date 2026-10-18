@@ -10,8 +10,9 @@
 //!
 //! **Clean up** moves the unused files into a dated folder of the trash,
 //! `<data dir>/media-trash/<YYYY-MM-DD>/<sha256>.<ext>` (the UTC date of the
-//! clean-up; `<YYYY-MM-DD>-<N>` when that name is taken there already), and
-//! deletes their rows, in one write transaction: the files are moved
+//! clean-up, or a later time the data holds, [`trash_day`];
+//! `<YYYY-MM-DD>-<N>` when that name is taken there already), and deletes
+//! their rows, in one write transaction: the files are moved
 //! (renames, never over a file) before the rows are deleted, and if
 //! anything fails, the rows stay and the files are moved back. A crash
 //! between the moves and the commit leaves rows whose files are in the
@@ -164,7 +165,7 @@ impl Mover for Disk {
 }
 
 /// A test's hook just before the clean-up commits.
-pub(super) type BeforeCommit<'a> = &'a dyn Fn() -> Result<()>;
+pub(super) type BeforeCommit<'a> = &'a dyn Fn(&Connection) -> Result<()>;
 
 fn io_err(path: &Path) -> impl FnOnce(io::Error) -> Error + '_ {
     move |source| Error::Io {
@@ -388,7 +389,7 @@ impl Store {
     /// be moved back stays in the trash with its row, and the next open
     /// brings it back.
     pub fn clean_up_media(&mut self) -> Result<CleanedUp> {
-        self.clean_up_media_with(now_ms(), &Disk, &|| Ok(()))
+        self.clean_up_media_with(now_ms(), &Disk, &|_| Ok(()))
     }
 
     /// [`Self::clean_up_media`] at `now`, with the renames and a hook before
@@ -407,7 +408,7 @@ impl Store {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        check_clock(&tx, &trash, now)?;
+        let day = trash_day(&tx, &trash, now)?;
         let unused = unused_in(&tx, &media_dir)?;
         let mut moved: Vec<Moved> = Vec::new();
         let result = (|| {
@@ -417,7 +418,7 @@ impl Store {
             let mut folders: Vec<PathBuf> = Vec::new();
             for file in &unused.files {
                 let name = file.media.file_name();
-                let (folder, to) = free_place(&trash, now, &name)?;
+                let (folder, to) = free_place(&trash, day, &name)?;
                 let from = media_dir.join(&name);
                 renamer.rename(&from, &to).map_err(io_err(&from))?;
                 moved.push(Moved {
@@ -442,11 +443,15 @@ impl Store {
             for row in &unused.rows {
                 tx.execute("DELETE FROM media WHERE hash = ?1", [&row.hash])?;
             }
-            before_commit()
+            before_commit(&tx)
         })();
-        // COMMIT by hand, so that if it fails the transaction (and the write
-        // lock) is still held while the files move back; dropping `tx`
-        // then rolls back (it does nothing once committed).
+        // COMMIT by hand, so that where a failed COMMIT leaves the
+        // transaction open (a deferred constraint, SQLITE_BUSY) the write
+        // lock is still held while the files move back, and dropping `tx`
+        // then rolls back (it does nothing once committed). Where SQLite has
+        // already rolled back and released the lock itself (an IO error, a
+        // full disk), the files move back without it: an add that named a
+        // file meanwhile is kept, since a name is only taken back if free.
         let result = result.and_then(|()| tx.execute_batch("COMMIT").map_err(Error::from));
         if let Err(err) = result {
             // The rows roll back when `tx` drops; the files go back first,
@@ -566,20 +571,30 @@ impl Store {
     }
 }
 
-/// Refuses a clean-up whose clock is behind what Rappel recorded: the
-/// newest trash folder's date, or the newest time in the database
-/// ([`latest_time`]). Its folder would be dated earlier than the clean-up
-/// really was, and the purge would come early (ADR 0057).
-fn check_clock(conn: &Connection, trash: &Path, now: i64) -> Result<()> {
-    let today = now - now.rem_euclid(DAY_MS);
+/// The date a clean-up at `now` files its files under: today (UTC), or
+/// later if Rappel recorded a later time (the newest dated trash folder,
+/// or the newest time in the database, [`latest_time`], which an import or
+/// a clock briefly ahead can put in the future), at most 9999-12-31. Never
+/// refused: a later date only delays the purge, while an earlier one
+/// would make it come early (ADR 0057).
+fn trash_day(conn: &Connection, trash: &Path, now: i64) -> Result<i64> {
+    let start = |t: i64| t - t.rem_euclid(DAY_MS);
+    let today = start(now);
     let newest_folder = trash_folders(trash)?.iter().filter_map(|f| f.day).max();
-    let behind_trash = newest_folder.is_some_and(|day| day > today);
-    let behind_data = latest_time(conn)?.is_some_and(|t| t > now);
-    if behind_trash || behind_data {
-        tracing::warn!("a clean-up is refused: the clock is behind the data's newest time");
-        return Err(Error::ClockWrong);
+    let latest = latest_time(conn, Times::All)?.map(start);
+    let day = [Some(today), newest_folder, latest]
+        .into_iter()
+        .flatten()
+        .max()
+        .unwrap_or(today)
+        .min(LATEST_MS);
+    if day > today {
+        tracing::info!(
+            folder = %folder_name(day, 1),
+            "the trash folder is dated after today: the data holds a later time"
+        );
     }
-    Ok(())
+    Ok(day)
 }
 
 /// Makes the trash (mode `0700`) unless it is there. Something there that
@@ -602,12 +617,12 @@ fn make_trash(trash: &Path) -> Result<()> {
     }
 }
 
-/// The first trash folder of the UTC day of `now` (made if needed, mode
-/// `0700`) where `name` is free, and the path there. A name that is not a
-/// real folder is skipped, never followed.
-fn free_place(trash: &Path, now: i64, name: &str) -> Result<(PathBuf, PathBuf)> {
+/// The first trash folder of the UTC day of `day` ([`trash_day`]; made if
+/// needed, mode `0700`) where `name` is free, and the path there. A name
+/// that is not a real folder is skipped, never followed.
+fn free_place(trash: &Path, day: i64, name: &str) -> Result<(PathBuf, PathBuf)> {
     for n in 1..=MAX_FOLDERS_A_DAY {
-        let folder = trash.join(folder_name(now, n));
+        let folder = trash.join(folder_name(day, n));
         match DirBuilder::new().mode(DIR_MODE).create(&folder) {
             Ok(()) => {}
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
@@ -863,17 +878,36 @@ pub(crate) fn recover_refs(
     Ok(n)
 }
 
-/// The newest time the database at `conn` records: when a deck or card was
-/// made, edited or deleted, a log entry's time, a media file's
-/// `created_at`. `None` for an empty database.
-pub(super) fn latest_time(conn: &Connection) -> Result<Option<i64>> {
+/// Which times [`latest_time`] looks at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Times {
+    /// Every time the database records, media rows included: for dating a
+    /// clean-up's folder.
+    All,
+    /// Only what the user does: decks and cards made, edited or deleted,
+    /// and log entries. Not media rows, which bringing a file back from the
+    /// trash makes at a start, so a clock ahead at a start cannot satisfy
+    /// the purge's "a write a month later" by itself.
+    UserActions,
+}
+
+/// The newest time the database at `conn` records ([`Times`]). `None` for
+/// an empty database.
+pub(super) fn latest_time(conn: &Connection, times: Times) -> Result<Option<i64>> {
+    let media = if times == Times::All {
+        "UNION ALL SELECT created_at FROM media"
+    } else {
+        ""
+    };
     let latest: Option<i64> = conn.query_row(
-        "SELECT max(t) FROM (
-             SELECT max(created_at, updated_at, coalesce(deleted_at, 0)) AS t FROM decks
-             UNION ALL SELECT max(created_at, updated_at, coalesce(deleted_at, 0)) FROM cards
-             UNION ALL SELECT reviewed_at FROM review_events
-             UNION ALL SELECT created_at FROM media
-         )",
+        &format!(
+            "SELECT max(t) FROM (
+                 SELECT max(created_at, updated_at, coalesce(deleted_at, 0)) AS t FROM decks
+                 UNION ALL SELECT max(created_at, updated_at, coalesce(deleted_at, 0)) FROM cards
+                 UNION ALL SELECT reviewed_at FROM review_events
+                 {media}
+             )"
+        ),
         [],
         |r| r.get(0),
     )?;
@@ -881,14 +915,16 @@ pub(super) fn latest_time(conn: &Connection) -> Result<Option<i64>> {
 }
 
 /// Whether a trash folder of day `day` may be purged at `now`, the
-/// database's newest recorded time being `latest`: the clock 31 days past
-/// the start of the folder's date (so every file in it spent 30 days
-/// there by the clock), **and** the database holding a time at least 30
-/// days past that start (Rappel was used, and wrote, a month after the
+/// database's newest user action being `latest` ([`Times::UserActions`]):
+/// the clock 31 days past the start of the folder's date (so every file in
+/// it spent 30 days there by the clock), **and** a user action recorded at
+/// least 30 days past that start (Rappel was used a month after the
 /// clean-up). So a clock set back never purges, and neither does a clock
-/// that is ahead only at a start: a write made while it is ahead is what
-/// it would take. A folder dated before Rappel had a clean-up was made by
-/// a wrong clock and is never purged.
+/// that is ahead only at a start, which records no user action. A write
+/// made while the clock is ahead, or an imported future time, does meet
+/// the second condition (ADR 0057 states the limit). A folder dated
+/// before Rappel had a clean-up was made by a wrong clock and is never
+/// purged.
 pub(super) fn purgeable(day: i64, now: i64, latest: Option<i64>) -> bool {
     day >= EARLIEST_MS
         && now >= day.saturating_add((PURGE_AFTER_DAYS + 1) * DAY_MS)
@@ -1061,7 +1097,8 @@ fn purge(store: &mut Store, now: i64, before_lock: &dyn Fn()) -> Result<TrashTid
     let (Some(trash), Some(data_dir)) = (trash_of(&media_dir), media_dir.parent()) else {
         return Err(Error::NoMediaDir);
     };
-    let (folders, files) = purge_candidates(&trash, now, latest_time(&store.conn)?)?;
+    let (folders, files) =
+        purge_candidates(&trash, now, latest_time(&store.conn, Times::UserActions)?)?;
     if folders.is_empty() {
         return Ok(tidied);
     }
@@ -1076,7 +1113,7 @@ fn purge(store: &mut Store, now: i64, before_lock: &dyn Fn()) -> Result<TrashTid
         .conn
         .transaction_with_behavior(TransactionBehavior::Immediate)?;
     // Listed again under the lock: a file brought back meanwhile is gone.
-    let (folders, files) = purge_candidates(&trash, now, latest_time(&tx)?)?;
+    let (folders, files) = purge_candidates(&trash, now, latest_time(&tx, Times::UserActions)?)?;
     if !files.is_empty() {
         if read_copies(data_dir, &backup_dir, &mut read, &mut protected).is_err() {
             tidied.blocked = true;

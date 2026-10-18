@@ -19,8 +19,10 @@ use crate::test_support::{DAY_MS, assert_cpu_within, fastest, png_bytes, wav_byt
 use crate::time::now_ms;
 
 /// "Now" in these tests: a minute past the real clock, so it is after
-/// every time the stores write with the real clock (a clean-up behind the
-/// database's newest time is refused). The same all through a test run.
+/// every time the stores write with the real clock (else a clean-up's
+/// folder is dated by the data's later time). The same all through a test
+/// run. It depends on the system clock being after 2026-10-01: before
+/// that, every clean-up is refused as `ClockWrong`.
 static NOW: std::sync::LazyLock<i64> = std::sync::LazyLock::new(|| now_ms() + 60_000);
 use crate::{Error, Result};
 
@@ -100,7 +102,7 @@ fn image(media: &MediaRef) -> String {
 
 /// A clean-up at `now` with the real renames.
 fn clean_up_at(store: &mut Store, now: i64) -> Result<CleanedUp> {
-    store.clean_up_media_with(now, &Disk, &|| Ok(()))
+    store.clean_up_media_with(now, &Disk, &|_| Ok(()))
 }
 
 /// Hostile or foreign things in the media folder, which are never
@@ -351,7 +353,7 @@ fn a_failed_move_puts_everything_back() {
     let rows_before = rows(&store);
     // The third move fails; the two moves back work.
     let mover = Failing::new(2, 2);
-    let err = store.clean_up_media_with(*NOW, &mover, &|| Ok(()));
+    let err = store.clean_up_media_with(*NOW, &mover, &|_| Ok(()));
     assert!(matches!(err, Err(Error::Io { .. })), "{err:?}");
     assert_eq!(names(&media(&tmp)), files);
     assert_eq!(trashed(&tmp), none());
@@ -364,7 +366,7 @@ fn a_failed_move_puts_everything_back() {
 fn a_failure_before_the_commit_puts_everything_back() {
     let (tmp, mut store, files) = three_unused();
     let rows_before = rows(&store);
-    let err = store.clean_up_media_with(*NOW, &Disk, &|| Err(Error::NoMediaDir));
+    let err = store.clean_up_media_with(*NOW, &Disk, &|_| Err(Error::NoMediaDir));
     assert!(matches!(err, Err(Error::NoMediaDir)));
     assert_eq!(names(&media(&tmp)), files);
     assert_eq!(trashed(&tmp), none());
@@ -379,7 +381,7 @@ fn files_that_cannot_go_back_return_at_the_next_open() {
     let rows_before = rows(&store);
     // Three moves succeed, then every rename (the moves back) fails.
     let mover = Failing::new(3, usize::MAX);
-    let err = store.clean_up_media_with(*NOW, &mover, &|| Err(Error::NoMediaDir));
+    let err = store.clean_up_media_with(*NOW, &mover, &|_| Err(Error::NoMediaDir));
     assert!(err.is_err());
     assert_eq!(names(&media(&tmp)), none());
     assert_eq!(trashed(&tmp), files);
@@ -636,9 +638,9 @@ fn the_purge_waits_thirty_days() {
         assert_eq!(trashed(&tmp).len(), 2);
     }
     // A write 30 days on, less a millisecond: still not.
-    record_time(&store, day + 30 * DAY_MS - 1);
+    record_time(&mut store, day + 30 * DAY_MS - 1);
     assert_eq!(store.tidy_media_trash_at(at).unwrap().purged, 0);
-    record_time(&store, day + 30 * DAY_MS);
+    record_time(&mut store, day + 30 * DAY_MS);
     assert_eq!(store.tidy_media_trash_at(at - 1).unwrap().purged, 0);
     let tidied = store.tidy_media_trash_at(at).unwrap();
     assert_eq!((tidied.purged, tidied.kept, tidied.blocked), (2, 0, false));
@@ -668,29 +670,100 @@ fn the_age_rule() {
     assert!(!purgeable(early, day + 365 * DAY_MS, used));
 }
 
-/// A clean-up is refused while the clock is behind the newest trash
-/// folder's date or the newest time the database holds: its folder would
-/// look older than it is.
+/// A clean-up whose clock is behind a time the data holds (a far-future
+/// card from an import, a far-future trash folder) is not refused: its
+/// folder is dated by that later time, which only delays the purge.
 #[test]
-fn a_clock_behind_the_data_refuses_the_clean_up() {
+fn a_later_time_in_the_data_dates_the_folder_later() {
+    let far = folder_day("2100-03-04").unwrap() + 5_000;
     let (tmp, mut store) = store();
     store.add_media_bytes(&png_bytes(1)).unwrap();
-    // Behind the database (the add's `created_at`).
-    assert!(matches!(
-        clean_up_at(&mut store, *NOW - 2 * 60_000),
-        Err(Error::ClockWrong)
-    ));
-    assert_eq!(trashed(&tmp), none());
-    // Behind a trash folder dated later.
-    let later = trash(&tmp).join(folder_name(*NOW + 3 * DAY_MS, 1));
-    fs::create_dir_all(&later).unwrap();
-    assert!(matches!(
-        clean_up_at(&mut store, *NOW),
-        Err(Error::ClockWrong)
-    ));
-    assert_eq!(names(&media(&tmp)), [png_ref(1).file_name()]);
-    fs::remove_dir(&later).unwrap();
+    // A card from another collection, made in 2100 by its clock.
+    let (other_tmp, mut other) = self::store();
+    let deck = other.create_deck("Future").unwrap().id;
+    let card = other.add_card(&deck, "from the future", "").unwrap().id;
+    other
+        .conn
+        .execute(
+            "UPDATE cards SET created_at = ?1, updated_at = ?1 WHERE id = ?2",
+            rusqlite::params![far, card],
+        )
+        .unwrap();
+    let file = other_tmp.path().join("future.rappel");
+    other.export_to(&file).unwrap();
+    let plan = store.plan_import(&file).unwrap();
+    store.apply_import(&plan).unwrap();
     assert_eq!(clean_up_at(&mut store, *NOW).unwrap().files, 1);
+    assert_eq!(names(&trash(&tmp)), ["2100-03-04"]);
+    // Never purged early: a month on (with a write) leaves it.
+    let at = purge_time();
+    record_time(&mut store, at - DAY_MS);
+    assert_eq!(store.tidy_media_trash_at(at).unwrap().purged, 0);
+    assert_eq!(trashed(&tmp), [png_ref(1).file_name()]);
+
+    // A far-future folder in the trash dates the next clean-up too.
+    let (tmp, mut store) = self::store();
+    fs::create_dir_all(trash(&tmp).join("9000-01-01")).unwrap();
+    store.add_media_bytes(&png_bytes(2)).unwrap();
+    assert_eq!(clean_up_at(&mut store, *NOW).unwrap().files, 1);
+    assert_eq!(
+        names(&trash(&tmp).join("9000-01-01")),
+        [png_ref(2).file_name()]
+    );
+    // The clock's absolute bounds are still refused.
+    assert!(matches!(clean_up_at(&mut store, 0), Err(Error::ClockWrong)));
+}
+
+/// Renames that check, from the fourth call on (the moves back), that
+/// another connection cannot take the write lock.
+struct Watching<'a> {
+    calls: Cell<usize>,
+    dir: PathBuf,
+    locked: &'a Cell<usize>,
+}
+
+impl Mover for Watching<'_> {
+    fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
+        let call = self.calls.replace(self.calls.get() + 1);
+        if call >= 3 {
+            let other = Store::open_concurrent(&self.dir).unwrap();
+            other.conn.busy_timeout(std::time::Duration::ZERO).unwrap();
+            if other.conn.execute_batch("BEGIN IMMEDIATE").is_err() {
+                self.locked.set(self.locked.get() + 1);
+            } else {
+                other.conn.execute_batch("ROLLBACK").unwrap();
+            }
+        }
+        fs::rename(from, to)
+    }
+}
+
+/// A COMMIT that fails with the transaction still open (a deferred foreign
+/// key): the files move back while the clean-up still holds the write lock,
+/// then the rows roll back.
+#[test]
+fn a_failed_commit_moves_the_files_back_under_the_lock() {
+    let (tmp, mut store, files) = three_unused();
+    let rows_before = rows(&store);
+    let locked = Cell::new(0);
+    let mover = Watching {
+        calls: Cell::new(0),
+        dir: data(&tmp),
+        locked: &locked,
+    };
+    let err = store.clean_up_media_with(*NOW, &mover, &|conn| {
+        conn.execute_batch(
+            "PRAGMA defer_foreign_keys = ON;
+             INSERT INTO card_tags (card_id, tag_id) VALUES ('no card', 'no tag');",
+        )?;
+        Ok(())
+    });
+    assert!(matches!(err, Err(Error::Sqlite(_))), "{err:?}");
+    assert_eq!(locked.get(), 3, "each move back under the lock");
+    assert_eq!(names(&media(&tmp)), files);
+    assert_eq!(trashed(&tmp), none());
+    assert_eq!(rows(&store), rows_before);
+    assert!(store.conn.is_autocommit(), "rolled back");
 }
 
 #[test]
@@ -723,15 +796,25 @@ fn purge_time() -> i64 {
     folder_day(&folder_name(*NOW, 1)).unwrap() + 31 * DAY_MS
 }
 
-/// Records a write in the database at `at` (a row naming no file), as a
-/// month of use after the clean-up would.
-fn record_time(store: &Store, at: i64) {
+/// Records a user's write in the database at `at` (a card edited then),
+/// as a month of use after the clean-up would.
+fn record_time(store: &mut Store, at: i64) {
+    let deck: Option<String> = store
+        .conn
+        .query_row("SELECT id FROM decks WHERE name = 'Later'", [], |r| {
+            r.get(0)
+        })
+        .ok();
+    let deck = match deck {
+        Some(id) => id,
+        None => store.create_deck("Later").unwrap().id,
+    };
+    let card = store.add_card(&deck, "later", "").unwrap().id;
     store
         .conn
         .execute(
-            "INSERT OR REPLACE INTO media (hash, mime, bytes, created_at)
-             VALUES (?1, 'image/png', 1, ?2)",
-            rusqlite::params!["f".repeat(64), at],
+            "UPDATE cards SET updated_at = ?1 WHERE id = ?2",
+            rusqlite::params![at, card],
         )
         .unwrap();
 }
@@ -1063,7 +1146,7 @@ fn a_backup_made_during_the_purge_protects_its_files() {
         .execute("INSERT INTO cards VALUES (?1, '')", [image(&a)])
         .unwrap();
     let backups = data(&tmp).join("backups");
-    record_time(&store, purge_time() - DAY_MS);
+    record_time(&mut store, purge_time() - DAY_MS);
     let tidied = store
         .tidy_media_trash_with(purge_time(), &|| {
             create_backup(&source, &backups, *NOW + 60_000).unwrap();
