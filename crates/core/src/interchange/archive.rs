@@ -595,6 +595,11 @@ fn walk_directory<R: Read + Seek>(
                 "an entry of the list is damaged".to_owned(),
             ));
         }
+        // Only these fields are read. The disk-start field is not checked
+        // (the end record already says one disk), and the local header's
+        // name is never compared with the central record's: nothing may
+        // rely on either. An entry is what its central name says (the
+        // media import names media entries by that name only).
         let flags = u16_at(&record, 8);
         let method = u16_at(&record, 10);
         let crc = u32_at(&record, 16);
