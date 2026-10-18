@@ -434,6 +434,16 @@ impl RappelWindow {
         tracing::debug!(?problem, "showing a startup problem page");
         match problem {
             Problem::Recovery { reason, data_dir } => {
+                let dir = data_dir.clone();
+                imp.recovery_page.set_on_too_new(glib::clone!(
+                    #[weak(rename_to = window)]
+                    self,
+                    move |found, supported| window.show_problem(Problem::TooNew {
+                        found,
+                        supported,
+                        data_dir: dir.clone(),
+                    })
+                ));
                 imp.recovery_page.show(
                     reason,
                     data_dir,

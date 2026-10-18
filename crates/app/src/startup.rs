@@ -38,6 +38,10 @@ impl RecoveryReason {
         }
     }
 
+    /// The explanation under the title. The recovery page shows it through
+    /// its `description_text`, which knows whether there are backups and,
+    /// for [`Self::UnusableRestoreCopy`] without any, says what Start Fresh
+    /// does instead of asking for a backup.
     pub fn description(self) -> &'static str {
         match self {
             Self::Damaged => {

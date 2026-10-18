@@ -201,20 +201,72 @@ fn finish_restore_with(data_dir: &Path, now_ms: i64, migrations: &[Migration]) -
     })
 }
 
+/// Whether `err`, from checking a restore copy, is about the copy's content,
+/// so the copy can never be installed: it is damaged, not an SQLite file,
+/// not a Rappel database, or in WAL mode, which no backup is. Any other
+/// error (a full disk, an IO error, too little memory, a copy made by a
+/// newer Rappel) says nothing against the copy, so it is kept where it is
+/// (ADR 0050, row 35).
+#[must_use]
+pub fn is_unusable_copy(err: &Error) -> bool {
+    match err {
+        Error::IntegrityCheckFailed { .. } | Error::NotARappelDatabase => true,
+        // `require_rollback_journal`'s refusal is the only `InvalidData`.
+        Error::Io { source, .. } => source.kind() == io::ErrorKind::InvalidData,
+        Error::Sqlite(rusqlite::Error::SqliteFailure(failure, _)) => matches!(
+            failure.code,
+            rusqlite::ErrorCode::NotADatabase | rusqlite::ErrorCode::DatabaseCorrupt
+        ),
+        _ => false,
+    }
+}
+
 /// [`start_fresh`] with every input explicit, for tests.
 fn start_fresh_with(data_dir: &Path, now_ms: i64, migrations: &[Migration]) -> Result<Restored> {
+    start_fresh_checking(data_dir, now_ms, migrations, &check_copy)
+}
+
+/// A check of a restore copy, as [`check_copy`]; injected by tests.
+type CopyCheck<'a> = &'a dyn Fn(&Path, &[Migration]) -> Result<()>;
+
+/// [`start_fresh_with`] with the copy's check injected, so a test can make
+/// it fail as a full disk would.
+fn start_fresh_checking(
+    data_dir: &Path,
+    now_ms: i64,
+    migrations: &[Migration],
+    check: CopyCheck<'_>,
+) -> Result<Restored> {
     let partial = restore_partial_path(data_dir);
-    let refused_copy = exists(&partial)?;
-    if refused_copy {
+    // Only a regular file is a waiting copy, as for `finish_restore`.
+    // Anything else at that name (a folder, a link) is neither checked nor
+    // moved, and refuses as before: the open would refuse an empty database
+    // beside it anyway.
+    let waiting = match fs::symlink_metadata(&partial) {
+        Ok(meta) if meta.file_type().is_file() => true,
+        Ok(_) => return Err(Error::InterruptedRestore(partial)),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => false,
+        Err(source) => {
+            return Err(Error::Io {
+                path: partial,
+                source,
+            });
+        }
+    };
+    if waiting {
         // Checked on a scratch copy, as `finish_restore` checks it: one that
-        // can still be installed is the user's data.
+        // can still be installed is the user's data, and one whose check
+        // failed for another reason than its content may be too.
         let checking = restore_checking_path(data_dir);
         copy_private(&partial, &checking).inspect_err(|_| remove_copy(&checking))?;
-        let checked = check_copy(&checking, migrations);
+        let checked = check(&checking, migrations);
         remove_copy(&checking);
         match checked {
             Ok(()) => return Err(Error::InterruptedRestore(partial)),
-            Err(err) => tracing::warn!("the waiting restore copy cannot be used: {err}"),
+            Err(err) if is_unusable_copy(&err) => {
+                tracing::warn!("the waiting restore copy cannot be used: {err}");
+            }
+            Err(err) => return Err(err),
         }
     }
     let backups = super::list_backups(data_dir)?.len();
@@ -222,17 +274,8 @@ fn start_fresh_with(data_dir: &Path, now_ms: i64, migrations: &[Migration]) -> R
         return Err(Error::BackupsAvailable(backups));
     }
     ensure_data_dir(data_dir)?;
-    let set_aside = if refused_copy {
-        let target = free_name(
-            &data_dir.join(format!("{DB_FILE_NAME}.restore")),
-            ".refused-",
-            now_ms,
-        )?;
-        fs::rename(&partial, &target).map_err(|source| Error::Io {
-            path: partial.clone(),
-            source,
-        })?;
-        sync_parent(&target)?;
+    let set_aside = if waiting {
+        let target = set_aside_copy(data_dir, &partial, now_ms)?;
         tracing::info!(path = %target.display(), "unusable restore copy set aside");
         Some(target)
     } else {
@@ -701,6 +744,43 @@ fn remove_moving_aside(db_path: &Path) -> Result<()> {
 /// N ≥ 2, such that neither it nor any of its sidecar names exist.
 fn free_stem(db_path: &Path, now_ms: i64) -> Result<PathBuf> {
     free_name(db_path, ".replaced-", now_ms)
+}
+
+/// Moves the unusable copy `partial` to a free
+/// `rappel.sqlite3.restore.refused-<stamp>[-N]`, never over a file. A hard
+/// link fails if the name was taken in the meantime, and then the next free
+/// name is tried; the copy's old name is removed only once the new one
+/// exists. Where the file system refuses hard links (some do, with
+/// `EPERM` or `ENOTSUP`), it falls back to a rename to the free name, which
+/// could only replace a file created there between the check and the
+/// rename.
+fn set_aside_copy(data_dir: &Path, partial: &Path, now_ms: i64) -> Result<PathBuf> {
+    let stem = data_dir.join(format!("{DB_FILE_NAME}.restore"));
+    let io_err = |source| Error::Io {
+        path: partial.to_path_buf(),
+        source,
+    };
+    for _ in 0..100 {
+        let target = free_name(&stem, ".refused-", now_ms)?;
+        match fs::hard_link(partial, &target) {
+            Ok(()) => {
+                fs::remove_file(partial).map_err(io_err)?;
+                sync_parent(&target)?;
+                return Ok(target);
+            }
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(err) => {
+                tracing::debug!("no hard link for the restore copy, renaming it: {err}");
+                fs::rename(partial, &target).map_err(io_err)?;
+                sync_parent(&target)?;
+                return Ok(target);
+            }
+        }
+    }
+    Err(io_err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "no free name to set the restore copy aside",
+    )))
 }
 
 /// `<path><infix><stamp>`, or `<path><infix><stamp>-N` with the smallest

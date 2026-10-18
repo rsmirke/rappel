@@ -1328,3 +1328,95 @@ fn a_second_refused_copy_never_overwrites_the_first() {
     assert_eq!(second.set_aside.as_deref(), Some(again.as_path()));
     assert_eq!(fs::read(&again).unwrap(), b"second");
 }
+
+/// Only refusals about the copy's content make it unusable (ADR 0050,
+/// row 35); a full disk, an IO error or a newer version say nothing
+/// against it.
+#[test]
+fn only_a_refusal_of_the_content_makes_a_copy_unusable() {
+    let sqlite = |code: i32| {
+        Error::Sqlite(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(code),
+            None,
+        ))
+    };
+    let io = |kind: io::ErrorKind| Error::Io {
+        path: PathBuf::from("/x"),
+        source: io::Error::new(kind, "x"),
+    };
+    for unusable in [
+        Error::IntegrityCheckFailed {
+            messages: vec!["bad".into()],
+        },
+        Error::NotARappelDatabase,
+        io(io::ErrorKind::InvalidData),
+        sqlite(rusqlite::ffi::SQLITE_NOTADB),
+        sqlite(rusqlite::ffi::SQLITE_CORRUPT),
+    ] {
+        assert!(is_unusable_copy(&unusable), "{unusable:?}");
+    }
+    for kept in [
+        sqlite(rusqlite::ffi::SQLITE_FULL),
+        sqlite(rusqlite::ffi::SQLITE_IOERR),
+        sqlite(rusqlite::ffi::SQLITE_NOMEM),
+        sqlite(rusqlite::ffi::SQLITE_BUSY),
+        io(io::ErrorKind::PermissionDenied),
+        io(io::ErrorKind::StorageFull),
+        Error::UnsupportedVersion {
+            found: 99,
+            supported: 5,
+        },
+    ] {
+        assert!(!is_unusable_copy(&kept), "{kept:?}");
+    }
+}
+
+/// A check that fails for a reason other than the copy's content (here a
+/// full disk while migrating the scratch copy) changes nothing: the copy
+/// stays, nothing is renamed, and the error is returned.
+#[test]
+fn a_transient_check_failure_keeps_the_copy_and_changes_nothing() {
+    let e = Env::new();
+    let partial = interrupted_without_its_backup(&e);
+    let before = snapshot(&e.data);
+    for failure in [
+        Error::Sqlite(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_FULL),
+            None,
+        )),
+        Error::UnsupportedVersion {
+            found: 99,
+            supported: 5,
+        },
+    ] {
+        let message = failure.to_string();
+        let fail = move |_: &Path, _: &[Migration]| -> Result<()> {
+            Err(match &failure {
+                Error::UnsupportedVersion { found, supported } => Error::UnsupportedVersion {
+                    found: *found,
+                    supported: *supported,
+                },
+                _ => Error::Sqlite(rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_FULL),
+                    None,
+                )),
+            })
+        };
+        let err = start_fresh_checking(&e.data, DAY0 + DAY_MS, MIGRATIONS, &fail).unwrap_err();
+        assert_eq!(err.to_string(), message);
+        assert_eq!(snapshot(&e.data), before, "nothing changed");
+        assert!(partial.exists());
+    }
+}
+
+/// A folder at the waiting copy's name is no copy: Start Fresh neither
+/// checks nor moves it, and refuses with nothing changed.
+#[test]
+fn a_folder_at_the_copys_name_is_left_alone() {
+    let e = Env::new();
+    fs::create_dir_all(restore_partial_path(&e.data)).unwrap();
+    fs::write(e.db(), vec![0x42; 4096]).unwrap();
+    let before = snapshot(&e.data);
+    assert!(matches!(e.start_fresh(), Err(Error::InterruptedRestore(_))));
+    assert_eq!(snapshot(&e.data), before, "nothing changed");
+}

@@ -34,6 +34,10 @@ pub enum Recovered {
 /// Called with the data directory, the new store and how it was made.
 type OnRestored = dyn Fn(PathBuf, Restored, Recovered);
 
+/// Called when the waiting copy turns out to come from a newer Rappel,
+/// with its version and the latest this build supports.
+type OnTooNew = dyn Fn(i64, u32);
+
 mod imp {
     use std::cell::{Cell, RefCell};
     use std::path::PathBuf;
@@ -42,7 +46,7 @@ mod imp {
     use adw::subclass::prelude::*;
     use gtk::glib;
 
-    use super::OnRestored;
+    use super::{OnRestored, OnTooNew};
     use crate::startup::RecoveryReason;
     use crate::ui::callback::Callback;
 
@@ -62,6 +66,7 @@ mod imp {
         pub reason: Cell<Option<RecoveryReason>>,
         pub data_dir: RefCell<Option<PathBuf>>,
         pub on_restored: RefCell<Option<Callback<OnRestored>>>,
+        pub on_too_new: RefCell<Option<Callback<OnTooNew>>>,
         /// The last failure's toast: replaced by the next one, and
         /// dismissed once a database is open, so it does not stay over
         /// the toast that says what was done.
@@ -130,6 +135,14 @@ impl RecoveryPage {
         imp.on_restored
             .replace(Some(Callback::new(Rc::new(on_restored))));
         self.reload();
+    }
+
+    /// Calls `f` when Finish Restore finds that the waiting copy comes from
+    /// a newer Rappel: the window then shows its "too new" page, as for a
+    /// database that is too new. There is one such callback.
+    pub fn set_on_too_new(&self, f: impl Fn(i64, u32) + 'static) {
+        let f: Rc<OnTooNew> = Rc::new(f);
+        self.imp().on_too_new.replace(Some(Callback::new(f)));
     }
 
     /// Rebuilds the backup list and the explanation under the title.
@@ -308,18 +321,32 @@ impl RecoveryPage {
                 }
                 return;
             }
-            Ok(Err(err)) => {
-                if let Some(reason) = reason_after_finish_failure(&err) {
+            Ok(Err(err)) => match finish_failure(&err) {
+                FinishFailure::Unusable => {
                     // The page itself now says the copy cannot be used: no
                     // toast over it. The details are for the log.
                     tracing::warn!("the waiting restore copy cannot be used: {err}");
-                    imp.reason.set(Some(reason));
+                    imp.reason.set(Some(RecoveryReason::UnusableRestoreCopy));
                     self.reload();
                     return;
                 }
-                tracing::error!("finishing the restore failed: {err}");
-                finish_failure_text(&err)
-            }
+                FinishFailure::TooNew { found, supported } => {
+                    tracing::warn!("the waiting restore copy is too new: {err}");
+                    let handler = imp.on_too_new.borrow().as_ref().map(Callback::get);
+                    imp.errors.clear();
+                    if let Some(handler) = handler {
+                        handler(found, supported);
+                    }
+                    self.reload();
+                    return;
+                }
+                FinishFailure::Other => {
+                    // The copy may be fine (a full disk, an IO error): the
+                    // page stays as it was, with Finish Restore.
+                    tracing::error!("finishing the restore failed: {err}");
+                    finish_failure_text(&err)
+                }
+            },
             Err(_) => {
                 tracing::error!("finish restore worker panicked");
                 "Finishing the restore stopped unexpectedly".to_owned()
@@ -454,12 +481,33 @@ fn no_backups_text(reason: Option<RecoveryReason>) -> &'static str {
     }
 }
 
-/// What the page explains after Finish Restore failed with `err`: a copy
-/// that cannot be used leaves Start Fresh to offer, which sets it aside
-/// (ADR 0050, row 35). `None` keeps the reason.
-fn reason_after_finish_failure(err: &rappel_core::Error) -> Option<RecoveryReason> {
-    matches!(err, rappel_core::Error::RestoreRefused { .. })
-        .then_some(RecoveryReason::UnusableRestoreCopy)
+/// What a failed Finish Restore means for the page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FinishFailure {
+    /// The copy's content can never be installed (`is_unusable_copy`): the
+    /// page says so and, without backups, offers Start Fresh, which sets it
+    /// aside (ADR 0050, row 35).
+    Unusable,
+    /// The copy comes from a newer Rappel: the "too new" page.
+    TooNew { found: i64, supported: u32 },
+    /// Anything else (a full disk, an IO error): the copy may be fine, so
+    /// the page keeps Finish Restore and a toast says what failed.
+    Other,
+}
+
+/// How the page answers Finish Restore failing with `err`.
+fn finish_failure(err: &rappel_core::Error) -> FinishFailure {
+    use rappel_core::Error;
+    match err {
+        Error::RestoreRefused { source, .. } => match **source {
+            Error::UnsupportedVersion { found, supported } => {
+                FinishFailure::TooNew { found, supported }
+            }
+            ref source if rappel_core::storage::is_unusable_copy(source) => FinishFailure::Unusable,
+            _ => FinishFailure::Other,
+        },
+        _ => FinishFailure::Other,
+    }
 }
 
 /// The body of the question before Start Fresh when it differs from the
@@ -487,7 +535,7 @@ fn finish_failure_text(err: &rappel_core::Error) -> String {
             "The waiting copy is gone. Restart Rappel to check again.".to_owned()
         }
         rappel_core::Error::RestoreRefused { source, .. } => {
-            format!("The waiting copy cannot be used: {source}. It is kept in the data folder.")
+            format!("The waiting copy could not be checked: {source}. It is kept; try again.")
         }
         err => format!("Finishing the restore failed: {err}"),
     }
@@ -587,12 +635,70 @@ mod tests {
             finish_failure_text(&Error::NoRestoreWaiting),
             "The waiting copy is gone. Restart Rappel to check again."
         );
+        // A check that failed for another reason than the copy's content.
         let refused = Error::RestoreRefused {
             path: PathBuf::from("/data/rappel.sqlite3.restore.partial"),
-            source: Box::new(Error::NotARappelDatabase),
+            source: Box::new(Error::Io {
+                path: PathBuf::from("/data"),
+                source: std::io::Error::from(std::io::ErrorKind::StorageFull),
+            }),
         };
-        assert!(finish_failure_text(&refused).ends_with("It is kept in the data folder."));
-        assert!(finish_failure_text(&refused).starts_with("The waiting copy cannot be used:"));
+        let text = finish_failure_text(&refused);
+        assert!(
+            text.starts_with("The waiting copy could not be checked:"),
+            "{text}"
+        );
+        assert!(text.ends_with("It is kept; try again."), "{text}");
+    }
+
+    /// Only a refusal of the copy's content leaves Start Fresh; a newer
+    /// version goes to the "too new" page, and anything else keeps Finish
+    /// Restore (a full disk is a likely reason to be on this page).
+    #[test]
+    fn a_failed_finish_is_classified_by_what_it_says_about_the_copy() {
+        use rappel_core::Error;
+        let refused = |source: Error| Error::RestoreRefused {
+            path: PathBuf::from("/data/rappel.sqlite3.restore.partial"),
+            source: Box::new(source),
+        };
+        let io = |kind: std::io::ErrorKind| Error::Io {
+            path: PathBuf::from("/data/rappel.sqlite3.restore.checking"),
+            source: std::io::Error::from(kind),
+        };
+        assert_eq!(
+            finish_failure(&refused(Error::NotARappelDatabase)),
+            FinishFailure::Unusable
+        );
+        assert_eq!(
+            finish_failure(&refused(Error::IntegrityCheckFailed {
+                messages: vec!["bad".into()]
+            })),
+            FinishFailure::Unusable
+        );
+        assert_eq!(
+            finish_failure(&refused(Error::UnsupportedVersion {
+                found: 9,
+                supported: 7
+            })),
+            FinishFailure::TooNew {
+                found: 9,
+                supported: 7
+            }
+        );
+        // SQLite's own codes are sorted by core (`is_unusable_copy`).
+        assert_eq!(
+            finish_failure(&refused(io(std::io::ErrorKind::StorageFull))),
+            FinishFailure::Other
+        );
+        // The WAL-mode refusal.
+        assert_eq!(
+            finish_failure(&refused(io(std::io::ErrorKind::InvalidData))),
+            FinishFailure::Unusable
+        );
+        assert_eq!(
+            finish_failure(&Error::NoRestoreWaiting),
+            FinishFailure::Other
+        );
     }
 
     /// The dead end of ADR 0050, row 35: the waiting copy is refused and
@@ -605,8 +711,8 @@ mod tests {
             path: PathBuf::from("/data/rappel.sqlite3.restore.partial"),
             source: Box::new(Error::NotARappelDatabase),
         };
-        let reason = reason_after_finish_failure(&refused);
-        assert_eq!(reason, Some(RecoveryReason::UnusableRestoreCopy));
+        assert_eq!(finish_failure(&refused), FinishFailure::Unusable);
+        let reason = Some(RecoveryReason::UnusableRestoreCopy);
         assert!(offers_start_fresh(reason));
         assert!(!offers_finish_restore(reason));
         assert!(no_backups_text(reason).contains("start with an empty"));
@@ -614,8 +720,6 @@ mod tests {
         assert!(body.contains("restore.refused-"));
         assert!(body.contains("Nothing is deleted."));
         assert_eq!(start_fresh_body(Some(RecoveryReason::Damaged)), None);
-        // Other failures keep the page as it was.
-        assert_eq!(reason_after_finish_failure(&Error::NoRestoreWaiting), None);
     }
 
     #[test]
