@@ -338,10 +338,12 @@ impl DecksPage {
         }
         self.reload_or_toast(Focus::Index(index));
 
-        let title = format!("“{name}” deleted");
+        // The deck was just chosen; short, so it fits beside Undo at 360 px
+        // (ADR 0058).
+        let title = "Deck deleted";
         let id = id.to_owned();
         let toast = undo_toast(
-            &title,
+            title,
             glib::clone!(
                 #[weak(rename_to = page)]
                 self,

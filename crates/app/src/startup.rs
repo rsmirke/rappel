@@ -202,7 +202,7 @@ pub fn setting_reset_text(key: SettingKey, was_reset: bool) -> String {
         )
     } else {
         format!(
-            "Setting not changed. “{}” can be read again, so it was not changed.",
+            "Setting not changed. “{}” can be read again.",
             setting_name(key)
         )
     }
@@ -354,7 +354,7 @@ mod tests {
         );
         assert_eq!(
             setting_reset_text(SettingKey::MaxNewPerDay, false),
-            "Setting not changed. “New Cards per Day” can be read again, so it was not changed."
+            "Setting not changed. “New Cards per Day” can be read again."
         );
         let text = damaged_setting_text(SettingKey::DayStartHour);
         assert!(text.starts_with("The stored value of “Day Starts At” in Preferences"));

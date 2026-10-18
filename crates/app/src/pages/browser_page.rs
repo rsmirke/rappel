@@ -210,7 +210,7 @@ glib::wrapper! {
 #[derive(Debug, Clone)]
 enum Bulk {
     Suspend(bool),
-    Move { deck_id: String, deck_name: String },
+    Move { deck_id: String },
     AddTags(Vec<String>),
     RemoveTag(Tag),
     Reset,
@@ -223,7 +223,12 @@ type UndoFn = Box<dyn Fn(&AppState) -> rappel_core::Result<usize>>;
 /// A bulk action that was done: what to tell, how many cards it changed
 /// and how to take it back. The undo returns how many cards it restored.
 struct Done {
+    /// The Undo toast's title: short, so it fits beside Undo at 360 px
+    /// (ADR 0058).
     text: String,
+    /// More to say, in a toast of its own after it (which gets Details
+    /// when long): the cards Add Tags left out.
+    note: Option<String>,
     total: usize,
     undo: UndoFn,
 }
@@ -240,15 +245,17 @@ fn perform(
         Bulk::Suspend(suspended) => {
             let changed = state.set_suspended(ids, suspended)?;
             Done {
+                note: None,
                 text: text::suspended_text(changed.len(), suspended),
                 total: changed.len(),
                 undo: Box::new(move |s| s.restore_suspended(&changed, !suspended)),
             }
         }
-        Bulk::Move { deck_id, deck_name } => {
+        Bulk::Move { deck_id } => {
             let moved = state.move_cards(ids, &deck_id)?;
             Done {
-                text: text::moved_text(moved.len(), &deck_name),
+                note: None,
+                text: text::moved_text(moved.len()),
                 total: moved.len(),
                 undo: Box::new(move |s| s.unmove_cards(&moved)),
             }
@@ -274,7 +281,8 @@ fn perform(
                 .collect();
             let links = added.links;
             Done {
-                text: text::tags_added_text(&put, added.cards.len(), added.full.len(), limit),
+                text: text::tags_added_text(put.len(), added.cards.len()),
+                note: text::tags_left_out_text(added.full.len(), limit),
                 total: added.cards.len(),
                 undo: Box::new(move |s| s.release_tags(&links)),
             }
@@ -282,7 +290,8 @@ fn perform(
         Bulk::RemoveTag(tag) => {
             let changed = state.remove_tag_from_cards(ids, &tag.id)?;
             Done {
-                text: text::tag_removed_text(changed.len(), &tag.name),
+                note: None,
+                text: text::tag_removed_text(changed.len()),
                 total: changed.len(),
                 undo: Box::new(move |s| s.restore_tag_on_cards(&changed, &tag.id)),
             }
@@ -293,6 +302,7 @@ fn perform(
                 return Ok(Err(text::no_progress_text(ids.len())));
             }
             Done {
+                note: None,
                 text: text::reset_text(events.len()),
                 total: events.len(),
                 undo: Box::new(move |s| {
@@ -305,6 +315,7 @@ fn perform(
             state.delete_cards(ids)?;
             let ids = ids.to_vec();
             Done {
+                note: None,
                 text: text::deleted_text(ids.len()),
                 total: ids.len(),
                 undo: Box::new(move |s| s.undelete_cards(&ids)),
@@ -1088,7 +1099,6 @@ impl BrowserPage {
                         &ids,
                         Bulk::Move {
                             deck_id: deck.id.clone(),
-                            deck_name: deck.name.clone(),
                         },
                     );
                 }
@@ -1233,10 +1243,15 @@ impl BrowserPage {
             .and_downcast::<RappelWindow>()
             .map(|w| w.downgrade());
         let title = done.text.clone();
+        let note = done.note.clone();
         let toast = undo_toast(&title, move || {
             undo(&state, &done, &page, window.as_ref());
         });
         show_toast_from(self, toast);
+        // Queued after the Undo toast, which has the high priority.
+        if let Some(note) = note {
+            show_toast_from(self, info_toast(&note));
+        }
     }
 
     fn error_toast(&self, message: &str) {
@@ -1389,10 +1404,9 @@ mod tests {
         // Move.
         let bulk = Bulk::Move {
             deck_id: art.id.clone(),
-            deck_name: art.name.clone(),
         };
         let done = perform(&state, &ids, bulk, now).unwrap().unwrap();
-        assert_eq!(done.text, "3 cards moved to Art");
+        assert_eq!(done.text, "3 cards moved");
         assert_eq!(state.card(&ids[0]).unwrap().deck_id, art.id);
         assert_eq!((done.undo)(&state).unwrap(), 3);
         assert_eq!(state.card(&ids[0]).unwrap().deck_id, maths);
@@ -1401,7 +1415,7 @@ mod tests {
         let done = perform(&state, &ids, Bulk::AddTags(tags(&["hard"])), now)
             .unwrap()
             .unwrap();
-        assert_eq!(done.text, "Tag “hard” added to 3 cards");
+        assert_eq!(done.text, "Tag added to 3 cards");
         assert_eq!(state.card_tags(&ids[1]).unwrap().len(), 2);
         assert_eq!((done.undo)(&state).unwrap(), 3);
         assert_eq!(rows(&state), before);
@@ -1409,7 +1423,7 @@ mod tests {
         // Undo takes off the others.
         let bulk = Bulk::AddTags(tags(&["Algebra", "hard", "exam"]));
         let done = perform(&state, &ids, bulk, now).unwrap().unwrap();
-        assert_eq!(done.text, "2 tags added to 3 cards");
+        assert_eq!(done.text, "Tags added to 3 cards");
         assert_eq!(state.card_tags(&ids[1]).unwrap().len(), 3);
         assert_eq!((done.undo)(&state).unwrap(), 3);
         assert_eq!(rows(&state), before);
@@ -1422,7 +1436,7 @@ mod tests {
         let done = perform(&state, &ids, Bulk::RemoveTag(algebra), now)
             .unwrap()
             .unwrap();
-        assert_eq!(done.text, "Tag “algebra” removed from 3 cards");
+        assert_eq!(done.text, "Tag removed (3 cards)");
         assert_eq!(state.card_tags(&ids[1]).unwrap().len(), 0);
         assert_eq!((done.undo)(&state).unwrap(), 3);
         assert_eq!(rows(&state), before);
@@ -1485,9 +1499,10 @@ mod tests {
         let done = perform(&state, &ids, Bulk::AddTags(tags(&["x"])), now)
             .unwrap()
             .unwrap();
+        assert_eq!(done.text, "Tag added to 2 cards");
         assert_eq!(
-            done.text,
-            "Tag “x” added to 2 cards; 1 card left out, as a card can have at most 100 tags"
+            done.note.as_deref(),
+            Some("1 card left out. A card can have at most 100 tags")
         );
         assert_eq!(state.card_tags(&ids[0]).unwrap().len(), MAX_TAGS_PER_CARD);
         assert_eq!((done.undo)(&state).unwrap(), 2);

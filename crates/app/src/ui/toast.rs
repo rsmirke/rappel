@@ -40,13 +40,14 @@ pub enum ToastText {
 }
 
 /// The clause separators a title may end before, in the order tried.
-const CLAUSE_ENDS: [&str; 4] = [". ", ": ", "; ", ", "];
+const CLAUSE_ENDS: [&str; 3] = [". ", ": ", "; "];
 
 /// What a toast shows for `text`: the whole text if it has at most
 /// [`TOAST_FITS`] characters; else its first clause (up to the first ". ",
-/// ": ", "; " or ", ", whichever comes first) if that has at most
+/// ": " or "; ", whichever comes first; not ", ", which can end a title
+/// half way through a list) if that has at most
 /// [`TOAST_FITS_WITH_BUTTON`], else [`FALLBACK_TITLE`], with the whole text
-/// as the details (without a first sentence, which the details' heading
+/// as the details (without the first clause, which the details' heading
 /// already says).
 pub fn toast_text(text: &str) -> ToastText {
     if text.chars().count() <= TOAST_FITS {
@@ -61,14 +62,11 @@ pub fn toast_text(text: &str) -> ToastText {
             !lead.trim().is_empty() && lead.chars().count() <= TOAST_FITS_WITH_BUTTON
         });
     match lead {
-        // A first sentence is the alert's heading: its body is the rest.
-        Some((at, ". ")) => ToastText::Detailed {
+        // The first clause is the alert's heading: its body is the rest,
+        // as a sentence of its own.
+        Some((at, end)) => ToastText::Detailed {
             title: text[..at].to_owned(),
-            details: text[at + 2..].to_owned(),
-        },
-        Some((at, _)) => ToastText::Detailed {
-            title: text[..at].to_owned(),
-            details: text.to_owned(),
+            details: capitalized(&text[at + end.len()..]),
         },
         None => ToastText::Detailed {
             title: FALLBACK_TITLE.to_owned(),
@@ -87,6 +85,14 @@ pub fn titled(title: &str, text: String) -> String {
     } else {
         format!("{title}. {text}")
     }
+}
+
+/// `text` with its first letter in upper case ("disk full" → "Disk full").
+fn capitalized(text: &str) -> String {
+    let mut chars = text.chars();
+    chars.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(chars).collect()
+    })
 }
 
 /// A toast showing `text` as [`toast_text`] decides, with `timeout`
@@ -282,12 +288,21 @@ mod tests {
                 details: "The previous database was kept as /data/rappel.sqlite3.replaced-1".into(),
             }
         );
-        // The earliest separator wins, whichever kind.
-        let text = "The export failed: disk full, and more words to make it long";
-        assert!(matches!(
+        // The earliest separator wins, whichever kind; the rest is the
+        // body, capitalised, without repeating the heading.
+        let text = "The export failed: disk full; more words to make it long";
+        assert_eq!(
             toast_text(text),
-            ToastText::Detailed { title, details } if title == "The export failed" && details == text
-        ));
+            ToastText::Detailed {
+                title: "The export failed".into(),
+                details: "Disk full; more words to make it long".into(),
+            }
+        );
+        // A comma does not end a title: it may be in a list.
+        let text = "Imported 12 decks, 840 cards and 5,210 reviews from the file";
+        assert!(
+            matches!(toast_text(text), ToastText::Detailed { title, .. } if title == FALLBACK_TITLE)
+        );
     }
 
     #[test]

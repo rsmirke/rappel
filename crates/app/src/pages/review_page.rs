@@ -1971,27 +1971,43 @@ mod tests {
     /// is on the view around the page and only leaves it, as Back does.
     #[test]
     fn no_gesture_on_the_review_page_can_grade() {
+        /// GTK's own widgets that come with such gestures: they only
+        /// scroll, move the window or open Back's history.
         const GTK_OWN: [&str; 4] = [
             "GtkScrolledWindow",
             "GtkRange",
             "GtkWindowHandle",
             "AdwBackButton",
         ];
-        fn gestures(widget: &gtk::Widget, found: &mut Vec<String>) {
+        fn is_gesture(controller: &glib::Object) -> bool {
+            controller.is::<gtk::GestureSwipe>()
+                || controller.is::<gtk::GestureDrag>()
+                || controller.is::<gtk::GestureLongPress>()
+        }
+        fn count(widget: &gtk::Widget) -> usize {
             let controllers = widget.observe_controllers();
-            for i in 0..controllers.n_items() {
-                if let Some(controller) = controllers.item(i)
-                    && !GTK_OWN.contains(&widget.type_().name())
-                    && (controller.is::<gtk::GestureSwipe>()
-                        || controller.is::<gtk::GestureDrag>()
-                        || controller.is::<gtk::GestureLongPress>())
-                {
-                    found.push(format!(
-                        "{} on {}",
-                        controller.type_().name(),
-                        widget.type_().name()
-                    ));
-                }
+            (0..controllers.n_items())
+                .filter_map(|i| controllers.item(i))
+                .filter(is_gesture)
+                .count()
+        }
+        fn gestures(widget: &gtk::Widget, found: &mut Vec<String>) {
+            let kind = widget.type_();
+            // A widget of GTK's own may have the gestures a new one of its
+            // type has, and no more: one Rappel added would be one more.
+            let allowed = if GTK_OWN.contains(&kind.name()) {
+                glib::Object::with_type(kind)
+                    .downcast::<gtk::Widget>()
+                    .map_or(0, |fresh| count(&fresh))
+            } else {
+                0
+            };
+            let has = count(widget);
+            if has > allowed {
+                found.push(format!(
+                    "{has} gestures on {}, {allowed} allowed",
+                    kind.name()
+                ));
             }
             let mut child = widget.first_child();
             while let Some(c) = child {

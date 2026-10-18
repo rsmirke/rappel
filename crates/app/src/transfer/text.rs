@@ -69,7 +69,7 @@ pub(super) fn exported_text(path: &Path, missing_media: usize) -> String {
 pub(super) fn refused_text(problem: &ImportProblem) -> String {
     match problem {
         ImportProblem::EarlyTestVersion => {
-            "Cannot import this file. It was made by an early test version of Rappel and cannot be imported"
+            "Early test version. This file was made by an early test version of Rappel and cannot be imported"
                 .to_owned()
         }
         other => format!("Cannot import this file: {other}"),
@@ -81,7 +81,7 @@ pub(super) fn refused_text(problem: &ImportProblem) -> String {
 pub(super) fn check_failed_text(err: &Error) -> String {
     match err {
         Error::ImportFileChanged => {
-            "The file changed. It changed while it was being checked; import it again.".to_owned()
+            "Import it again. The file changed while it was being checked.".to_owned()
         }
         other => format!("Cannot check the file: {other}"),
     }
@@ -98,7 +98,7 @@ pub(super) fn import_failed_text(err: &Error) -> String {
             "Nothing was imported. The file changed since it was checked; import it again."
                 .to_owned()
         }
-        other => format!("The import failed, and nothing was imported: {other}"),
+        other => format!("The import failed: nothing was imported; {other}"),
     }
 }
 
@@ -598,7 +598,7 @@ mod tests {
     fn a_refused_file_says_why_once() {
         assert_eq!(
             refused_text(&ImportProblem::EarlyTestVersion),
-            "Cannot import this file. It was made by an early test version of Rappel and cannot be imported"
+            "Early test version. This file was made by an early test version of Rappel and cannot be imported"
         );
         assert_eq!(
             refused_text(&ImportProblem::NotAFile),
@@ -612,7 +612,7 @@ mod tests {
     fn a_changed_file_says_so_and_nothing_was_imported() {
         assert_eq!(
             check_failed_text(&Error::ImportFileChanged),
-            "The file changed. It changed while it was being checked; import it again."
+            "Import it again. The file changed while it was being checked."
         );
         assert_eq!(
             import_failed_text(&Error::ImportFileChanged),
@@ -625,7 +625,7 @@ mod tests {
         );
         assert_eq!(
             import_failed_text(&Error::NoBackupDir),
-            "The import failed, and nothing was imported: \
+            "The import failed: nothing was imported; \
              this database cannot be backed up, so nothing can be imported into it"
         );
         assert!(check_failed_text(&Error::NoBackupDir).starts_with("Cannot check the file: "));
