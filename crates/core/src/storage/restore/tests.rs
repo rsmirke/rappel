@@ -1082,7 +1082,7 @@ fn v1_schema_labelled_v2_is_refused() {
 fn wal_mode_backup_is_refused() {
     assert_refused(
         |e, good| altered_copy(e, good, "PRAGMA journal_mode = WAL;"),
-        |err| matches!(err, Error::Io { source, .. } if source.kind() == std::io::ErrorKind::InvalidData),
+        |err| matches!(err, Error::WalModeCopy { .. }),
     );
 }
 
@@ -1264,4 +1264,195 @@ fn start_fresh_is_refused_while_backups_exist() {
 
     assert!(matches!(e.start_fresh(), Err(Error::BackupsAvailable(1))));
     assert_eq!(snapshot(&e.data), before, "nothing changed");
+}
+
+/// The dead end of ADR 0050, row 35: the waiting copy is damaged, so Finish
+/// Restore refuses it, and there is no backup. Start Fresh renames the copy
+/// aside, byte for byte, and starts over; nothing is deleted.
+#[test]
+fn start_fresh_sets_a_damaged_waiting_copy_aside_and_keeps_it() {
+    let e = Env::new();
+    let partial = interrupted_without_its_backup(&e);
+    fs::write(&partial, vec![0x42; 8192]).unwrap();
+    fs::write(with_suffix(&e.db(), "-wal"), b"stray").unwrap();
+    assert!(matches!(
+        finish_restore_with(&e.data, DAY0 + DAY_MS, MIGRATIONS),
+        Err(Error::RestoreRefused { .. })
+    ));
+
+    let fresh = e.start_fresh().unwrap();
+
+    let kept = e
+        .data
+        .join(format!("{DB_FILE_NAME}.restore.refused-{RESTORE_STAMP}"));
+    assert_eq!(fresh.set_aside.as_deref(), Some(kept.as_path()));
+    assert_eq!(fs::read(&kept).unwrap(), vec![0x42; 8192]);
+    assert!(!partial.exists());
+    assert!(!restore_checking_path(&e.data).exists());
+    // The stray -wal is moved aside as for any start fresh.
+    let stem = fresh.replaced.clone().expect("the -wal was moved aside");
+    assert_eq!(fs::read(with_suffix(&stem, "-wal")).unwrap(), b"stray");
+    assert_fresh(&e, fresh);
+}
+
+#[test]
+fn a_damaged_waiting_copy_is_kept_in_place_while_backups_exist() {
+    let e = Env::new();
+    let (store, backup) = e.diverged();
+    drop(store);
+    let partial = copy_validate_and_move_aside(&e, &backup);
+    fs::write(&partial, vec![0x42; 8192]).unwrap();
+    let before = snapshot(&e.data);
+
+    assert!(matches!(e.start_fresh(), Err(Error::BackupsAvailable(1))));
+    assert_eq!(snapshot(&e.data), before, "nothing changed");
+}
+
+#[test]
+fn a_second_refused_copy_never_overwrites_the_first() {
+    let e = Env::new();
+    fs::create_dir_all(&e.data).unwrap();
+    let partial = restore_partial_path(&e.data);
+    fs::write(&partial, b"first").unwrap();
+    let first = e.start_fresh().unwrap();
+    drop(first);
+    fs::write(&partial, b"second").unwrap();
+
+    let second = e.start_fresh().unwrap();
+
+    let kept = e
+        .data
+        .join(format!("{DB_FILE_NAME}.restore.refused-{RESTORE_STAMP}"));
+    assert_eq!(fs::read(&kept).unwrap(), b"first");
+    let again = with_suffix(&kept, "-2");
+    assert_eq!(second.set_aside.as_deref(), Some(again.as_path()));
+    assert_eq!(fs::read(&again).unwrap(), b"second");
+}
+
+/// Only refusals about the copy's content make it unusable (ADR 0050,
+/// row 35); a full disk, an IO error or a newer version say nothing
+/// against it.
+#[test]
+fn only_a_refusal_of_the_content_makes_a_copy_unusable() {
+    let sqlite = |code: i32| {
+        Error::Sqlite(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(code),
+            None,
+        ))
+    };
+    let io = |kind: io::ErrorKind| Error::Io {
+        path: PathBuf::from("/x"),
+        source: io::Error::new(kind, "x"),
+    };
+    for unusable in [
+        Error::IntegrityCheckFailed {
+            messages: vec!["bad".into()],
+        },
+        Error::NotARappelDatabase,
+        Error::WalModeCopy {
+            path: PathBuf::from("/x"),
+        },
+        Error::UnsupportedVersion {
+            found: -1,
+            supported: 5,
+        },
+        sqlite(rusqlite::ffi::SQLITE_NOTADB),
+        sqlite(rusqlite::ffi::SQLITE_CORRUPT),
+    ] {
+        assert!(is_unusable_copy(&unusable), "{unusable:?}");
+    }
+    for kept in [
+        sqlite(rusqlite::ffi::SQLITE_FULL),
+        sqlite(rusqlite::ffi::SQLITE_IOERR),
+        sqlite(rusqlite::ffi::SQLITE_NOMEM),
+        sqlite(rusqlite::ffi::SQLITE_BUSY),
+        io(io::ErrorKind::PermissionDenied),
+        io(io::ErrorKind::StorageFull),
+        // `read_moving_aside`'s refusal of its marker, not of the copy.
+        io(io::ErrorKind::InvalidData),
+        Error::UnsupportedVersion {
+            found: 99,
+            supported: 5,
+        },
+    ] {
+        assert!(!is_unusable_copy(&kept), "{kept:?}");
+    }
+}
+
+/// A check that fails for a reason other than the copy's content (here a
+/// full disk while migrating the scratch copy) changes nothing: the copy
+/// stays, nothing is renamed, and the error is returned.
+#[test]
+fn a_transient_check_failure_keeps_the_copy_and_changes_nothing() {
+    let e = Env::new();
+    let partial = interrupted_without_its_backup(&e);
+    let before = snapshot(&e.data);
+    for failure in [
+        Error::Sqlite(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_FULL),
+            None,
+        )),
+        Error::UnsupportedVersion {
+            found: 99,
+            supported: 5,
+        },
+    ] {
+        let message = failure.to_string();
+        let fail = move |_: &Path, _: &[Migration]| -> Result<()> {
+            Err(match &failure {
+                Error::UnsupportedVersion { found, supported } => Error::UnsupportedVersion {
+                    found: *found,
+                    supported: *supported,
+                },
+                _ => Error::Sqlite(rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_FULL),
+                    None,
+                )),
+            })
+        };
+        let err = start_fresh_checking(&e.data, DAY0 + DAY_MS, MIGRATIONS, &fail).unwrap_err();
+        assert_eq!(err.to_string(), message);
+        assert_eq!(snapshot(&e.data), before, "nothing changed");
+        assert!(partial.exists());
+    }
+}
+
+/// A folder at the waiting copy's name is no copy: Start Fresh neither
+/// checks nor moves it, and refuses with nothing changed.
+#[test]
+fn a_folder_at_the_copys_name_is_left_alone() {
+    let e = Env::new();
+    fs::create_dir_all(restore_partial_path(&e.data)).unwrap();
+    fs::write(e.db(), vec![0x42; 4096]).unwrap();
+    let before = snapshot(&e.data);
+    assert!(matches!(e.start_fresh(), Err(Error::InterruptedRestore(_))));
+    assert_eq!(snapshot(&e.data), before, "nothing changed");
+}
+
+/// A copy with a negative version was not written by any Rappel: unusable,
+/// so Start Fresh sets it aside. One from a newer Rappel is kept, and its
+/// error returned with nothing changed.
+#[test]
+fn a_negative_version_is_unusable_but_a_newer_one_is_kept() {
+    for (version, set_aside) in [(-1_i64, true), (i64::from(latest(MIGRATIONS)) + 1, false)] {
+        let e = Env::new();
+        let partial = interrupted_without_its_backup(&e);
+        {
+            let conn = Connection::open(&partial).unwrap();
+            conn.pragma_update(None, "user_version", version).unwrap();
+        }
+        let before = snapshot(&e.data);
+        let result = e.start_fresh();
+        if set_aside {
+            let fresh = result.unwrap();
+            assert!(fresh.set_aside.is_some(), "{version}");
+            assert!(!partial.exists());
+        } else {
+            assert!(
+                matches!(result, Err(Error::UnsupportedVersion { found, .. }) if found == version),
+                "{version}"
+            );
+            assert_eq!(snapshot(&e.data), before, "nothing changed");
+        }
+    }
 }

@@ -1,7 +1,7 @@
 //! What tag pills show and say: the text of a pill, how many pills fit on
 //! one line and the "+N" pill for the rest. Pure, so it is unit-tested.
 
-use crate::ui::text::group_digits;
+use crate::ui::text::{group_digits, isolate, name_list};
 
 /// The widest a pill gets, in characters; a longer name ends in "…" and
 /// has its whole name as the pill's tooltip.
@@ -35,18 +35,21 @@ pub fn overflow_text(hidden: usize) -> String {
     format!("+{}", group_digits(hidden))
 }
 
-/// The tooltip of the "+N" pill: the tags it stands for, "history, physics".
+/// The tooltip of the "+N" pill: the tags it stands for, "history,
+/// physics", each in a bidi isolate (`ui::text::isolate`), and past
+/// `ui::text::MAX_NAMED` of them how many more: a card can have thousands.
 pub fn overflow_tooltip(hidden: &[String]) -> String {
-    hidden.join(", ")
+    name_list(hidden, isolate)
 }
 
 /// The tags in words for a row's accessible label: "tags: maths, easy", or
-/// `None` without tags. Every tag is named, the hidden ones too.
+/// `None` without tags. The hidden ones are named too, up to
+/// `ui::text::MAX_NAMED`, then counted.
 pub fn spoken(names: &[String]) -> Option<String> {
     if names.is_empty() {
         None
     } else {
-        Some(format!("tags: {}", names.join(", ")))
+        Some(format!("tags: {}", name_list(names, str::to_owned)))
     }
 }
 
@@ -85,8 +88,11 @@ mod tests {
         assert_eq!(overflow_text(1_200), "+1,200");
         assert_eq!(
             overflow_tooltip(&names(&["history", "physics"])),
-            "history, physics"
+            "\u{2068}history\u{2069}, \u{2068}physics\u{2069}"
         );
+        let many: Vec<String> = (0..5_000).map(|i| format!("tag {i}")).collect();
+        let tooltip = overflow_tooltip(&many);
+        assert!(tooltip.ends_with("\u{2068}tag 19\u{2069} and 4,980 more"));
     }
 
     #[test]
@@ -96,5 +102,9 @@ mod tests {
             spoken(&names(&["maths", "easy", "a", "b"])).as_deref(),
             Some("tags: maths, easy, a, b")
         );
+        let many: Vec<String> = (0..5_000).map(|i| format!("tag {i}")).collect();
+        let said = spoken(&many).unwrap_or_default();
+        assert!(said.starts_with("tags: tag 0, tag 1, "));
+        assert!(said.ends_with("tag 19 and 4,980 more"));
     }
 }

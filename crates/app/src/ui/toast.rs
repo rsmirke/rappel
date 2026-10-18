@@ -72,6 +72,13 @@ impl ErrorSlot {
         show_toast_from(widget, toast);
     }
 
+    /// Whether no error toast was shown through this slot since the last
+    /// [`Self::clear`].
+    #[cfg(test)]
+    pub fn is_empty(&self) -> bool {
+        self.0.borrow().is_none()
+    }
+
     /// Dismisses this slot's error toast, if one is still shown: what it
     /// reported has since worked (e.g. the decks could be read again).
     pub fn clear(&self) {

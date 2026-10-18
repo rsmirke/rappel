@@ -245,7 +245,9 @@ impl RappelWindow {
             return;
         };
         let saved = window_state::load(state.data_dir());
-        self.set_default_size(saved.width, saved.height);
+        let (width, height) =
+            window_state::fit_to_monitors(saved.width, saved.height, &monitor_sizes(self));
+        self.set_default_size(width, height);
         if saved.maximized {
             // "It's permitted to call this function before showing a window,
             // in which case the window will be maximized when it appears
@@ -432,6 +434,16 @@ impl RappelWindow {
         tracing::debug!(?problem, "showing a startup problem page");
         match problem {
             Problem::Recovery { reason, data_dir } => {
+                let dir = data_dir.clone();
+                imp.recovery_page.set_on_too_new(glib::clone!(
+                    #[weak(rename_to = window)]
+                    self,
+                    move |found, supported| window.show_problem(Problem::TooNew {
+                        found,
+                        supported,
+                        data_dir: dir.clone(),
+                    })
+                ));
                 imp.recovery_page.show(
                     reason,
                     data_dir,
@@ -474,27 +486,50 @@ impl RappelWindow {
     }
 
     fn restored(&self, data_dir: PathBuf, restored: Restored, how: Recovered) {
-        let message = recovered_message(how, restored.replaced.as_deref());
+        let message = recovered_message(
+            how,
+            restored.replaced.as_deref(),
+            restored.set_aside.as_deref(),
+        );
         self.show_main(AppState::new(data_dir, restored.store));
         self.add_toast(persistent_toast(&message));
     }
 }
 
-/// The toast after the recovery page got a database: what happened, and
-/// where the previous database was kept.
-fn recovered_message(how: Recovered, replaced: Option<&Path>) -> String {
+/// The toast after the recovery page got a database: what happened, where
+/// the previous database was kept, and where an unusable restore copy was
+/// (`set_aside`, ADR 0050, row 35).
+fn recovered_message(how: Recovered, replaced: Option<&Path>, set_aside: Option<&Path>) -> String {
     let done = match how {
         Recovered::Backup => "Backup restored",
         Recovered::Finished => "Restore finished",
         Recovered::Fresh => "Started with an empty database",
     };
-    match replaced {
+    let mut message = match replaced {
         Some(path) => format!(
             "{done}. The previous database was kept as {}",
             path.display()
         ),
         None => done.to_owned(),
+    };
+    if let Some(path) = set_aside {
+        message.push_str(". The restore copy that could not be used was kept as ");
+        message.push_str(&path.display().to_string());
     }
+    message
+}
+
+/// The size of each monitor of `widget`'s display, in application pixels
+/// (`gdk_monitor_get_geometry`), for fitting a saved window size to them.
+fn monitor_sizes(widget: &impl IsA<gtk::Widget>) -> Vec<(i32, i32)> {
+    let monitors = widget.display().monitors();
+    (0..monitors.n_items())
+        .filter_map(|i| monitors.item(i).and_downcast::<gtk::gdk::Monitor>())
+        .map(|monitor| {
+            let geometry = monitor.geometry();
+            (geometry.width(), geometry.height())
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -566,26 +601,64 @@ mod tests {
     fn recovery_toasts_say_what_happened_and_where_the_old_file_is() {
         let kept = Path::new("/data/rappel.sqlite3.replaced-20261015-120000");
         assert_eq!(
-            recovered_message(Recovered::Backup, Some(kept)),
+            recovered_message(Recovered::Backup, Some(kept), None),
             "Backup restored. The previous database was kept as \
              /data/rappel.sqlite3.replaced-20261015-120000"
         );
         assert_eq!(
-            recovered_message(Recovered::Backup, None),
+            recovered_message(Recovered::Backup, None, None),
             "Backup restored"
         );
         assert_eq!(
-            recovered_message(Recovered::Finished, None),
+            recovered_message(Recovered::Finished, None, None),
             "Restore finished"
         );
         assert_eq!(
-            recovered_message(Recovered::Fresh, Some(kept)),
+            recovered_message(Recovered::Fresh, Some(kept), None),
             "Started with an empty database. The previous database was kept as \
              /data/rappel.sqlite3.replaced-20261015-120000"
         );
         assert_eq!(
-            recovered_message(Recovered::Fresh, None),
+            recovered_message(Recovered::Fresh, None, None),
             "Started with an empty database"
         );
+        let copy = Path::new("/data/rappel.sqlite3.restore.refused-20261015-120000");
+        assert_eq!(
+            recovered_message(Recovered::Fresh, Some(kept), Some(copy)),
+            "Started with an empty database. The previous database was kept as \
+             /data/rappel.sqlite3.replaced-20261015-120000. The restore copy that could not be \
+             used was kept as /data/rappel.sqlite3.restore.refused-20261015-120000"
+        );
+    }
+
+    /// Finish Restore on a waiting copy from a newer Rappel shows the "too
+    /// new" page, as a database that is too new does, with its version
+    /// (ADR 0050, row 35).
+    #[test]
+    fn a_waiting_copy_from_a_newer_rappel_shows_the_too_new_page() {
+        crate::testing::with_widgets(|| {
+            let tmp = tempfile::tempdir().expect("a temporary directory");
+            let (data, partial) = crate::pages::interrupted_restore_folder(&tmp, false);
+            // `user_version`, bytes 60 to 63 of the header, big-endian.
+            let mut bytes = std::fs::read(&partial).expect("the copy is read");
+            bytes[60..64].copy_from_slice(&10_000_u32.to_be_bytes());
+            std::fs::write(&partial, bytes).expect("the copy is written");
+            let window: RappelWindow = glib::Object::new();
+            window.show_problem(Problem::Recovery {
+                reason: crate::startup::RecoveryReason::InterruptedRestore,
+                data_dir: data,
+            });
+            let imp = window.imp();
+            assert_eq!(imp.stack.visible_child_name().as_deref(), Some("recovery"));
+            glib::MainContext::default().block_on(imp.recovery_page.finish_restore());
+            assert_eq!(imp.stack.visible_child_name().as_deref(), Some("too-new"));
+            let description = imp.too_new_page.description().unwrap_or_default();
+            assert!(
+                description.contains("database version 10000"),
+                "{description}"
+            );
+            assert!(partial.exists(), "the copy is kept");
+            window.destroy();
+        });
     }
 }

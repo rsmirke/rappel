@@ -1249,6 +1249,8 @@ fn name_by_own_label(button: &gtk::Button) {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+    use std::rc::Rc;
     use std::time::Duration;
 
     use rappel_core::domain::Grade;
@@ -1736,6 +1738,23 @@ mod tests {
             imp.search_entry.set_text("");
             page.search();
 
+            // A huge paste: 1 MiB of words and search syntax. Only the start
+            // of the query is searched (ADR 0050, row 15), and the app does
+            // not cut the field; GTK keeps at most 65,535 bytes in it
+            // (`GTK_ENTRY_BUFFER_MAX_SIZE`, gtkentrybuffer.c). Laid out as
+            // the field would be when drawn.
+            let pasted = "card \"NEAR\" * OR ( x-y ".repeat(1 << 20 >> 5);
+            let (paste, ()) = crate::testing::cpu_time_of(|| {
+                imp.search_entry.set_text(&pasted);
+                let _ = imp.search_entry.measure(gtk::Orientation::Horizontal, -1);
+                page.search();
+            });
+            let kept = imp.search_entry.text().len();
+            assert!((60_000..=usize::from(u16::MAX)).contains(&kept), "{kept}");
+            assert_eq!(page.ids().len(), 0, "no card holds every word");
+            imp.search_entry.set_text("");
+            page.search();
+
             let (choose, ()) = crate::testing::cpu_time_of(|| page.select_all());
             assert_eq!(page.chosen_ids().len(), 5_000);
             page.choose_mode(false);
@@ -1758,16 +1777,61 @@ mod tests {
 
             crate::testing::print_timing("browser page: load 5,000", load);
             crate::testing::print_timing("browser page: search", search);
+            crate::testing::print_timing("browser page: 1 MiB paste", paste);
             crate::testing::print_timing("browser page: choose all", choose);
             if std::env::var_os("RAPPEL_TIMINGS").is_some() {
                 eprintln!("browser page: rows built: {rows}");
             }
             crate::testing::assert_cpu_within(load, Duration::from_secs(5), "load");
             crate::testing::assert_cpu_within(search, Duration::from_secs(2), "search");
+            crate::testing::assert_cpu_within(paste, Duration::from_millis(500), "1 MiB paste");
             crate::testing::assert_cpu_within(choose, Duration::from_secs(2), "choose all");
             // The list view builds the rows in view and a few more to size itself
             // (about 200 here), never one per card.
             assert!(rows > 0 && rows < 500, "{rows} rows are built");
+        });
+    }
+
+    /// Pasting, then typing at once after it, is one search, run once the
+    /// field's `search-delay` (150 ms, `data/browser_page.blp`) has passed:
+    /// `GtkSearchEntry` restarts that delay on each change of a non-empty
+    /// text and emits `search-changed` when it runs out
+    /// (`GtkSearchEntry:search-delay` docs). The page searches only on that
+    /// signal and on a filter's change. The text goes in as typing and
+    /// pasting put it, through the field's `GtkText`; `set_text` would
+    /// first empty the field, a change `GtkSearchEntry` reports at once.
+    #[test]
+    fn a_paste_and_the_keys_after_it_are_one_search() {
+        crate::testing::with_widgets(|| {
+            let (_tmp, state) = crate::testing::temporary_state();
+            let deck = state.create_deck("Deck").unwrap();
+            state
+                .add_card_with_tags(&deck.id, "front", "back", &[])
+                .unwrap();
+            let page = BrowserPage::new(state, None).unwrap();
+            let entry = page.imp().search_entry.clone();
+            let field = entry
+                .delegate()
+                .and_downcast::<gtk::Text>()
+                .expect("a search entry edits through a GtkText");
+            let searches = Rc::new(Cell::new(0));
+            let seen = Rc::clone(&searches);
+            entry.connect_search_changed(move |_| seen.set(seen.get() + 1));
+            let mut position = 0;
+            field.insert_text(&"word ".repeat(10_000), &mut position);
+            for key in ["x", "y", "z"] {
+                field.insert_text(key, &mut position);
+            }
+            assert_eq!(searches.get(), 0, "nothing is searched before the delay");
+            assert!(crate::testing::settle_until(
+                || searches.get() > 0,
+                Duration::from_secs(5)
+            ));
+            // Nothing else is waiting to run.
+            let more =
+                crate::testing::settle_until(|| searches.get() > 1, Duration::from_millis(400));
+            assert!(!more, "{} searches", searches.get());
+            assert_eq!(page.ids().len(), 0);
         });
     }
 

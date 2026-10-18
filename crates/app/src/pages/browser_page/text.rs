@@ -4,7 +4,7 @@
 
 use rappel_core::storage::{BrowseQuery, CardStatus, StateFilter};
 
-use crate::ui::text::{count, group_digits, one_line};
+use crate::ui::text::{count, group_digits, isolate, one_line};
 use crate::ui::time::relative_due;
 
 /// A card's status as a short phrase: "New", "Learning", "Due now",
@@ -30,7 +30,9 @@ fn capitalised(text: &str) -> String {
 /// The third line of an All Cards row: "Maths · Due in 3 days". The tags
 /// are pills on the line above (`widgets::card_row`).
 pub fn caption(deck: &str, status: &str) -> String {
-    format!("{} · {status}", one_line(deck))
+    // Isolated, so a right-to-left deck name or an open bidi override
+    // cannot reorder the status after it.
+    format!("{} · {status}", isolate(&one_line(deck)))
 }
 
 /// What a screen reader says for an All Cards row: the card as the deck
@@ -445,8 +447,13 @@ mod tests {
 
     #[test]
     fn a_caption_says_the_deck_and_the_status() {
-        assert_eq!(caption("Maths", "New"), "Maths · New");
-        assert_eq!(caption("a\n b", "Due now"), "a b · Due now");
+        assert_eq!(caption("Maths", "New"), "\u{2068}Maths\u{2069} · New");
+        assert_eq!(caption("a\n b", "Due now"), "\u{2068}a b\u{2069} · Due now");
+        // An override in the name ends with it.
+        assert_eq!(
+            caption("\u{202e}x", "New"),
+            "\u{2068}\u{202e}x\u{2069} · New"
+        );
     }
 
     #[test]

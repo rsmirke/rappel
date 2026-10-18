@@ -8,6 +8,7 @@
 //! around names that cannot be tags (too long), which stay to be fixed. The
 //! cursor is a character offset, as `GtkEditable` has it.
 
+use std::collections::HashSet;
 use std::ops::Range;
 
 use rappel_core::Error;
@@ -19,6 +20,21 @@ use crate::ui::text::group_digits;
 
 /// The most suggestions shown at once.
 pub const MAX_SUGGESTIONS: usize = 8;
+
+/// The most tags the field lets a card have (ADR 0050, row 30). The store
+/// has no limit, so a card imported with more keeps them all, but the field
+/// adds none past this: a pasted list of thousands of names would make a
+/// pill for each, and no one tags a card a hundred times on purpose. A name
+/// past the limit stays in the text, with an error under the field.
+pub const MAX_TAGS_PER_CARD: usize = 100;
+
+/// The most tags the field lets a card have, which had `loaded` tags when
+/// the editor opened: [`MAX_TAGS_PER_CARD`], or `loaded` if more (a card
+/// imported with more keeps them, and removing some leaves room up to what
+/// it had).
+pub fn tag_limit(loaded: usize) -> usize {
+    loaded.max(MAX_TAGS_PER_CARD)
+}
 
 /// The name being typed: the piece of `text` between the commas around
 /// `cursor` (a character offset), without the spaces at its ends, as a byte
@@ -56,13 +72,14 @@ pub fn suggestions(all: &[Tag], pills: &[String], text: &str, cursor: usize) -> 
         return Vec::new();
     }
     let typed_key = name_key(&text[typed.clone()]);
-    let mut others: Vec<String> = pills.iter().map(|p| name_key(p)).collect();
+    // A set: a pasted list can hold thousands of pieces.
+    let mut others: HashSet<String> = pills.iter().map(|p| name_key(p)).collect();
     let mut at = 0;
     for piece in text.split(',') {
         let end = at + piece.len();
         // The piece being typed is not "already there".
         if !(at <= typed.start && typed.end <= end) {
-            others.push(name_key(piece));
+            others.insert(name_key(piece));
         }
         at = end + 1;
     }
@@ -127,13 +144,15 @@ pub struct Split {
 /// Turns every name in `text` that a comma ends into a pill (Enter does it
 /// for the last one too: `whole`). A blank name is dropped, and so is one
 /// already a pill (by [`name_key`]; the pill keeps its spelling). A name
-/// that cannot be a tag (too long) stays in the entry, with its comma, so
-/// the error under the field can say what to fix; nothing is lost. Splitting
-/// what is left again changes nothing, so this can run on every change.
-pub fn split_typed(pills: &[String], text: &str, whole: bool) -> Split {
+/// that cannot be a tag (too long), or that would take the card past
+/// [`MAX_TAGS_PER_CARD`], stays in the entry, with its comma, so the error
+/// under the field can say what to fix; nothing is lost. Splitting what is
+/// left again changes nothing, so this can run on every change. Linear in
+/// the text: the names seen are kept in a set.
+pub fn split_typed(pills: &[String], text: &str, whole: bool, limit: usize) -> Split {
     let mut pieces: Vec<&str> = text.split(',').collect();
     let last = if whole { None } else { pieces.pop() };
-    let mut keys: Vec<String> = pills.iter().map(|p| name_key(p)).collect();
+    let mut keys: HashSet<String> = pills.iter().map(|p| name_key(p)).collect();
     let mut add = Vec::new();
     let mut kept = Vec::new();
     for piece in pieces {
@@ -145,10 +164,15 @@ pub fn split_typed(pills: &[String], text: &str, whole: bool) -> Split {
             continue;
         };
         let key = name_key(name);
-        if !keys.contains(&key) {
-            keys.push(key);
-            add.push(name.to_owned());
+        if keys.contains(&key) {
+            continue;
         }
+        if keys.len() >= limit {
+            kept.push(piece);
+            continue;
+        }
+        keys.insert(key);
+        add.push(name.to_owned());
     }
     kept.extend(last);
     // The space typed after a comma is not part of the next name.
@@ -171,20 +195,35 @@ pub struct TagsCheck {
 /// `pills`, then the name being `typed`, which is saved too (a name typed
 /// without a comma or Enter is not lost). The names are merged by
 /// [`name_key`], keeping the first spelling. The pills were checked when
-/// they were made, so an error is about the typed text: "this tag".
-pub fn check(pills: &[String], typed: &str) -> TagsCheck {
+/// they were made, so an error is about the typed text: "this tag". The
+/// typed text may not take the card past `limit` ([`tag_limit`]).
+pub fn check(pills: &[String], typed: &str, limit: usize) -> TagsCheck {
     let mut text = pills.join(",");
     if !pills.is_empty() {
         text.push(',');
     }
     text.push_str(typed);
     match parse_tag_field(&text) {
+        Ok(names) if names.len() > limit => TagsCheck {
+            names: Vec::new(),
+            error: Some(too_many_text()),
+        },
         Ok(names) => TagsCheck { names, error: None },
         Err(err) => TagsCheck {
             names: Vec::new(),
             error: Some(error_text(&err)),
         },
     }
+}
+
+/// The error under the field when the typed names would take the card past
+/// its limit. It names [`MAX_TAGS_PER_CARD`]: a card over it came so from an
+/// import, and gets no more.
+fn too_many_text() -> String {
+    format!(
+        "A card can have at most {} tags",
+        group_digits(MAX_TAGS_PER_CARD)
+    )
 }
 
 fn error_text(err: &TagFieldError) -> String {
@@ -214,7 +253,19 @@ pub fn tag_keys(names: &[String]) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
+
+    /// [`super::split_typed`] for a card loaded with `pills`.
+    fn split_typed(pills: &[String], text: &str, whole: bool) -> Split {
+        super::split_typed(pills, text, whole, tag_limit(pills.len()))
+    }
+
+    /// [`super::check`] for a card loaded with `pills`.
+    fn check(pills: &[String], typed: &str) -> TagsCheck {
+        super::check(pills, typed, tag_limit(pills.len()))
+    }
 
     fn tag(name: &str) -> Tag {
         Tag {
@@ -457,6 +508,114 @@ mod tests {
         assert_eq!(split.add, strings(&["a", "b"]));
         assert_eq!(check(&split.add, &split.rest).error, None);
         assert_eq!(check(&strings(&["a"]), "  ").error, None);
+    }
+
+    /// `n` distinct names, "tag 0" to "tag n-1", joined by commas.
+    fn pasted(n: usize) -> String {
+        (0..n)
+            .map(|i| format!("tag {i}"))
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    #[test]
+    fn the_field_adds_no_tag_past_the_limit_and_says_so() {
+        let text = format!("{},", pasted(MAX_TAGS_PER_CARD + 5));
+        let split = split_typed(&[], &text, false);
+        assert_eq!(split.add.len(), MAX_TAGS_PER_CARD);
+        assert_eq!(split.add[0], "tag 0");
+        // The names past the limit stay in the text, nothing is dropped.
+        assert_eq!(split.rest, "tag 100,tag 101,tag 102,tag 103,tag 104,");
+        let over = check(&split.add, &split.rest);
+        assert_eq!(
+            over.error.as_deref(),
+            Some("A card can have at most 100 tags")
+        );
+        assert_eq!(over.names, Vec::<String>::new());
+        // Splitting again changes nothing.
+        assert_eq!(
+            split_typed(&split.add, &split.rest, false),
+            Split {
+                add: vec![],
+                rest: split.rest.clone()
+            }
+        );
+        // A name already there is no new tag, and blank text adds none.
+        assert_eq!(check(&split.add, "tag 7").error, None);
+        assert_eq!(check(&split.add, " ").error, None);
+        assert_eq!(check(&split.add, "").names.len(), MAX_TAGS_PER_CARD);
+        // One name typed at the limit, without a comma: not added either.
+        let at_limit = check(&split.add, "one more");
+        assert_eq!(at_limit.error, over.error);
+        let enter = split_typed(&split.add, "one more", true);
+        assert_eq!(enter.add, Vec::<String>::new());
+        assert_eq!(enter.rest, "one more");
+    }
+
+    #[test]
+    fn a_card_with_more_tags_than_the_limit_keeps_them_but_gets_no_more() {
+        // Imported: the store has no limit.
+        let pills: Vec<String> = (0..150).map(|i| format!("tag {i}")).collect();
+        let kept = check(&pills, "");
+        assert_eq!(kept.error, None);
+        assert_eq!(kept.names.len(), 150);
+        assert!(check(&pills, "new").error.is_some());
+        assert_eq!(split_typed(&pills, "new,", false).add, Vec::<String>::new());
+        // Removing some makes room up to what the card had, never past it.
+        let limit = tag_limit(pills.len());
+        assert_eq!(super::check(&pills[..120], "new", limit).error, None);
+        assert_eq!(
+            super::split_typed(&pills[..120], "new,", false, limit).add,
+            ["new"]
+        );
+        assert!(super::check(&pills, "new", limit).error.is_some());
+        assert_eq!(super::check(&pills[..99], "new", tag_limit(0)).error, None);
+        assert!(
+            super::check(&pills[..100], "new", tag_limit(0))
+                .error
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn a_huge_paste_is_split_and_checked_in_linear_time() {
+        let text = format!("{},last", pasted(20_000));
+        crate::testing::within(
+            Duration::from_secs(2),
+            "split and check 20,000 names",
+            move || {
+                let split = split_typed(&[], &text, false);
+                assert_eq!(split.add.len(), MAX_TAGS_PER_CARD);
+                assert!(check(&split.add, &split.rest).error.is_some());
+                // What the next key does with that text left in the field: the
+                // split, the check and the suggestions, each once.
+                let again = split_typed(&split.add, &split.rest, false);
+                assert_eq!(again.add, Vec::<String>::new());
+                let all: Vec<Tag> = (0..5_000).map(|i| tag(&format!("tag {i}"))).collect();
+                let cursor = split.rest.chars().count();
+                let _ = suggestions(&all, &split.add, &split.rest, cursor);
+            },
+        );
+    }
+
+    #[test]
+    fn a_huge_single_name_is_refused_quickly_and_kept() {
+        let long = "é".repeat(1 << 16);
+        crate::testing::within(
+            Duration::from_millis(500),
+            "a 128 KiB tag name",
+            move || {
+                let text = format!("{long},b");
+                let split = split_typed(&[], &text, true);
+                assert_eq!(split.add, strings(&["b"]));
+                assert_eq!(split.rest, long);
+                assert_eq!(
+                    check(&split.add, &split.rest).error.as_deref(),
+                    Some("This tag is too long (the limit is 256 bytes)")
+                );
+                let _ = suggestions(&tags(&["éé"]), &[], &split.rest, 3);
+            },
+        );
     }
 
     #[test]

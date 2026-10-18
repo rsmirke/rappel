@@ -220,6 +220,15 @@ pub enum Error {
     #[error("a restore was interrupted before it finished ({} is waiting to be installed)", .0.display())]
     InterruptedRestore(PathBuf),
 
+    /// A copy to restore is in WAL mode, which no backup Rappel makes is:
+    /// even reading it would create and read files beside it, so what is
+    /// checked would not be the file alone. The copy is refused.
+    #[error("{} is in WAL mode, which backups never are", path.display())]
+    WalModeCopy {
+        /// The refused copy.
+        path: PathBuf,
+    },
+
     /// Finishing a restore was asked for, but no validated copy is waiting
     /// to be installed. Nothing was changed.
     #[error("no interrupted restore is waiting to be finished")]
