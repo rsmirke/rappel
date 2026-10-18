@@ -30,7 +30,7 @@ use rappel_core::scheduling::{Session, Summary, capped};
 
 use crate::dialogs::card_editor::{CardEditor, Saved};
 use crate::dialogs::card_info;
-use crate::render::{back_shown, clear, fill, shown_part};
+use crate::render::{Images, back_shown, clear, fill, shown_part};
 use crate::state::AppState;
 use crate::ui::callback::Callback;
 use crate::ui::dialog;
@@ -581,7 +581,7 @@ impl ReviewPage {
         let imp = self.imp();
         let (part, cut) = shown_part(front_md);
         let front = content::parse(part);
-        fill(&imp.front_box, &front);
+        fill(&imp.front_box, &front, &self.images());
         imp.card_area
             .update_property(&[gtk::accessible::Property::Label(&with_cut_note(
                 content::plain_text(&front),
@@ -589,6 +589,15 @@ impl ReviewPage {
             ))]);
         imp.front_cut.set(cut);
         self.update_cut_note();
+    }
+
+    /// Where the sides' images come from, and their height cap: a share
+    /// of the page's height, so a tall image leaves the text around it in
+    /// view (`render::Images`). The grade buttons are in the bottom bar,
+    /// outside the scrolled card, so no image can push them off screen.
+    fn images(&self) -> Images {
+        let folder = self.imp().state.get().and_then(AppState::media_folder);
+        Images::new(folder, self.height())
     }
 
     /// Parses the back `back_md` (or its start, as for the front) for
@@ -616,7 +625,7 @@ impl ReviewPage {
         let imp = self.imp();
         let shown = back_shown(back);
         if shown {
-            fill(&imp.back_box, back);
+            fill(&imp.back_box, back, &self.images());
             imp.card_area
                 .update_property(&[gtk::accessible::Property::Description(&with_cut_note(
                     content::plain_text(back),

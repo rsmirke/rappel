@@ -161,6 +161,7 @@ fn fill_media_deck(store: &mut Store) -> Result<String, String> {
     let square = add(&png(64, 64)?)?;
     let wide = add(&png(600, 80)?)?;
     let tall = add(&png(80, 400)?)?;
+    let large = add(&png(1600, 1000)?)?;
     let tone = add(&wav_tone())?;
     // A file that was never added: 64 zeros of hash.
     let missing = format!("media:{}.png", "0".repeat(64));
@@ -176,6 +177,10 @@ fn fill_media_deck(store: &mut Store) -> Result<String, String> {
         (
             format!("![A tall band of colours]({tall})"),
             "Taller than wide".to_owned(),
+        ),
+        (
+            "What does a large picture look like?".to_owned(),
+            format!("![A large gradient]({large})\n\nScaled down to the card's width."),
         ),
         (
             "What do you hear?".to_owned(),
@@ -196,7 +201,7 @@ fn fill_media_deck(store: &mut Store) -> Result<String, String> {
             .map_err(|e| e.to_string())?;
     }
     Ok(format!(
-        "{} cards and 4 media files to “{}”",
+        "{} cards and 5 media files to “{}”",
         cards.len(),
         deck.name
     ))

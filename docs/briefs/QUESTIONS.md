@@ -14,3 +14,7 @@ Questions and notes for the maintainer, written while working through `phase-1-f
 5. **Tags are never deleted** (ADR 0029). A typo tag that was added and then undone stays in the tag suggestions and the tag filter. Hiding tags no card uses from the suggestions is a small phase 2 change; deleting unused tags would be a data change and needs your decision.
    *Answered by the Phase 2 brief (suggestions only offer used tags); done in Phase 2 slice 0, ADR 0052. The tag filter hides unused tags too; no tag is deleted.*
 6. **The draft PR `phase-1` → `main`.** The brief asks for it, while batch mode says never to target `main`. Batch mode opened it as a **draft** only. The guard blocks merging it, and nothing was pushed to `main`. Merging it is yours.
+
+## Phase 2
+
+1. **Confirm four ignored "unmaintained" advisories** (slice 3, images, ADR 0055; not a stop condition). The image decoder glycin brings `paste` (RUSTSEC-2024-0436, a build-time macro) and `zvariant`, `zvariant_derive`, `zbus_names` (RUSTSEC-2026-0370, -0372, -0371: merged into zbus 6). None is a vulnerability and none has a fixed version; glycin 4.0.3 has the same tree. `deny.toml` ignores them with reasons, to review on every glycin release and by 2027-01-16 at the latest, as ADR 0021 did for `ttf-parser`. Note that `zvariant` parses the replies of glycin's loader process, which a hostile image could take over, so it sits on the sandbox boundary inside Rappel's process. Keep the ignores, or decode images another way (GTK's in-process loaders, no sandbox)?

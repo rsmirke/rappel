@@ -108,13 +108,14 @@ fn push(out: &mut Markup, inlines: &[Inline], len: &mut Cursor, math: &mut Budge
                 out.links.push((start..len.len, url.clone()));
             }
             Inline::Image { alt, target } => match target {
+                // Where it cannot be a picture (inside emphasis or a link,
+                // in a heading or a table cell; `images::pieces` takes the
+                // others out of the text): its alt text, in italics, or
+                // nothing.
                 ImageTarget::Media(_) => {
-                    let text = if alt.is_empty() {
-                        "[image]".to_owned()
-                    } else {
-                        format!("[image: {alt}]")
-                    };
-                    tagged_text(out, "i", &text, len);
+                    if !alt.trim().is_empty() {
+                        tagged_text(out, "i", alt, len);
+                    }
                 }
                 // Never fetched: shown as the Markdown that was typed.
                 ImageTarget::Other(url) => out.text(&format!("![{alt}]({url})"), len),
@@ -304,9 +305,9 @@ mod tests {
     }
 
     #[test]
-    fn images_are_placeholders_or_text() {
+    fn images_in_text_are_their_alt_text_or_text() {
         let md = format!("![a <cat>]({}) ![]({})", media("png"), media("jpg"));
-        assert_eq!(shown(&markup(&md).markup), "[image: a <cat>] [image]");
+        assert_eq!(shown(&markup(&md).markup), "a <cat> ");
         assert_eq!(
             shown(&markup("![x](https://e.org/i.png)").markup),
             "![x](https://e.org/i.png)"

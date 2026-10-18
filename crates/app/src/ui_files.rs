@@ -77,6 +77,12 @@ const CHECKS: &[(&str, Load)] = &[
     ),
     ("history_row.blp", Load::Template(template::<HistoryRow>)),
     (
+        "image_dialog.blp",
+        Load::Plain(|| {
+            loads("image_dialog", crate::render::full_size_layout().err());
+        }),
+    ),
+    (
         "import_dialog.blp",
         Load::Plain(|| {
             loads("import_dialog", crate::transfer::confirm_layout().err());

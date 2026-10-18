@@ -26,6 +26,13 @@ sourceview5 = { version = "0.11", features = ["v5_10"] }
 # keep long runs fast to lay out never split a character (ADR 0025).
 unicode-segmentation = "1.13"
 
+# Images (app, ADR 0055): decodes card images in a sandboxed process
+# (bubblewrap + seccomp, the GNOME image loaders), off the main thread, and
+# gives a GdkTexture. 3.1 is the newest release for our Rust 1.92 floor
+# (4.x needs 1.93) and talks to the loaders the distributions ship
+# (glycin-loaders 2.x). MPL-2.0 OR LGPL-2.1-or-later.
+glycin = { version = "3.1", features = ["gdk4"] }
+
 # Window state (app): the O_NOFOLLOW and O_NONBLOCK flags for opening an
 # untrusted file without following a link or blocking on a pipe (ADR 0050,
 # row 33). Constants only; already in the tree through GLib's bindings.

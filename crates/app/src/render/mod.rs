@@ -12,23 +12,38 @@
 //! paragraph's text flow ([`math_paragraph`]), display formulas as centred
 //! blocks that scroll sideways when too wide ([`math_view`]). What is over
 //! a limit ([`math`]) stays source.
+//!
+//! Images (ADR 0055): a `media:` image at the top level of a paragraph is
+//! drawn as a picture between the paragraph's runs of text
+//! ([`images::pieces`]), decoded off the main thread in glycin's sandbox
+//! ([`picture`]); any other image stays text and is never read.
 
 mod breaks;
+mod images;
 mod markup;
 mod math;
 mod math_paragraph;
 mod math_view;
+mod picture;
 mod style;
+
+use std::cell::RefCell;
+use std::path::PathBuf;
+use std::rc::Rc;
 
 use gtk::AccessibleRole as Role;
 use gtk::pango;
 use gtk::prelude::*;
 use rappel_core::content::{Align, Block, Cell, Document, Inline, plain_text};
 
+use images::{Failure, ImageBudget, Piece, PixelBudget};
 use math::{Budget, Placement};
 use math_paragraph::MathParagraph;
 use math_view::MathView;
+use picture::CardImage;
 
+#[cfg(test)]
+pub(crate) use picture::full_size_layout;
 pub use style::back_shown;
 use style::{heading_class, list_marker, table_cell_classes, widget_cost};
 
@@ -50,16 +65,52 @@ pub const MAX_SHOWN_BYTES: usize = 32 * 1024;
 /// Space between blocks, in pixels.
 const BLOCK_SPACING: i32 = 12;
 
-/// The widgets of `doc`, in a vertical box. Both sides of a card look the
-/// same: body text, normal weight, aligned to the start. Only the
-/// constructs have styles of their own (headings, code, quotes, tables).
-pub fn render(doc: &Document) -> gtk::Box {
+/// Where a side's images come from, and how tall one may be drawn.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Images {
+    /// The media folder; `None` shows every image as missing.
+    folder: Option<PathBuf>,
+    /// The cap on an image's height, in pixels.
+    max_height: i32,
+}
+
+impl Images {
+    /// Images from the media folder `folder`, in a view `view_height`
+    /// pixels tall (`images::max_height`).
+    pub fn new(folder: Option<PathBuf>, view_height: i32) -> Self {
+        Self {
+            folder,
+            max_height: images::max_height(view_height),
+        }
+    }
+}
+
+/// What the blocks of one side share while they are built.
+struct Side<'a> {
+    /// Formulas, counted over the whole side in document order.
+    math: Budget,
+    /// Images, counted the same way.
+    images: ImageBudget,
+    /// The pixels of the side's decoded images, shared by them.
+    pixels: Rc<RefCell<PixelBudget>>,
+    media: &'a Images,
+}
+
+/// The widgets of `doc`, in a vertical box, with its images from
+/// `media`. Both sides of a card look the same: body text, normal weight,
+/// aligned to the start. Only the constructs have styles of their own
+/// (headings, code, quotes, tables).
+pub fn render(doc: &Document, media: &Images) -> gtk::Box {
     let container = blocks_box();
     // A block's cost counts everything inside it, so the budget is spent
     // on top-level blocks only.
     let mut budget = MAX_WIDGETS;
-    // Formulas are counted over the whole side, in document order.
-    let mut math = Budget::default();
+    let mut side = Side {
+        math: Budget::default(),
+        images: ImageBudget::default(),
+        pixels: Rc::default(),
+        media,
+    };
     for (i, block) in doc.blocks.iter().enumerate() {
         let cost = widget_cost(block);
         if cost > budget {
@@ -70,15 +121,15 @@ pub fn render(doc: &Document) -> gtk::Box {
             break;
         }
         budget -= cost;
-        container.append(&block_widget(block, 0, &mut math));
+        container.append(&block_widget(block, 0, &mut side));
     }
     container
 }
 
 /// Replaces what `container` shows with `doc`.
-pub fn fill(container: &gtk::Box, doc: &Document) {
+pub fn fill(container: &gtk::Box, doc: &Document, media: &Images) {
     clear(container);
-    container.append(&render(doc));
+    container.append(&render(doc, media));
 }
 
 /// Removes everything `container` shows.
@@ -89,19 +140,18 @@ pub fn clear(container: &gtk::Box) {
 }
 
 /// `blocks` in a vertical box. `lists` is how many lists deep they are.
-fn blocks_widget(blocks: &[Block], lists: usize, math: &mut Budget) -> gtk::Box {
+fn blocks_widget(blocks: &[Block], lists: usize, side: &mut Side<'_>) -> gtk::Box {
     let container = blocks_box();
     for block in blocks {
-        container.append(&block_widget(block, lists, math));
+        container.append(&block_widget(block, lists, side));
     }
     container
 }
 
-fn block_widget(block: &Block, lists: usize, math: &mut Budget) -> gtk::Widget {
+fn block_widget(block: &Block, lists: usize, side: &mut Side<'_>) -> gtk::Widget {
+    let math = &mut side.math;
     match block {
-        Block::Paragraph(inlines) => {
-            text_widget(inlines, None, Role::Label, true, Alignment::Start, math)
-        }
+        Block::Paragraph(inlines) => paragraph(inlines, side),
         Block::Heading { level, content } => {
             let heading = text_widget(
                 content,
@@ -114,7 +164,7 @@ fn block_widget(block: &Block, lists: usize, math: &mut Budget) -> gtk::Widget {
             heading.update_property(&[gtk::accessible::Property::Level(i32::from(*level))]);
             heading
         }
-        Block::List { start, items } => list(*start, items, lists, math).upcast(),
+        Block::List { start, items } => list(*start, items, lists, side).upcast(),
         Block::CodeBlock { code, .. } => {
             let label = plain_label(code, false);
             label.add_css_class("monospace");
@@ -130,7 +180,7 @@ fn block_widget(block: &Block, lists: usize, math: &mut Budget) -> gtk::Widget {
         Block::BlockQuote(blocks) => {
             let quote = gtk::Box::new(gtk::Orientation::Horizontal, BLOCK_SPACING);
             quote.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-            let inner = blocks_widget(blocks, lists, math);
+            let inner = blocks_widget(blocks, lists, side);
             inner.add_css_class("dimmed");
             inner.set_hexpand(true);
             quote.append(&inner);
@@ -146,7 +196,56 @@ fn block_widget(block: &Block, lists: usize, math: &mut Budget) -> gtk::Widget {
     }
 }
 
-fn list(start: Option<u64>, items: &[Vec<Block>], lists: usize, math: &mut Budget) -> gtk::Grid {
+/// A paragraph: one label (or math paragraph) for its text, or, when it
+/// has `media:` images, its runs of text and its images one under the
+/// other (`images::pieces`).
+fn paragraph(inlines: &[Inline], side: &mut Side<'_>) -> gtk::Widget {
+    let pieces = images::pieces(inlines);
+    if let [Piece::Text(run)] = pieces.as_slice() {
+        return text_widget(
+            run,
+            None,
+            Role::Label,
+            true,
+            Alignment::Start,
+            &mut side.math,
+        );
+    }
+    let column = gtk::Box::new(gtk::Orientation::Vertical, BLOCK_SPACING / 2);
+    for piece in pieces {
+        let widget = match piece {
+            Piece::Text(run) => text_widget(
+                run,
+                None,
+                Role::Label,
+                true,
+                Alignment::Start,
+                &mut side.math,
+            ),
+            Piece::Image { alt, media } => image_widget(alt, media, side).upcast(),
+        };
+        column.append(&widget);
+    }
+    column.upcast()
+}
+
+/// One `media:` image: drawn, or past the side's share of images
+/// ([`images::MAX_IMAGES_PER_SIDE`]) a placeholder that reads nothing.
+fn image_widget(alt: &str, media: rappel_core::media::MediaRef, side: &mut Side<'_>) -> CardImage {
+    if side.images.take() {
+        CardImage::new(
+            side.media.folder.as_deref(),
+            media,
+            alt,
+            side.media.max_height,
+            Rc::clone(&side.pixels),
+        )
+    } else {
+        CardImage::not_read(alt, Failure::TooMany)
+    }
+}
+
+fn list(start: Option<u64>, items: &[Vec<Block>], lists: usize, side: &mut Side<'_>) -> gtk::Grid {
     let grid = gtk::Grid::builder()
         .column_spacing(8)
         .row_spacing(6)
@@ -158,7 +257,7 @@ fn list(start: Option<u64>, items: &[Vec<Block>], lists: usize, math: &mut Budge
             .xalign(1.0)
             .valign(gtk::Align::Start)
             .build();
-        let content = blocks_widget(item, lists + 1, math);
+        let content = blocks_widget(item, lists + 1, side);
         content.set_hexpand(true);
         grid.attach(&marker, 0, row, 1, 1);
         grid.attach(&content, 1, row, 1, 1);
@@ -461,7 +560,7 @@ mod tests {
         crate::testing::with_widgets(|| {
             let run = "0123456789abcdef".repeat(10);
             let md = format!("Hash: {run}\n\n# {run}\n\n**{run}** and *more*");
-            let side = render(&rappel_core::content::parse(&md));
+            let side = render(&rappel_core::content::parse(&md), &Images::default());
             let labels = labels_under(side.upcast_ref());
             assert_eq!(labels.len(), 3);
             for label in &labels {
@@ -489,6 +588,66 @@ mod tests {
             // Short runs: GTK's own name, the text, is left.
             let label = plain_label("short words", false);
             assert_eq!(name_without_breaks(&label), None);
+        });
+    }
+
+    /// Every `CardImage` under `widget`, in order.
+    fn images_under(widget: &gtk::Widget) -> Vec<CardImage> {
+        let mut out = Vec::new();
+        let mut child = widget.first_child();
+        while let Some(c) = child {
+            if let Ok(image) = c.clone().downcast::<CardImage>() {
+                out.push(image);
+            } else {
+                out.extend(images_under(&c));
+            }
+            child = c.next_sibling();
+        }
+        out
+    }
+
+    #[test]
+    fn media_images_are_drawn_up_to_the_side_s_share() {
+        crate::testing::with_widgets(|| {
+            let (_tmp, state) = crate::testing::temporary_state();
+            let reference = |n: usize| format!("media:{n:064x}.png");
+            // One paragraph with text around an image, and a side with
+            // more images than one side draws.
+            let md = format!("Before ![a]({}) after", reference(1));
+            let images = Images::new(state.media_folder(), 720);
+            let side = render(&rappel_core::content::parse(&md), &images);
+            let found = images_under(side.upcast_ref());
+            assert_eq!(found.len(), 1);
+            // The file is looked for on a worker thread.
+            assert!(crate::testing::settle_until(
+                || found[0].shown_failure().is_some(),
+                Duration::from_secs(30)
+            ));
+            assert_eq!(found[0].shown_failure(), Some(Failure::Missing));
+            // The two runs of text and the placeholder's line.
+            assert_eq!(labels_under(side.upcast_ref()).len(), 3);
+            let many = (0..images::MAX_IMAGES_PER_SIDE + 3)
+                .map(|n| format!("![]({})", reference(n)))
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            let side = render(&rappel_core::content::parse(&many), &images);
+            let found = images_under(side.upcast_ref());
+            assert_eq!(found.len(), images::MAX_IMAGES_PER_SIDE + 3);
+            assert!(crate::testing::settle_until(
+                || found.iter().all(|image| image.shown_failure().is_some()),
+                Duration::from_secs(30)
+            ));
+            let too_many = found
+                .iter()
+                .filter(|image| image.shown_failure() == Some(Failure::TooMany))
+                .count();
+            assert_eq!(too_many, 3);
+            // Other targets stay text: nothing to draw, nothing read.
+            let side = render(
+                &rappel_core::content::parse("![x](https://e.org/a.png) ![y](file:///etc/hosts)"),
+                &images,
+            );
+            assert_eq!(images_under(side.upcast_ref()).len(), 0);
         });
     }
 
@@ -563,7 +722,7 @@ mod tests {
         let times = crate::testing::with_gtk(move || {
             sides.map(|(what, side)| {
                 assert!(side.len() <= MAX_SHOWN_BYTES);
-                let shown = render(&rappel_core::content::parse(&side));
+                let shown = render(&rappel_core::content::parse(&side), &Images::default());
                 // CPU time: Pango lays out on this thread, and a loaded
                 // machine must not fail the bound (ADR 0049).
                 let (first, ()) = crate::testing::cpu_time_of(|| {

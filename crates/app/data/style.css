@@ -143,3 +143,9 @@ row > box.header.card-row label.subtitle {
 button.review-button {
   min-height: 28px;
 }
+
+/* A card image (render/picture.rs): the picture fills its flat button,
+ * whose rounded corners clip it (ADR 0055). */
+button.card-image {
+  padding: 0;
+}

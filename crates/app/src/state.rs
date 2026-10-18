@@ -12,6 +12,7 @@ use rappel_core::domain::{
     Card, CardState, Deck, DeckSummary, Grade, ReviewEvent, SettingKey, Settings, Tag, TaggedCard,
 };
 use rappel_core::interchange::{ExportSummary, ImportPlan, ImportReport};
+use rappel_core::media::MediaRef;
 use rappel_core::scheduling::StudyInput;
 use rappel_core::stats::{CardInfo, DayGrid, Stats};
 use rappel_core::storage::{
@@ -36,6 +37,33 @@ pub struct StatsData {
     /// Where each of the days ahead begins, today first
     /// (`STATS_AHEAD_DAYS` of them).
     pub ahead_starts: Vec<i64>,
+}
+
+/// Why an image could not be added in the editor.
+#[derive(Debug)]
+pub enum AddImageError {
+    /// Not a file on this computer (a URL a drop or the clipboard gave):
+    /// never read.
+    NotLocal,
+    /// Not a regular file (a folder, a pipe, a device).
+    NotAFile,
+    /// A picture from the clipboard or a drop larger than an image may be.
+    TooLarge,
+    /// The file could not be opened or read.
+    Unreadable(std::io::Error),
+    /// The store refused it or failed (`Store::add_image`).
+    Store(rappel_core::Error),
+}
+
+/// The path of `file` if it is a file on this computer: a `file:` URI
+/// with a path. Decided without any IO.
+pub fn local_path(file: &gtk::gio::File) -> Option<PathBuf> {
+    use gtk::prelude::*;
+    if file.has_uri_scheme("file") {
+        file.path()
+    } else {
+        None
+    }
 }
 
 /// A cheap-to-clone handle on the open database, shared by the window and
@@ -148,6 +176,56 @@ impl AppState {
     /// [`Self::export_on_worker`].
     pub fn set_desired_retention_on_worker(data_dir: &Path, value: f32) -> rappel_core::Result<()> {
         Store::open_concurrent(data_dir)?.set_desired_retention(value)
+    }
+
+    /// Copies the image file `file` into the media store of the database
+    /// in `data_dir` (see [`Store::add_image`]) and returns its reference.
+    /// Blocking (a file of up to 10 MB is hashed, copied and synced); runs
+    /// on a worker thread, on its own connection like
+    /// [`Self::export_on_worker`].
+    ///
+    /// Only a file on this computer is read ([`local_path`]): a `GFile`
+    /// from a drop or the clipboard can be any URI (`https:`, `sftp:`,
+    /// `smb:`), and reading one through `GVfs` would fetch it over the
+    /// network (SPEC principle 5). A file of the document portal is a
+    /// local path. It is opened without blocking (a pipe would otherwise
+    /// hang the open) and must be a regular file, checked on the open
+    /// handle, before a byte is read.
+    pub fn add_image_on_worker(
+        data_dir: &Path,
+        file: &gtk::gio::File,
+    ) -> Result<MediaRef, AddImageError> {
+        use std::os::unix::fs::OpenOptionsExt;
+        let path = local_path(file).ok_or(AddImageError::NotLocal)?;
+        let opened = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(&path)
+            .map_err(AddImageError::Unreadable)?;
+        let meta = opened.metadata().map_err(AddImageError::Unreadable)?;
+        if !meta.file_type().is_file() {
+            return Err(AddImageError::NotAFile);
+        }
+        Store::open_concurrent(data_dir)
+            .and_then(|store| store.add_image(opened))
+            .map_err(AddImageError::Store)
+    }
+
+    /// [`Self::add_image_on_worker`] for bytes (a pasted or dropped
+    /// picture, as the other program gave it).
+    pub fn add_image_bytes_on_worker(
+        data_dir: &Path,
+        bytes: &[u8],
+    ) -> Result<MediaRef, AddImageError> {
+        Store::open_concurrent(data_dir)
+            .and_then(|store| store.add_image(bytes))
+            .map_err(AddImageError::Store)
+    }
+
+    /// The media folder, where card images are read from (it may not
+    /// exist yet). `None` for a store without a data directory.
+    pub fn media_folder(&self) -> Option<PathBuf> {
+        self.0.store.borrow().media_folder().map(Path::to_path_buf)
     }
 
     /// The data directory the database lives in.

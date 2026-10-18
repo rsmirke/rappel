@@ -37,11 +37,16 @@ jobs:
           # Second line: what the bare container lacks for checkout, rustup,
           # install-action (jq) and linking.
           # Third line: an X server for the tests that need GTK (ADR 0024).
+          # Fourth line: the image decoder glycin, its build dependencies,
+          # its loaders and its sandbox, for the image tests (ADR 0055;
+          # where bubblewrap cannot make namespaces, as in an unprivileged
+          # container, glycin runs its loaders unsandboxed by design).
           apt-get install -y --no-install-recommends \
             libgtk-4-dev libadwaita-1-dev libgtksourceview-5-dev gir1.2-gtksource-5 \
             blueprint-compiler libglib2.0-dev-bin \
             git ca-certificates curl jq build-essential pkg-config \
-            xvfb xauth
+            xvfb xauth \
+            liblcms2-dev libseccomp-dev libfontconfig-dev glycin-loaders bubblewrap
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

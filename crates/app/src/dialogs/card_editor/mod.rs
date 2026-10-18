@@ -21,9 +21,13 @@
 //!   typed. The card and its tags are saved in one write. An invalid name
 //!   shows an error under the field and disables saving. Ctrl+Shift+Enter
 //!   keeps the tags for the next card (ADR 0031).
+//! - Images (ADR 0055): Insert Image… beside each side's title, Ctrl+V of a
+//!   picture or of image files, and dropping them on a side ([`images`]).
 
 mod format;
+mod images;
 mod layout;
+mod media;
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -36,7 +40,7 @@ use rappel_core::content;
 use rappel_core::domain::{Card, CardSide, MAX_CARD_SIDE_BYTES, TaggedCard, card_side_fits};
 use sourceview5::prelude::*;
 
-use crate::render::{back_shown, clear, fill, shown_part};
+use crate::render::{Images, back_shown, clear, fill, shown_part};
 use crate::state::AppState;
 use crate::ui::callback::Callback;
 use crate::ui::text::group_digits;
@@ -84,6 +88,7 @@ mod imp {
     use crate::state::AppState;
     use crate::ui::callback::Callback;
     use crate::ui::debounce::Debounce;
+    use crate::ui::toast::ErrorSlot;
 
     #[derive(Default, gtk::CompositeTemplate)]
     #[template(resource = "/io/github/rsmirke/Rappel/card_editor.ui")]
@@ -100,6 +105,14 @@ mod imp {
         pub back_buffer: TemplateChild<sourceview5::Buffer>,
         #[template_child]
         pub front_error: TemplateChild<gtk::Label>,
+        #[template_child]
+        pub front_image_button: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub back_image_button: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub front_frame: TemplateChild<gtk::Frame>,
+        #[template_child]
+        pub back_frame: TemplateChild<gtk::Frame>,
         #[template_child]
         pub back_error: TemplateChild<gtk::Label>,
         #[template_child]
@@ -126,6 +139,8 @@ mod imp {
         pub preview_back: TemplateChild<gtk::Box>,
         /// The preview refresh waiting for typing to pause.
         pub preview: Debounce,
+        /// The last "image could not be added" toast, replaced by the next.
+        pub image_errors: ErrorSlot,
         /// Our `notify::dark` handler on the style manager, a singleton
         /// that outlives the editor: disconnected on dispose.
         pub dark_handler: RefCell<Option<glib::SignalHandlerId>>,
@@ -276,6 +291,7 @@ impl CardEditor {
         self.setup_shortcuts();
         self.setup_views();
         self.setup_tags();
+        self.setup_images();
         self.setup_layout();
         self.connect_close_attempt(Self::ask_discard);
     }
@@ -550,11 +566,15 @@ impl CardEditor {
         let (front_md, back_md) = self.texts();
         let (front_part, front_cut) = shown_part(&front_md);
         let (back_part, back_cut) = shown_part(&back_md);
-        fill(&imp.preview_front, &content::parse(front_part));
+        let images = Images::new(
+            imp.state.get().and_then(AppState::media_folder),
+            self.height(),
+        );
+        fill(&imp.preview_front, &content::parse(front_part), &images);
         let back = content::parse(back_part);
         let shown = back_shown(&back);
         if shown {
-            fill(&imp.preview_back, &back);
+            fill(&imp.preview_back, &back, &images);
         } else {
             clear(&imp.preview_back);
         }
@@ -816,7 +836,7 @@ fn wrap_selection(buffer: &sourceview5::Buffer, marker: &str) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
 
     #[test]
@@ -871,7 +891,7 @@ mod tests {
 
     /// A state with one deck, and an editor on a new card in it or on the
     /// card `existing` (front, tags) already in it.
-    fn editor_over(
+    pub(super) fn editor_over(
         existing: Option<(&str, &[&str])>,
     ) -> (
         tempfile::TempDir,
