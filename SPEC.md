@@ -172,7 +172,7 @@ The work is done in three phases, each ending in a release (ADR 0038, amending t
 
 ### 4.5 Review
 - Undo last grade (Ctrl+Z, and an Undo button in the header) via an `undoes` event, repeatable back to the session's first grade, also from the summary; not available after leaving the page. *Done (ADR 0028, 0030).*
-- Reset Progress in each card's menu on the deck page, with an Undo toast. *Done (ADR 0030, #38).*
+- Reset Progress in each card's menu on the deck page, with an Undo toast; disabled for a card that is already new, and `reset_card` refuses one. *Done (ADR 0030, #38, #56).*
 - Daily limits from settings. New cards interleaved with reviews.
 - Card actions during review: Edit (E), Suspend (S) and Delete (Delete key, with confirmation), the last two in the Card Menu too; each leaves the session at once and offers Undo in a toast. *Done (ADR 0037).*
 - Session summary at the end: cards reviewed, pass rate, time spent.

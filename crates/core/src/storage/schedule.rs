@@ -1,6 +1,8 @@
 //! Reading review events and the `card_schedule` cache, and rebuilding the
 //! cache from the review log.
 
+use std::collections::HashSet;
+
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 
 use super::Store;
@@ -27,6 +29,23 @@ impl Store {
     /// count.
     pub fn card_state(&self, card_id: &str) -> Result<CardState> {
         read_card_state(&self.conn, card_id)
+    }
+
+    /// The ids of the live cards of `deck_id` that are new: no surviving
+    /// review since they were created or last reset, so no `card_schedule`
+    /// row. One query for the whole deck, for a list that marks its rows.
+    ///
+    /// # Errors
+    /// [`Error::DeckNotFound`], SQLite errors.
+    pub fn new_card_ids(&self, deck_id: &str) -> Result<HashSet<String>> {
+        super::decks::ensure_live_deck(&self.conn, deck_id)?;
+        let mut stmt = self.conn.prepare(
+            "SELECT c.id FROM cards c
+             WHERE c.deck_id = ?1 AND c.deleted_at IS NULL
+               AND NOT EXISTS (SELECT 1 FROM card_schedule s WHERE s.card_id = c.id)",
+        )?;
+        let rows = stmt.query_map([deck_id], |r| r.get::<_, String>(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     /// Rebuilds the whole `card_schedule` cache from `review_events` with

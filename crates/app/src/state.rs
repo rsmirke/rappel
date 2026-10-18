@@ -2,6 +2,7 @@
 //! and never sees SQL or rusqlite (ADR 0011).
 
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -355,6 +356,11 @@ impl AppState {
     /// A card's properties and history at `now` (see [`Store::card_info`]).
     pub fn card_info(&self, card_id: &str, now: i64) -> rappel_core::Result<CardInfo> {
         self.0.store.borrow().card_info(card_id, now)
+    }
+
+    /// The ids of a deck's new cards (see [`Store::new_card_ids`]).
+    pub fn new_card_ids(&self, deck_id: &str) -> rappel_core::Result<HashSet<String>> {
+        self.0.store.borrow().new_card_ids(deck_id)
     }
 
     /// A card's scheduling state (see [`Store::card_state`]).

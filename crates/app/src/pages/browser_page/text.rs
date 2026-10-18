@@ -93,6 +93,21 @@ pub fn suspend_choice(suspended: impl IntoIterator<Item = bool>) -> SuspendChoic
     }
 }
 
+/// Reset Progress is offered while a chosen card has progress (not every
+/// one is new); the reset leaves the new ones alone.
+pub fn reset_offered(is_new: impl IntoIterator<Item = bool>) -> bool {
+    is_new.into_iter().any(|new| !new)
+}
+
+/// The note when a reset of `n` cards found them all new already.
+pub fn no_progress_text(n: usize) -> String {
+    if n == 1 {
+        "This card has no progress to reset".to_owned()
+    } else {
+        "These cards have no progress to reset".to_owned()
+    }
+}
+
 /// What the list area shows when it has no row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Empty {
@@ -551,6 +566,16 @@ mod tests {
         assert_eq!(suspend_choice([true, false]), Suspend);
         assert_eq!(suspend_choice([false]), Suspend);
         assert_eq!(suspend_choice([]), Suspend);
+    }
+
+    #[test]
+    fn reset_is_offered_while_a_chosen_card_has_progress() {
+        assert!(reset_offered([true, false]));
+        assert!(reset_offered([false]));
+        assert!(!reset_offered([true, true]));
+        assert!(!reset_offered([]));
+        assert_eq!(no_progress_text(1), "This card has no progress to reset");
+        assert_eq!(no_progress_text(3), "These cards have no progress to reset");
     }
 
     #[test]

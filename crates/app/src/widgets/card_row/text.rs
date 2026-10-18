@@ -1,5 +1,5 @@
-//! What a card row of the deck page says to a screen reader. Pure, so it
-//! is unit-tested (ADR 0042).
+//! What a card row of the deck page says to a screen reader, and which of
+//! its menu items it offers. Pure, so it is unit-tested (ADR 0042).
 
 use crate::widgets::tag_pills::text::spoken;
 
@@ -28,6 +28,18 @@ pub fn row_label(front: &str, back: &str, tags: &[String], suspended: bool) -> S
         parts.push("suspended".to_owned());
     }
     parts.join(", ")
+}
+
+/// The row actions that depend on the card, each with whether it is
+/// enabled: the one of Suspend and Unsuspend that changes something, and
+/// Reset Progress unless the card is already new, where a reset would only
+/// add a log entry that changes nothing.
+pub fn row_actions(suspended: bool, is_new: bool) -> [(&'static str, bool); 3] {
+    [
+        ("row.suspend", !suspended),
+        ("row.unsuspend", suspended),
+        ("row.reset", !is_new),
+    ]
 }
 
 #[cfg(test)]
@@ -61,6 +73,26 @@ mod tests {
         assert_eq!(
             row_label("Front", "", &tags, false),
             "Front, tags: a, b, c, d, e"
+        );
+    }
+
+    #[test]
+    fn a_row_offers_only_what_changes_the_card() {
+        assert_eq!(
+            row_actions(false, false),
+            [
+                ("row.suspend", true),
+                ("row.unsuspend", false),
+                ("row.reset", true)
+            ]
+        );
+        assert_eq!(
+            row_actions(true, true),
+            [
+                ("row.suspend", false),
+                ("row.unsuspend", true),
+                ("row.reset", false)
+            ]
         );
     }
 }

@@ -346,6 +346,11 @@ pub enum Error {
     #[error("card {0} does not exist")]
     CardNotFound(String),
 
+    /// The card is new (no surviving review since it was created or last
+    /// reset), so a reset would only add a log entry that changes nothing.
+    #[error("card {0} is already new, so there is no progress to reset")]
+    CardAlreadyNew(String),
+
     /// Encoding an export failed. The cause is boxed so the JSON and zip
     /// crates stay out of this API (ADR 0015).
     #[error("cannot write the export: {0}")]

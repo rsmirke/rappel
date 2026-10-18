@@ -6,6 +6,14 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **Reset Progress is greyed out for a card that is already new** (no review since it was created or last reset, or only reviews that were undone), in the card menu of the deck page and of All Cards. A reset of such a card used to add a log entry that changed nothing. In selection mode, **Reset Progress** is offered while at least one chosen card has progress, and leaves the new ones alone. If a menu is stale and the core refuses, the page says "This card has no progress to reset" and updates the row.
+
+### Changed
+- `rappel-core`: `Store::reset_card` refuses a new card with `Error::CardAlreadyNew`, and nothing is written; `Store::reset_cards` skips new cards and returns only the entries it wrote.
+
+### Added
+- `rappel-core`: `Error::CardAlreadyNew`; `Store::new_card_ids(deck)` lists a deck's new cards in one query; `BrowseRow::is_new` says whether a card is new, also when it is suspended.
 
 ## [0.2.0-beta.1] — 2026-10-18
 

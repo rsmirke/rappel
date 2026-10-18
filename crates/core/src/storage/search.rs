@@ -231,6 +231,9 @@ pub struct BrowseRow {
     pub tags: Vec<Tag>,
     /// Where it stands at the time of the query.
     pub status: CardStatus,
+    /// No surviving review since it was created or last reset, so a reset
+    /// has nothing to do. Also for a suspended card, whose `status` hides it.
+    pub is_new: bool,
 }
 
 const ROW_SELECT: &str = "c.id, c.deck_id, c.front_md, c.back_md, c.created_at, c.updated_at, \
@@ -346,6 +349,7 @@ fn row_from(r: &rusqlite::Row<'_>, now: i64) -> rusqlite::Result<BrowseRow> {
     let deck_name: String = r.get(7)?;
     let phase: Option<String> = r.get(8)?;
     let due_at: Option<i64> = r.get(9)?;
+    let is_new = phase.is_none();
     let status = if card.suspended {
         CardStatus::Suspended
     } else {
@@ -366,6 +370,7 @@ fn row_from(r: &rusqlite::Row<'_>, now: i64) -> rusqlite::Result<BrowseRow> {
         deck_name,
         tags: Vec::new(),
         status,
+        is_new,
     })
 }
 

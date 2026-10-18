@@ -179,6 +179,7 @@ impl CardRow {
             item.back_preview(),
             &item.tags(),
             card.suspended,
+            item.is_new(),
             &card.id,
         );
     }
@@ -196,6 +197,7 @@ impl CardRow {
                 item.back_preview(),
                 &item.tags(),
                 row.card.suspended,
+                row.is_new,
                 &row.card.id,
             );
             let status = browser_text::status_text(row.status, rappel_core::time::now_ms());
@@ -219,7 +221,15 @@ impl CardRow {
         self.update_selection();
     }
 
-    fn show(&self, front: &str, back: &str, tags: &[String], suspended: bool, id: &str) {
+    fn show(
+        &self,
+        front: &str,
+        back: &str,
+        tags: &[String],
+        suspended: bool,
+        is_new: bool,
+        id: &str,
+    ) {
         let imp = self.imp();
         imp.front_label.set_label(front);
         imp.back_label.set_label(back);
@@ -230,9 +240,13 @@ impl CardRow {
             .set_visible(!back.is_empty() || !tags.is_empty());
         rows::label_menu_button(&imp.menu_button, text::spoken_front(front));
         imp.suspended_icon.set_visible(suspended);
-        // The row offers the one of the two that changes something.
-        self.action_set_enabled("row.suspend", !suspended);
-        self.action_set_enabled("row.unsuspend", suspended);
+        // Rows are recycled, so this is set on every bind. The `row.*`
+        // actions are widget actions installed in `class_init`;
+        // `gtk_widget_action_set_enabled` (GtkWidget docs) disables one, and
+        // a menu item naming a disabled action is insensitive.
+        for (action, enabled) in text::row_actions(suspended, is_new) {
+            self.action_set_enabled(action, enabled);
+        }
         imp.card_id.replace(id.to_owned());
     }
 
@@ -400,6 +414,7 @@ mod tests {
             } else {
                 CardStatus::New
             },
+            is_new: true,
         })
     }
 
@@ -667,6 +682,7 @@ mod tests {
                         deck_name: "Maths".to_owned(),
                         tags: tagged.tags,
                         status: CardStatus::New,
+                        is_new: true,
                     })
                 })
                 .collect();

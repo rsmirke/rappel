@@ -11,12 +11,14 @@
 //! deck of thousands of cards keeps its scroll position and stays fast.
 
 use std::cmp::Ordering;
+use std::collections::HashSet;
 use std::time::Duration;
 
 use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::{gio, glib};
-use rappel_core::domain::{Card, Deck, TaggedCard};
+use rappel_core::Error;
+use rappel_core::domain::{Card, CardState, Deck, TaggedCard};
 use rappel_core::scheduling::StudyInput;
 
 use crate::dialogs::card_editor::{CardEditor, Saved};
@@ -117,9 +119,12 @@ mod imp {
         fn constructed(&self) {
             self.parent_constructed();
             let page = self.obj();
-            // Back from studying: what is left to study changed.
+            // Back from studying: what is left to study changed, and so
+            // may which cards are new. The rows are refreshed before the
+            // focus is set, so it lands on a row that stays.
             page.connect_shown(|page| {
                 page.update_study();
+                page.refresh_new_flags();
                 page.focus_when_shown();
             });
             page.connect_compact_notify(super::DeckPage::update_study_bar);
@@ -153,13 +158,13 @@ impl DeckPage {
         let page: Self = glib::Object::new();
         let imp = page.imp();
         let cards = state.list_tagged_cards(&deck.id)?;
+        let new = state.new_card_ids(&deck.id)?;
         // Deck names are untrusted; NavigationPage:title is plain text.
         page.set_title(&deck.name);
         imp.window_title.set_title(&deck.name);
 
         let store = gio::ListStore::new::<CardObject>();
-        let items: Vec<CardObject> = cards.into_iter().map(CardObject::new).collect();
-        store.extend_from_slice(&items);
+        store.extend_from_slice(&items_of(cards, &new));
         store.connect_items_changed(glib::clone!(
             #[weak]
             page,
@@ -187,6 +192,57 @@ impl DeckPage {
         page.update_empty_state();
         page.update_study();
         Ok(page)
+    }
+
+    /// Makes each row's Reset Progress follow the cards' state: a card
+    /// whose newness changed gets a new item in the same place, which
+    /// rebinds its row. One query for the deck, and a splice only for the
+    /// cards that changed.
+    pub fn refresh_new_flags(&self) {
+        let imp = self.imp();
+        let (Some(state), Some(deck), Some(store)) =
+            (imp.state.get(), imp.deck.get(), imp.cards.get())
+        else {
+            return;
+        };
+        let new = match state.new_card_ids(&deck.id) {
+            Ok(new) => new,
+            Err(err) => {
+                // The rows keep their last state; the core refuses a reset
+                // of a new card either way.
+                tracing::warn!("cannot read which cards are new: {err}");
+                return;
+            }
+        };
+        for position in 0..store.n_items() {
+            let Some(item) = self.item(position) else {
+                continue;
+            };
+            let is_new = new.contains(&item.card().id);
+            if is_new != item.is_new() {
+                store.splice(position, 1, &[item.copy_with_new(is_new)]);
+            }
+        }
+    }
+
+    /// A list item for `tagged`, new or not as the store says. For a card
+    /// that comes from an edit or an undo, where one query is cheap.
+    fn item_for(&self, tagged: TaggedCard) -> CardObject {
+        let is_new = match self
+            .imp()
+            .state
+            .get()
+            .map(|s| s.card_state(&tagged.card.id))
+        {
+            Some(Ok(card_state)) => card_state == CardState::New,
+            Some(Err(err)) => {
+                // Reset stays offered; the core refuses it for a new card.
+                tracing::warn!("cannot read the state of a card: {err}");
+                false
+            }
+            None => false,
+        };
+        CardObject::new(tagged).with_new(is_new)
     }
 
     /// The id of this page's deck.
@@ -345,16 +401,17 @@ impl DeckPage {
         let store = self.imp().cards.get()?;
         let tagged = match saved {
             Saved::Added(tagged) => {
-                insert_in_order(store, &CardObject::new(tagged.clone()));
+                // A card just added has no reviews.
+                insert_in_order(store, &CardObject::new(tagged.clone()).with_new(true));
                 tagged
             }
             Saved::Edited(tagged) => {
                 match self.position(&tagged.card.id) {
                     Some(position) => {
-                        store.splice(position, 1, &[CardObject::new(tagged.clone())]);
+                        store.splice(position, 1, &[self.item_for(tagged.clone())]);
                     }
                     None => {
-                        insert_in_order(store, &CardObject::new(tagged.clone()));
+                        insert_in_order(store, &self.item_for(tagged.clone()));
                     }
                 }
                 tagged
@@ -404,12 +461,27 @@ impl DeckPage {
         let entry = match state.reset_card(id, rappel_core::time::now_ms()) {
             Ok(entry) => entry,
             Err(err) => {
-                self.error_toast(&format!("The progress could not be reset: {err}"));
+                match reset_notice(&err) {
+                    Notice::Info(text) => {
+                        // The row was stale: bring it up to date.
+                        self.refresh_new_flags();
+                        if let Some(position) = self.position(id) {
+                            self.focus(position);
+                        }
+                        show_toast_from(self, info_toast(&text));
+                    }
+                    Notice::Error(text) => self.error_toast(&text),
+                }
                 return;
             }
         };
         let window = self.root().and_downcast::<RappelWindow>();
         counts_changed(self, window.as_ref());
+        // The row was replaced (the card is new now): keep the focus in
+        // the list, on the same card.
+        if let Some(position) = self.position(id) {
+            self.focus(position);
+        }
 
         // As for a delete: Undo must work from another page, so the closure
         // keeps the state and weak references, not the page.
@@ -469,7 +541,7 @@ impl DeckPage {
         };
         match (state.card(id), state.card_tags(id)) {
             (Ok(card), Ok(tags)) => {
-                store.splice(position, 1, &[CardObject::new(TaggedCard { card, tags })]);
+                store.splice(position, 1, &[self.item_for(TaggedCard { card, tags })]);
             }
             (Err(err), _) | (_, Err(err)) => {
                 self.error_toast(&format!("The card could not be read: {err}"));
@@ -506,7 +578,7 @@ impl DeckPage {
                 card: card.clone(),
                 tags,
             };
-            insert_in_order(store, &CardObject::new(tagged))
+            insert_in_order(store, &self.item_for(tagged))
         };
         self.focus(position);
     }
@@ -520,11 +592,11 @@ impl DeckPage {
         else {
             return;
         };
-        match state.list_tagged_cards(&deck.id) {
-            Ok(cards) => {
-                let items: Vec<CardObject> = cards.into_iter().map(CardObject::new).collect();
-                store.splice(0, store.n_items(), &items);
-            }
+        match state
+            .list_tagged_cards(&deck.id)
+            .and_then(|cards| Ok((cards, state.new_card_ids(&deck.id)?)))
+        {
+            Ok((cards, new)) => store.splice(0, store.n_items(), &items_of(cards, &new)),
             Err(err) => self.error_toast(&format!("The cards could not be read: {err}")),
         }
     }
@@ -627,10 +699,41 @@ fn position_in(store: &gio::ListStore, id: &str) -> Option<u32> {
 /// Study button, and the deck list. Through `window` when there is one, since
 /// the deck may have been reopened in a new page.
 fn counts_changed(page: &DeckPage, window: Option<&RappelWindow>) {
-    match window {
-        Some(window) => window.study_changed(),
-        None => page.update_study(),
+    if let Some(window) = window {
+        window.study_changed();
+    } else {
+        page.update_study();
+        page.refresh_new_flags();
     }
+}
+
+/// What the user is told when a reset fails.
+#[derive(Debug, PartialEq, Eq)]
+enum Notice {
+    /// Nothing is wrong and nothing was written: a short message.
+    Info(String),
+    /// Something failed: an error toast.
+    Error(String),
+}
+
+/// A card that is already new has no progress to reset (the row was stale,
+/// e.g. after an import): that is information, not an error.
+fn reset_notice(err: &Error) -> Notice {
+    match err {
+        Error::CardAlreadyNew(_) => Notice::Info("This card has no progress to reset".to_owned()),
+        err => Notice::Error(format!("The progress could not be reset: {err}")),
+    }
+}
+
+/// The list items for `cards`, `new` being the ids of the new ones.
+fn items_of(cards: Vec<TaggedCard>, new: &HashSet<String>) -> Vec<CardObject> {
+    cards
+        .into_iter()
+        .map(|tagged| {
+            let is_new = new.contains(&tagged.card.id);
+            CardObject::new(tagged).with_new(is_new)
+        })
+        .collect()
 }
 
 /// The Undo of a reset: cancels reset entry `entry_id` of card `card_id`.
@@ -984,6 +1087,75 @@ mod tests {
             assert!(bar());
             page.set_compact(false);
             assert!(!bar());
+        });
+    }
+
+    #[test]
+    fn a_reset_of_a_new_card_is_a_message_and_other_failures_are_errors() {
+        assert_eq!(
+            reset_notice(&Error::CardAlreadyNew("c".to_owned())),
+            Notice::Info("This card has no progress to reset".to_owned())
+        );
+        assert!(matches!(
+            reset_notice(&Error::CardNotFound("c".to_owned())),
+            Notice::Error(_)
+        ));
+    }
+
+    #[test]
+    fn a_row_offers_reset_only_while_the_card_has_progress() {
+        crate::testing::with_widgets(|| {
+            let (_tmp, state, page, ids) = page_of(1);
+            let is_new = |page: &DeckPage| page.item(0).unwrap().is_new();
+            assert!(!is_new(&page), "studied cards start with progress");
+            page.reset(&ids[0]);
+            assert!(is_new(&page), "a reset card is new");
+            let entry = state.review_events(&ids[0]).unwrap().pop().unwrap().id;
+            undo_reset(&state, &ids[0], &entry, &page.downgrade(), None);
+            assert!(!is_new(&page), "undoing the reset brings the progress back");
+
+            // Studied elsewhere after a reset: `shown` catches up.
+            page.reset(&ids[0]);
+            assert!(is_new(&page));
+            let now = rappel_core::time::now_ms();
+            state
+                .record_review(&ids[0], Grade::Pass, Duration::ZERO, now)
+                .unwrap();
+            page.emit_by_name::<()>("shown", &[]);
+            assert!(!is_new(&page));
+        });
+    }
+
+    #[test]
+    fn a_stale_reset_of_a_new_card_writes_nothing_and_updates_the_row() {
+        crate::testing::with_widgets(|| {
+            let (_tmp, state, page, ids) = page_of(1);
+            // Reset behind the page's back: its row is stale.
+            state
+                .reset_card(&ids[0], rappel_core::time::now_ms())
+                .unwrap();
+            assert!(!page.item(0).unwrap().is_new());
+            let log = state.review_events(&ids[0]).unwrap();
+            // The stale menu's reset is refused and the row catches up.
+            page.reset(&ids[0]);
+            assert_eq!(state.review_events(&ids[0]).unwrap(), log);
+            assert!(page.item(0).unwrap().is_new());
+        });
+    }
+
+    #[test]
+    fn an_added_card_is_new_and_an_edit_keeps_the_progress() {
+        crate::testing::with_widgets(|| {
+            let (_tmp, state, page, ids) = page_of(1);
+            let edited = state
+                .edit_card_with_tags(&ids[0], "new front", "back", None)
+                .unwrap();
+            page.show_saved(Saved::Edited(edited));
+            assert!(!page.item(0).unwrap().is_new());
+            let deck = page.deck_id().unwrap();
+            let added = state.add_card_with_tags(&deck, "q", "a", &[]).unwrap();
+            page.show_saved(Saved::Added(added));
+            assert!(page.item(1).unwrap().is_new());
         });
     }
 
