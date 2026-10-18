@@ -16,6 +16,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::time::Duration;
 
 use adw::prelude::*;
@@ -24,7 +25,7 @@ use gtk::{gdk, gio, glib};
 use rappel_core::media::MediaRef;
 
 use super::images::{
-    CACHE_BYTES, Failure, OPEN_DESCRIPTION, TextureCache, accepted_mime, image_name,
+    CACHE_BYTES, Failure, OPEN_DESCRIPTION, PixelBudget, TextureCache, accepted_mime, image_name,
     placeholder_label, read_image_file, texture_cost, within_limits,
 };
 use crate::ui::dialog;
@@ -69,6 +70,8 @@ mod imp {
         pub max_height: Cell<i32>,
         pub alt: RefCell<String>,
         pub texture: RefCell<Option<gdk::Texture>>,
+        /// The side's pixel budget (`images::PixelBudget`).
+        pub pixels: RefCell<Option<std::rc::Rc<RefCell<super::super::images::PixelBudget>>>>,
     }
 
     #[glib::object_subclass]
@@ -158,10 +161,19 @@ impl CardImage {
     /// none, so it is missing), with alt text `alt`, at most `max_height`
     /// pixels tall. A decoded image is shown at once from the cache;
     /// otherwise it is decoded on another thread and shown when done.
-    pub fn new(folder: Option<&Path>, media: MediaRef, alt: &str, max_height: i32) -> Self {
+    /// `pixels` is the side's [`PixelBudget`]: a decoded image past it is
+    /// not shown.
+    pub fn new(
+        folder: Option<&Path>,
+        media: MediaRef,
+        alt: &str,
+        max_height: i32,
+        pixels: Rc<RefCell<PixelBudget>>,
+    ) -> Self {
         let image: Self = glib::Object::new();
         let imp = image.imp();
         imp.max_height.set(max_height);
+        imp.pixels.replace(Some(pixels));
         imp.alt.replace(alt.to_owned());
         let Some(folder) = folder else {
             image.show_failure(Failure::Missing);
@@ -202,9 +214,14 @@ impl CardImage {
             .downcast::<gtk::Label>()
             .ok()?;
         let text = label.text();
-        [Failure::Missing, Failure::CannotShow, Failure::TooMany]
-            .into_iter()
-            .find(|f| text.starts_with(super::images::placeholder_text(*f)))
+        [
+            Failure::Missing,
+            Failure::CannotShow,
+            Failure::TooMany,
+            Failure::OverBudget,
+        ]
+        .into_iter()
+        .find(|f| text.starts_with(super::images::placeholder_text(*f)))
     }
 
     /// Joins the decode of `path` already running, or starts it.
@@ -218,7 +235,7 @@ impl CardImage {
             return;
         }
         glib::spawn_future_local(async move {
-            let decoded = decode(path.clone(), media).await;
+            let decoded = decode(path.clone(), media, DECODE_TIMEOUT).await;
             let cost = match &decoded {
                 Ok(texture) => Some(texture_cost(texture.width(), texture.height())),
                 Err(failure) if failure.is_lasting() => Some(FAILURE_COST),
@@ -238,7 +255,16 @@ impl CardImage {
 
     fn show(&self, decoded: Decoded) {
         match decoded {
-            Ok(texture) => self.show_texture(texture),
+            Ok(texture) => {
+                let fits = self.imp().pixels.borrow().as_ref().is_none_or(|pixels| {
+                    pixels.borrow_mut().take(texture.width(), texture.height())
+                });
+                if fits {
+                    self.show_texture(texture);
+                } else {
+                    self.show_failure(Failure::OverBudget);
+                }
+            }
             Err(failure) => self.show_failure(failure),
         }
     }
@@ -325,20 +351,20 @@ impl CardImage {
 }
 
 /// Reads and decodes the file at `path`, checked, within the limits and
-/// [`DECODE_TIMEOUT`].
-async fn decode(path: PathBuf, media: MediaRef) -> Decoded {
+/// `timeout` ([`DECODE_TIMEOUT`]; a test gives a shorter one).
+async fn decode(path: PathBuf, media: MediaRef, timeout: Duration) -> Decoded {
     // `gio::spawn_blocking` returns a panic in the closure as its error.
     let bytes = gio::spawn_blocking(move || read_image_file(&path, media))
         .await
         .map_err(|_| Failure::CannotShow)??;
     let cancellable = gio::Cancellable::new();
     let load = decode_bytes(bytes, media, cancellable.clone());
-    if let Ok(decoded) = glib::future_with_timeout(DECODE_TIMEOUT, load).await {
+    if let Ok(decoded) = glib::future_with_timeout(timeout, load).await {
         decoded
     } else {
         cancellable.cancel();
         tracing::debug!("an image took too long to decode");
-        Err(Failure::CannotShow)
+        Err(Failure::TimedOut)
     }
 }
 
@@ -346,7 +372,10 @@ async fn decode(path: PathBuf, media: MediaRef) -> Decoded {
 /// with a seccomp filter and a memory limit, or flatpak-spawn in a
 /// Flatpak); where the system refuses to make one (a container without
 /// user namespaces), glycin runs the loader as a plain separate process
-/// (`SandboxSelector::Auto`, glycin's `api_common.rs`).
+/// with no seccomp filter, no namespaces and no memory limit
+/// (`SandboxSelector::Auto`, glycin's `api_common.rs`), which is logged
+/// once as a warning. `Auto` and not `Bwrap`: forcing bubblewrap would
+/// break a Flatpak, where glycin uses flatpak-spawn.
 async fn decode_bytes(bytes: Vec<u8>, media: MediaRef, cancellable: gio::Cancellable) -> Decoded {
     let mut loader = glycin::Loader::new_vec(bytes);
     loader.cancellable(cancellable);
@@ -354,6 +383,12 @@ async fn decode_bytes(bytes: Vec<u8>, media: MediaRef, cancellable: gio::Cancell
         tracing::debug!("an image could not be decoded: {err}");
         Failure::CannotShow
     })?;
+    if matches!(
+        image.active_sandbox_mechanism(),
+        glycin::SandboxMechanism::NotSandboxed
+    ) {
+        warn_unsandboxed();
+    }
     let mime = image.mime_type();
     if !accepted_mime(media.kind(), mime.as_str()) {
         tracing::debug!(
@@ -382,6 +417,17 @@ async fn decode_bytes(bytes: Vec<u8>, media: MediaRef, cancellable: gio::Cancell
     Ok(frame.texture())
 }
 
+/// Logs, once per run, that images are decoded without glycin's sandbox.
+fn warn_unsandboxed() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        tracing::warn!(
+            "images are decoded without a sandbox: bubblewrap cannot create one here, \
+             so glycin runs its loader as a plain process"
+        );
+    });
+}
+
 /// The image `texture` at full size in a dialog over `parent`, titled
 /// `name`: scaled down to fit the dialog, never up.
 fn open_full_size(parent: &impl IsA<gtk::Widget>, texture: &gdk::Texture, name: &str) {
@@ -393,9 +439,9 @@ fn open_full_size(parent: &impl IsA<gtk::Widget>, texture: &gdk::Texture, name: 
     full.set_title(name);
     picture.set_paintable(Some(texture));
     picture.set_alternative_text(Some(name));
-    let (width, height) = full_size_request(texture.width(), texture.height());
-    full.set_content_width(width);
-    full.set_content_height(height);
+    // No content size is set: the dialog takes the picture's natural size
+    // (the image's, with its margins and the header bar) and libadwaita
+    // keeps it inside the window, scaling the picture down to fit.
     full.present(Some(parent));
 }
 
@@ -410,18 +456,6 @@ pub(crate) fn full_size_layout()
         dialog::object(&builder, FILE, "image_title")?,
         dialog::object(&builder, FILE, "image_picture")?,
     ))
-}
-
-/// The content size asked for the full-size dialog: the image with the
-/// picture's margins and the header bar. libadwaita keeps a dialog inside
-/// its window, so a larger image is scaled down to what fits.
-fn full_size_request(width: i32, height: i32) -> (i32, i32) {
-    const MARGINS: i32 = 24;
-    const HEADER: i32 = 47;
-    (
-        width.saturating_add(MARGINS).max(240),
-        height.saturating_add(MARGINS / 2 + HEADER).max(180),
-    )
 }
 
 #[cfg(test)]
@@ -483,7 +517,7 @@ mod tests {
 
     /// Shows `media` and waits for its decode to end.
     fn settle(folder: &Path, media: MediaRef) -> CardImage {
-        let image = CardImage::new(Some(folder), media, "An image", 400);
+        let image = CardImage::new(Some(folder), media, "An image", 400, Rc::default());
         let done = crate::testing::settle_until(
             || image.is_shown() || image.shown_failure().is_some(),
             Duration::from_secs(60),
@@ -511,7 +545,7 @@ mod tests {
             let (_, natural, _, _) = image.measure(gtk::Orientation::Vertical, 50);
             assert_eq!(natural, 200);
             // A second one comes from the cache at once.
-            let again = CardImage::new(Some(&folder), media, "", 400);
+            let again = CardImage::new(Some(&folder), media, "", 400, Rc::default());
             assert!(again.is_shown());
             // The button is named by the alt text, the picture is an image.
             let button = again
@@ -533,7 +567,7 @@ mod tests {
             let media = MediaRef::parse(&format!("media:{}.png", "cd".repeat(32))).unwrap();
             let image = settle(&tmp.path().join("data/media"), media);
             assert_eq!(image.shown_failure(), Some(Failure::Missing));
-            let none = CardImage::new(None, media, "x", 400);
+            let none = CardImage::new(None, media, "x", 400, Rc::default());
             assert_eq!(none.shown_failure(), Some(Failure::Missing));
             let many = CardImage::not_read("x", Failure::TooMany);
             assert_eq!(many.shown_failure(), Some(Failure::TooMany));
@@ -599,9 +633,43 @@ mod tests {
     }
 
     #[test]
-    fn the_full_size_dialog_asks_for_the_image_size() {
-        assert_eq!(full_size_request(800, 600), (824, 659));
-        assert_eq!(full_size_request(10, 10), (240, 180));
-        assert_eq!(full_size_request(i32::MAX, 1).0, i32::MAX);
+    fn a_side_s_images_share_their_pixels() {
+        crate::testing::with_widgets(|| {
+            let (tmp, state) = crate::testing::temporary_state();
+            let data = tmp.path().join("data");
+            let media =
+                AppState::add_image_bytes_on_worker(&data, &crate::testing::png_bytes(30, 20))
+                    .unwrap();
+            let folder = state.media_folder().unwrap();
+            // Room for one 600-pixel image, not two.
+            let pixels = Rc::new(RefCell::new(PixelBudget::new(1_000)));
+            let first = CardImage::new(Some(&folder), media, "", 400, Rc::clone(&pixels));
+            assert!(crate::testing::settle_until(
+                || first.is_shown(),
+                Duration::from_secs(60)
+            ));
+            let second = CardImage::new(Some(&folder), media, "", 400, pixels);
+            assert_eq!(second.shown_failure(), Some(Failure::OverBudget));
+        });
+    }
+
+    /// A decode past its timeout is cancelled and is a placeholder that is
+    /// not cached (`Failure::is_lasting`).
+    #[test]
+    fn a_decode_past_its_timeout_gives_up() {
+        crate::testing::with_widgets(|| {
+            let (tmp, _state) = crate::testing::temporary_state();
+            let data = tmp.path().join("data");
+            let media = plant(&data, 7, "png", &crate::testing::png_bytes(8, 8));
+            let path = data.join("media").join(media.file_name());
+            let decoded =
+                glib::MainContext::default().block_on(decode(path.clone(), media, Duration::ZERO));
+            assert_eq!(decoded.err(), Some(Failure::TimedOut));
+            assert!(!Failure::TimedOut.is_lasting());
+            // With time, the same file decodes.
+            let decoded =
+                glib::MainContext::default().block_on(decode(path, media, DECODE_TIMEOUT));
+            assert!(decoded.is_ok());
+        });
     }
 }

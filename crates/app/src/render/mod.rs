@@ -27,14 +27,16 @@ mod math_view;
 mod picture;
 mod style;
 
+use std::cell::RefCell;
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use gtk::AccessibleRole as Role;
 use gtk::pango;
 use gtk::prelude::*;
 use rappel_core::content::{Align, Block, Cell, Document, Inline, plain_text};
 
-use images::{Failure, ImageBudget, Piece};
+use images::{Failure, ImageBudget, Piece, PixelBudget};
 use math::{Budget, Placement};
 use math_paragraph::MathParagraph;
 use math_view::MathView;
@@ -89,6 +91,8 @@ struct Side<'a> {
     math: Budget,
     /// Images, counted the same way.
     images: ImageBudget,
+    /// The pixels of the side's decoded images, shared by them.
+    pixels: Rc<RefCell<PixelBudget>>,
     media: &'a Images,
 }
 
@@ -104,6 +108,7 @@ pub fn render(doc: &Document, media: &Images) -> gtk::Box {
     let mut side = Side {
         math: Budget::default(),
         images: ImageBudget::default(),
+        pixels: Rc::default(),
         media,
     };
     for (i, block) in doc.blocks.iter().enumerate() {
@@ -233,6 +238,7 @@ fn image_widget(alt: &str, media: rappel_core::media::MediaRef, side: &mut Side<
             media,
             alt,
             side.media.max_height,
+            Rc::clone(&side.pixels),
         )
     } else {
         CardImage::not_read(alt, Failure::TooMany)

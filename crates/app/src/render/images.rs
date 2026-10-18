@@ -180,8 +180,15 @@ pub enum Failure {
     /// The file is there but cannot be drawn: not of its kind, too large,
     /// damaged, refused by the decoder or over the limits.
     CannotShow,
+    /// The decode took longer than its timeout. Shown as
+    /// [`Self::CannotShow`], but not cached: a busy machine may manage
+    /// next time.
+    TimedOut,
     /// Past [`MAX_IMAGES_PER_SIDE`]: not read at all.
     TooMany,
+    /// Decoded, but past the side's [`MAX_PIXELS_PER_SIDE`] with the
+    /// images before it: not shown, so its texture is not kept.
+    OverBudget,
 }
 
 impl Failure {
@@ -207,8 +214,9 @@ pub fn image_name(alt: &str) -> String {
 pub fn placeholder_text(failure: Failure) -> &'static str {
     match failure {
         Failure::Missing => "Image not available",
-        Failure::CannotShow => "Image could not be shown",
+        Failure::CannotShow | Failure::TimedOut => "Image could not be shown",
         Failure::TooMany => "Image not shown: too many images on this side",
+        Failure::OverBudget => "Image not shown: the images on this side are too large",
     }
 }
 
@@ -239,6 +247,40 @@ impl ImageBudget {
     pub fn take(&mut self) -> bool {
         self.used += 1;
         self.used <= MAX_IMAGES_PER_SIDE
+    }
+}
+
+/// The most pixels the images of one side may have together: as many as
+/// one image may have. Twenty images each small on disk but large decoded
+/// would otherwise keep gigabytes of textures on screen.
+pub const MAX_PIXELS_PER_SIDE: u64 = MAX_PIXELS;
+
+/// The pixels a side's images have used, in the order they are decoded.
+#[derive(Debug)]
+pub struct PixelBudget {
+    left: u64,
+}
+
+impl Default for PixelBudget {
+    fn default() -> Self {
+        Self::new(MAX_PIXELS_PER_SIDE)
+    }
+}
+
+impl PixelBudget {
+    pub fn new(pixels: u64) -> Self {
+        Self { left: pixels }
+    }
+
+    /// Whether an image of `width` × `height` still fits; counts it if so.
+    pub fn take(&mut self, width: i32, height: i32) -> bool {
+        let side = |n: i32| u64::try_from(n).unwrap_or(0);
+        let pixels = side(width).saturating_mul(side(height));
+        if pixels > self.left {
+            return false;
+        }
+        self.left -= pixels;
+        true
     }
 }
 
@@ -316,18 +358,23 @@ pub fn texture_cost(width: i32, height: i32) -> usize {
 /// first bytes are of `media`'s kind. The bytes read are the ones decoded,
 /// so the file cannot change between the check and the decode.
 pub fn read_image_file(path: &Path, media: MediaRef) -> Result<Vec<u8>, Failure> {
-    let meta = match fs::symlink_metadata(path) {
-        Ok(meta) => meta,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Err(Failure::Missing),
-        Err(_) => return Err(Failure::CannotShow),
-    };
+    use std::os::unix::fs::OpenOptionsExt;
+    // Opened without following a link and without blocking (a pipe under
+    // the name would block an open for reading), then checked on the open
+    // handle, so what is checked is what is read (as `window_state`'s
+    // `read_bounded`).
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+        .map_err(|err| match err.kind() {
+            io::ErrorKind::NotFound => Failure::Missing,
+            _ => Failure::CannotShow,
+        })?;
+    let meta = file.metadata().map_err(|_| Failure::CannotShow)?;
     if !meta.file_type().is_file() || meta.len() > IMAGE_MAX_BYTES || meta.len() == 0 {
         return Err(Failure::CannotShow);
     }
-    let file = fs::File::open(path).map_err(|err| match err.kind() {
-        io::ErrorKind::NotFound => Failure::Missing,
-        _ => Failure::CannotShow,
-    })?;
     let mut bytes = Vec::new();
     // One byte past the limit is enough to know the file grew.
     file.take(IMAGE_MAX_BYTES + 1)
@@ -495,6 +542,12 @@ mod tests {
             "Image not shown: too many images on this side"
         );
         assert!(Failure::CannotShow.is_lasting());
+        assert!(!Failure::TimedOut.is_lasting());
+        assert!(!Failure::OverBudget.is_lasting());
+        assert_eq!(
+            placeholder_text(Failure::TimedOut),
+            placeholder_text(Failure::CannotShow)
+        );
         assert!(!Failure::Missing.is_lasting());
         assert!(!Failure::TooMany.is_lasting());
     }
@@ -506,6 +559,20 @@ mod tests {
             .filter(|_| budget.take())
             .count();
         assert_eq!(drawn, MAX_IMAGES_PER_SIDE);
+    }
+
+    #[test]
+    fn a_side_s_images_share_a_pixel_budget() {
+        let mut budget = PixelBudget::default();
+        // Three 30 MP images: two fit, the third does not.
+        assert!(budget.take(6_000, 5_000));
+        assert!(budget.take(6_000, 5_000));
+        assert!(!budget.take(6_000, 5_000));
+        // A smaller one still fits in what is left (4 MP).
+        assert!(budget.take(2_000, 2_000));
+        assert!(!budget.take(1, 1));
+        assert!(budget.take(0, 0));
+        assert!(budget.take(-1, 5));
     }
 
     #[test]
@@ -569,6 +636,14 @@ mod tests {
         fs::create_dir(&path).unwrap();
         assert_eq!(read_image_file(&path, media), Err(Failure::CannotShow));
         fs::remove_dir(&path).unwrap();
+        let made = std::process::Command::new("mkfifo")
+            .arg(&path)
+            .status()
+            .unwrap();
+        assert!(made.success());
+        // Not waited on: refused at once.
+        assert_eq!(read_image_file(&path, media), Err(Failure::CannotShow));
+        fs::remove_file(&path).unwrap();
         let real = dir.path().join("real.png");
         fs::write(&real, &png).unwrap();
         std::os::unix::fs::symlink(&real, &path).unwrap();

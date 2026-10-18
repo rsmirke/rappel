@@ -6,6 +6,8 @@
 use rappel_core::Error;
 use rappel_core::media::{IMAGE_MAX_BYTES, MediaProblem, MediaRef};
 
+use crate::state::AddImageError;
+
 /// The MIME types the Insert Image… chooser offers: the image kinds of the
 /// media store (no SVG). The chooser's filter is a convenience; the file's
 /// first bytes decide (`Store::add_image`).
@@ -52,8 +54,10 @@ pub fn insertion(refs: &[MediaRef], before: Option<char>, after: Option<char>) -
 pub enum Offered {
     /// Files: each is added as an image (the original bytes).
     Files,
-    /// A picture only (a screenshot, a copied image): encoded as PNG.
-    Texture,
+    /// A picture only (a screenshot, a copied image): its bytes in one of
+    /// [`IMAGE_MIME_TYPES`], added as the other program gave them. It is
+    /// never decoded in Rappel's process.
+    Picture,
     /// Text, or nothing the editor takes as images: the text view's own
     /// paste or drop.
     Text,
@@ -62,28 +66,43 @@ pub enum Offered {
 /// Which of the clipboard's or the drag's formats the editor takes: files
 /// before a picture (a copied image file often offers both, and the file
 /// is the original), and text only when there is neither.
-pub fn offered(has_files: bool, has_texture: bool) -> Offered {
+pub fn offered(has_files: bool, has_picture: bool) -> Offered {
     if has_files {
         Offered::Files
-    } else if has_texture {
-        Offered::Texture
+    } else if has_picture {
+        Offered::Picture
     } else {
         Offered::Text
     }
 }
 
+/// Whether the picture offered beside `local_files` local files (of the
+/// files offered) is taken instead of them: when none of the files is on
+/// this computer (a browser offers an image's `https:` address as a file,
+/// and the picture itself), so nothing is fetched and the image still
+/// comes in.
+pub fn picture_instead(local_files: usize, has_picture: bool) -> bool {
+    local_files == 0 && has_picture
+}
+
 /// What the editor says when an image cannot be added, in words.
-pub fn add_failed_text(err: &Error) -> String {
+pub fn add_failed_text(err: &AddImageError) -> String {
+    let too_large = || format!("This image is larger than {}", megabytes(IMAGE_MAX_BYTES));
     match err {
-        Error::MediaRefused(MediaProblem::NotMedia | MediaProblem::NotImage) => {
-            "This file is not a PNG, JPEG, WebP or GIF image".to_owned()
+        AddImageError::NotLocal => "Only files on this computer can be added".to_owned(),
+        AddImageError::NotAFile => "This is not a file".to_owned(),
+        AddImageError::TooLarge
+        | AddImageError::Store(Error::MediaRefused(MediaProblem::TooLarge { .. })) => too_large(),
+        AddImageError::Store(Error::MediaRefused(
+            MediaProblem::NotMedia | MediaProblem::NotImage,
+        )) => "This file is not a PNG, JPEG, WebP or GIF image".to_owned(),
+        AddImageError::Store(Error::MediaRefused(MediaProblem::Empty)) => {
+            "This file is empty".to_owned()
         }
-        Error::MediaRefused(MediaProblem::TooLarge { .. }) => {
-            format!("This image is larger than {}", megabytes(IMAGE_MAX_BYTES))
+        AddImageError::Unreadable(_) | AddImageError::Store(Error::MediaRead(_)) => {
+            "The file could not be read".to_owned()
         }
-        Error::MediaRefused(MediaProblem::Empty) => "This file is empty".to_owned(),
-        Error::MediaRead(_) => "The file could not be read".to_owned(),
-        other => format!("The image could not be added: {other}"),
+        AddImageError::Store(other) => format!("The image could not be added: {other}"),
     }
 }
 
@@ -146,13 +165,20 @@ mod tests {
     fn files_come_before_pictures_and_text_last() {
         assert_eq!(offered(true, true), Offered::Files);
         assert_eq!(offered(true, false), Offered::Files);
-        assert_eq!(offered(false, true), Offered::Texture);
+        assert_eq!(offered(false, true), Offered::Picture);
         assert_eq!(offered(false, false), Offered::Text);
     }
 
     #[test]
+    fn a_picture_replaces_files_only_when_none_is_local() {
+        assert!(picture_instead(0, true));
+        assert!(!picture_instead(0, false));
+        assert!(!picture_instead(1, true));
+    }
+
+    #[test]
     fn refusals_are_said_in_words() {
-        let refused = |p| add_failed_text(&Error::MediaRefused(p));
+        let refused = |p| add_failed_text(&AddImageError::Store(Error::MediaRefused(p)));
         assert_eq!(
             refused(MediaProblem::NotMedia),
             "This file is not a PNG, JPEG, WebP or GIF image"
@@ -170,10 +196,31 @@ mod tests {
         );
         assert_eq!(refused(MediaProblem::Empty), "This file is empty");
         assert_eq!(
-            add_failed_text(&Error::MediaRead(io::Error::other("gone"))),
+            add_failed_text(&AddImageError::Store(Error::MediaRead(io::Error::other(
+                "gone"
+            )))),
             "The file could not be read"
         );
-        assert!(add_failed_text(&Error::NoMediaDir).starts_with("The image could not be added: "));
+        assert_eq!(
+            add_failed_text(&AddImageError::Unreadable(io::Error::other("gone"))),
+            "The file could not be read"
+        );
+        assert_eq!(
+            add_failed_text(&AddImageError::NotLocal),
+            "Only files on this computer can be added"
+        );
+        assert_eq!(
+            add_failed_text(&AddImageError::NotAFile),
+            "This is not a file"
+        );
+        assert_eq!(
+            add_failed_text(&AddImageError::TooLarge),
+            "This image is larger than 10 MB"
+        );
+        assert!(
+            add_failed_text(&AddImageError::Store(Error::NoMediaDir))
+                .starts_with("The image could not be added: ")
+        );
     }
 
     #[test]

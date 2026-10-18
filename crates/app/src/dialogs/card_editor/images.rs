@@ -6,6 +6,14 @@
 //! ([`media::insertion`]). A refused file is a toast in the editor's own
 //! overlay saying why ([`media::add_failed_text`]).
 //!
+//! Nothing is ever fetched: a file a drop or the clipboard names by a URL
+//! (`https:`, `sftp:`) is refused unread (`AppState::add_image_on_worker`),
+//! and when only such files come with a picture, the picture is taken
+//! instead ([`media::picture_instead`]). A picture is taken as the bytes
+//! the other program offers in one of the four image types, never decoded
+//! or encoded in Rappel's process: the store checks its first bytes, and
+//! the review page decodes it in glycin's loader like any image.
+//!
 //! An added file stays in the media folder whether or not the card is then
 //! saved: it is content-addressed and harmless, and the clean-up of unused
 //! media (phase 2, slice 5) removes it.
@@ -13,20 +21,22 @@
 use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::{gdk, gio, glib};
-use rappel_core::media::MediaRef;
+use rappel_core::media::{IMAGE_MAX_BYTES, MediaRef};
 
 use super::CardEditor;
 use super::media::{self, Offered};
-use crate::state::AppState;
+use crate::state::{AddImageError, AppState, local_path};
 use crate::ui::worker;
 
 /// Something to add as an image.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum Incoming {
     /// A file the chooser, the clipboard or a drop gave.
     File(gio::File),
-    /// A picture from the clipboard or a drop, encoded as PNG.
-    Png(glib::Bytes),
+    /// A picture's bytes from the clipboard or a drop.
+    Bytes(Vec<u8>),
+    /// A picture that could not be taken (too large, unreadable).
+    Refused(AddImageError),
 }
 
 impl CardEditor {
@@ -118,12 +128,8 @@ impl CardEditor {
             self,
             move |view| {
                 let clipboard = view.clipboard();
-                let formats = clipboard.formats();
-                let kind = media::offered(
-                    formats.contains_type(gdk::FileList::static_type()),
-                    formats.contains_type(gdk::Texture::static_type()),
-                );
-                if kind == Offered::Text {
+                let offer = Offer::Clipboard(clipboard);
+                if offer.offered() == Offered::Text {
                     return;
                 }
                 view.stop_signal_emission_by_name("paste-clipboard");
@@ -134,7 +140,7 @@ impl CardEditor {
                     #[weak]
                     view,
                     async move {
-                        let incoming = read_clipboard(&clipboard, kind).await;
+                        let incoming = offer.read().await;
                         editor.add_images(&view, mark, incoming).await;
                     }
                 ));
@@ -149,12 +155,21 @@ impl CardEditor {
     /// the capture and bubble phases like others (`gtk_propagate_event`,
     /// gtkmain.c), the first target to answer a motion sets the status
     /// (`gtk_drop_status`, gtkdrop.c), and a target that takes the drop
-    /// stops it there (`gtk_drop_target_handle_event`, gtkdroptarget.c). A
-    /// drag of plain text offers neither type, so this target never takes
-    /// it and the text view's does.
+    /// stops it there. A drag of plain text offers none of its formats,
+    /// so the target does not accept it (`gtk_drop_target_async_accept`,
+    /// gtkdroptargetasync.c) and the text view takes it.
+    ///
+    /// An async target, not `GtkDropTarget`: that one loads a single type
+    /// before its `drop` signal (the first of its types the drop offers,
+    /// `gdk_content_formats_match_gtype`), so it could not fall back to the
+    /// picture when the files turn out to be URLs. This one reads what it
+    /// chooses and finishes the drop itself (`gdk_drop_finish`).
     fn setup_drop(&self, view: &sourceview5::View, frame: &gtk::Frame) {
-        let target = gtk::DropTarget::new(glib::Type::INVALID, gdk::DragAction::COPY);
-        target.set_types(&[gdk::FileList::static_type(), gdk::Texture::static_type()]);
+        let mut formats = gdk::ContentFormatsBuilder::new().add_type(gdk::FileList::static_type());
+        for mime in media::IMAGE_MIME_TYPES {
+            formats = formats.add_mime_type(mime);
+        }
+        let target = gtk::DropTargetAsync::new(Some(formats.build()), gdk::DragAction::COPY);
         target.set_propagation_phase(gtk::PropagationPhase::Capture);
         target.connect_drop(glib::clone!(
             #[weak(rename_to = editor)]
@@ -165,21 +180,24 @@ impl CardEditor {
             frame,
             #[upgrade_or]
             false,
-            move |_, value, x, y| {
-                let incoming = if let Ok(files) = value.get::<gdk::FileList>() {
-                    files.files().into_iter().map(Incoming::File).collect()
-                } else if let Ok(texture) = value.get::<gdk::Texture>() {
-                    vec![Incoming::Png(texture.save_to_png_bytes())]
-                } else {
-                    return false;
-                };
+            move |_, drop, x, y| {
                 let mark = drop_mark(&view, &frame, x, y);
+                let drop = drop.clone();
                 glib::spawn_future_local(glib::clone!(
                     #[weak]
                     editor,
                     #[weak]
                     view,
-                    async move { editor.add_images(&view, mark, incoming).await }
+                    async move {
+                        let offer = Offer::Drop(drop.clone());
+                        let incoming = offer.read().await;
+                        drop.finish(if incoming.is_empty() {
+                            gdk::DragAction::empty()
+                        } else {
+                            gdk::DragAction::COPY
+                        });
+                        editor.add_images(&view, mark, incoming).await;
+                    }
                 ));
                 true
             }
@@ -205,11 +223,21 @@ impl CardEditor {
         let mut failure = None;
         for item in incoming {
             let data_dir = data_dir.clone();
-            let result = worker::run(self, move || match item {
-                Incoming::File(file) => AppState::add_image_on_worker(&data_dir, &file),
-                Incoming::Png(bytes) => AppState::add_image_bytes_on_worker(&data_dir, &bytes),
-            })
-            .await;
+            let result = match item {
+                Incoming::File(file) => {
+                    worker::run(self, move || {
+                        AppState::add_image_on_worker(&data_dir, &file)
+                    })
+                    .await
+                }
+                Incoming::Bytes(bytes) => {
+                    worker::run(self, move || {
+                        AppState::add_image_bytes_on_worker(&data_dir, &bytes)
+                    })
+                    .await
+                }
+                Incoming::Refused(err) => Ok(Err(err)),
+            };
             match result {
                 Ok(Ok(media)) => added.push(media),
                 Ok(Err(err)) => {
@@ -263,34 +291,120 @@ fn drop_mark(view: &sourceview5::View, frame: &gtk::Frame, x: f64, y: f64) -> gt
     }
 }
 
-/// What the clipboard holds as images, read as `kind`. A failed read is
-/// logged and adds nothing.
-async fn read_clipboard(clipboard: &gdk::Clipboard, kind: Offered) -> Vec<Incoming> {
-    match kind {
-        Offered::Files => {
-            match clipboard
-                .read_value_future(gdk::FileList::static_type(), glib::Priority::DEFAULT)
+/// Where pasted or dropped images come from: the same questions of
+/// either.
+enum Offer {
+    Clipboard(gdk::Clipboard),
+    Drop(gdk::Drop),
+}
+
+impl Offer {
+    fn formats(&self) -> gdk::ContentFormats {
+        match self {
+            Self::Clipboard(clipboard) => clipboard.formats(),
+            Self::Drop(drop) => drop.formats(),
+        }
+    }
+
+    /// Whether a picture is offered in one of the image types.
+    fn has_picture(&self) -> bool {
+        let formats = self.formats();
+        media::IMAGE_MIME_TYPES
+            .iter()
+            .any(|mime| formats.contain_mime_type(mime))
+    }
+
+    fn offered(&self) -> Offered {
+        media::offered(
+            self.formats().contains_type(gdk::FileList::static_type()),
+            self.has_picture(),
+        )
+    }
+
+    /// What to add: the files, or the picture when none of the files is
+    /// on this computer. A failed read is logged and adds nothing.
+    async fn read(&self) -> Vec<Incoming> {
+        match self.offered() {
+            Offered::Files => {
+                let files = self.read_files().await;
+                let local = files.iter().filter(|f| local_path(f).is_some()).count();
+                if media::picture_instead(local, self.has_picture()) {
+                    vec![self.read_picture().await]
+                } else {
+                    files.into_iter().map(Incoming::File).collect()
+                }
+            }
+            Offered::Picture => vec![self.read_picture().await],
+            Offered::Text => Vec::new(),
+        }
+    }
+
+    async fn read_files(&self) -> Vec<gio::File> {
+        let ty = gdk::FileList::static_type();
+        let read = match self {
+            Self::Clipboard(clipboard) => {
+                clipboard
+                    .read_value_future(ty, glib::Priority::DEFAULT)
+                    .await
+            }
+            Self::Drop(drop) => drop.read_value_future(ty, glib::Priority::DEFAULT).await,
+        };
+        match read {
+            Ok(value) => value
+                .get::<gdk::FileList>()
+                .map(|files| files.files())
+                .unwrap_or_default(),
+            Err(err) => {
+                tracing::warn!("the offered files could not be read: {err}");
+                Vec::new()
+            }
+        }
+    }
+
+    /// The picture's bytes, at most an image's limit: read as a stream,
+    /// stopping one chunk past it.
+    async fn read_picture(&self) -> Incoming {
+        let read = match self {
+            Self::Clipboard(clipboard) => {
+                clipboard
+                    .read_future(&media::IMAGE_MIME_TYPES, glib::Priority::DEFAULT)
+                    .await
+            }
+            Self::Drop(drop) => {
+                drop.read_future(&media::IMAGE_MIME_TYPES, glib::Priority::DEFAULT)
+                    .await
+            }
+        };
+        let stream = match read {
+            Ok((stream, _mime)) => stream,
+            Err(err) => {
+                return Incoming::Refused(AddImageError::Unreadable(std::io::Error::other(
+                    err.to_string(),
+                )));
+            }
+        };
+        let limit = usize::try_from(IMAGE_MAX_BYTES).unwrap_or(usize::MAX);
+        let mut bytes = Vec::new();
+        loop {
+            match stream
+                .read_bytes_future(64 << 10, glib::Priority::DEFAULT)
                 .await
             {
-                Ok(value) => value
-                    .get::<gdk::FileList>()
-                    .map(|files| files.files().into_iter().map(Incoming::File).collect())
-                    .unwrap_or_default(),
+                Ok(chunk) if chunk.is_empty() => break,
+                Ok(chunk) => {
+                    bytes.extend_from_slice(&chunk);
+                    if bytes.len() > limit {
+                        return Incoming::Refused(AddImageError::TooLarge);
+                    }
+                }
                 Err(err) => {
-                    tracing::warn!("the clipboard's files could not be read: {err}");
-                    Vec::new()
+                    return Incoming::Refused(AddImageError::Unreadable(std::io::Error::other(
+                        err.to_string(),
+                    )));
                 }
             }
         }
-        Offered::Texture => match clipboard.read_texture_future().await {
-            Ok(Some(texture)) => vec![Incoming::Png(texture.save_to_png_bytes())],
-            Ok(None) => Vec::new(),
-            Err(err) => {
-                tracing::warn!("the clipboard's picture could not be read: {err}");
-                Vec::new()
-            }
-        },
-        Offered::Text => Vec::new(),
+        Incoming::Bytes(bytes)
     }
 }
 
@@ -335,8 +449,8 @@ mod tests {
             buffer.set_text("ab");
             buffer.place_cursor(&buffer.iter_at_offset(1));
             let view = &*imp.front_view;
-            let png = glib::Bytes::from_owned(crate::testing::png_bytes(4, 3));
-            block_on(editor.add_images(view, cursor_mark(view), vec![Incoming::Png(png)]));
+            let png = crate::testing::png_bytes(4, 3);
+            block_on(editor.add_images(view, cursor_mark(view), vec![Incoming::Bytes(png)]));
             let (start, end) = buffer.bounds();
             let text = buffer.text(&start, &end, false).to_string();
             let reference = text
@@ -383,6 +497,51 @@ mod tests {
                     .count()
             });
             assert_eq!(kept, 0);
+        });
+    }
+
+    #[test]
+    fn a_url_is_refused_unread_and_a_pipe_is_not_waited_on() {
+        crate::testing::with_widgets(|| {
+            let (tmp, _state, _deck, editor, _saved) = super::super::tests::editor_over(None);
+            let imp = editor.imp();
+            let view = &*imp.front_view;
+            // GVfs would fetch these; nothing may read them.
+            for uri in [
+                "https://example.invalid/x.png",
+                "sftp://example.invalid/x.png",
+                "smb://example.invalid/share/x.png",
+            ] {
+                let file = gio::File::for_uri(uri);
+                assert_eq!(local_path(&file), None, "{uri}");
+                block_on(editor.add_images(view, cursor_mark(view), vec![Incoming::File(file)]));
+                assert_eq!(
+                    imp.image_errors.shown_text().as_deref(),
+                    Some("Only files on this computer can be added")
+                );
+            }
+            assert_eq!(imp.front_buffer.char_count(), 0);
+            // A local file is a path.
+            let png = tmp.path().join("x.png");
+            assert_eq!(local_path(&gio::File::for_path(&png)), Some(png));
+            // A named pipe would block an open for reading until a writer
+            // comes: it is opened without blocking and refused.
+            let fifo = tmp.path().join("pipe.png");
+            let made = std::process::Command::new("mkfifo")
+                .arg(&fifo)
+                .status()
+                .expect("mkfifo runs");
+            assert!(made.success());
+            let data = tmp.path().join("data");
+            let refused = crate::testing::within(
+                std::time::Duration::from_secs(2),
+                "adding a pipe",
+                move || AppState::add_image_on_worker(&data, &gio::File::for_path(&fifo)),
+            );
+            assert!(
+                matches!(refused, Err(AddImageError::NotAFile)),
+                "{refused:?}"
+            );
         });
     }
 }
