@@ -9,7 +9,8 @@
 //!
 //! - **MP3**: `ID3v2` tags (their declared sizes), then MPEG audio layer III
 //!   frames, each header valid and each frame whole, back to back to the
-//!   end, which may hold an APE tag and an `ID3v1` tag. Nothing else.
+//!   end, which may hold an `ID3v1` tag. Nothing else (an APE tag is
+//!   refused).
 //! - **Ogg**: pages back to back to the end, each with its CRC, all of one
 //!   logical stream (one serial number, the first page the only one that
 //!   begins a stream, page numbers in order, nothing after the last page),
@@ -18,11 +19,16 @@
 //!   within it, one `fmt ` of PCM or IEEE float (also inside
 //!   `WAVE_FORMAT_EXTENSIBLE`) before a `data` chunk.
 //! - **M4A**: boxes within their parents to the end of the file, at most
-//!   16 deep: `ftyp` first, with an audio brand, then `moov` and `mdat`;
-//!   no reference movie or redirect box (`rmra`, `rdrf`, `rmda`, `rmdr`,
-//!   `rmvc`, `rmcd`, `rmqu`, `rmcs`), every data reference
-//!   self-contained (`url ` or `urn ` with flag 1, nothing else), and
-//!   every track a sound track (`hdlr` of `soun`).
+//!   16 deep: `ftyp` first, with an audio brand, one `moov` and its
+//!   `mdat`. **An allow-list**: at the top level and inside `moov`, `trak`,
+//!   `edts`, `mdia`, `minf`, `dinf`, `stbl`, `udta` and `meta` only the
+//!   boxes real audio files have ([`allowed_inside`]), so no reference
+//!   movie, redirect or compressed movie (`cmov`, which qtdemux
+//!   decompresses and parses), no fragments, no other kind of track; every
+//!   data reference self-contained (`url ` or `urn ` with flag 1), every
+//!   sample description an audio one (`mp4a`, `alac`, `Opus`), every
+//!   track's handler `soun`. `GstPlay` follows a redirect, so for M4A
+//!   "never a URI" rests on this check.
 //!
 //! Images are not checked here: their decoder runs in glycin's sandbox
 //! and never reads a URI (ADR 0055). Every check is one pass over the
@@ -141,17 +147,8 @@ fn mp3(b: &[u8]) -> Check {
     if end - pos >= 128 && b.get(end - 128..end - 125) == Some(b"TAG") {
         end -= 128;
     }
-    // An APE tag: its 32-byte footer at the end, with a header before the
-    // items when its flags say so.
-    if end - pos >= 32 && b.get(end - 32..end - 24) == Some(b"APETAGEX") {
-        let size = u32_le(b, end - 20).and_then(|n| to_usize(u64::from(n)));
-        let flags = u32_le(b, end - 12).unwrap_or(0);
-        let header = if flags & 0x8000_0000 != 0 { 32 } else { 0 };
-        match size.and_then(|s| s.checked_add(header)) {
-            Some(total) if total >= 32 && total <= end - pos => end -= total,
-            _ => return bad("an APE tag of a bad size"),
-        }
-    }
+    // No APE tag: its items are not checked here, so it is refused (it is
+    // not a frame).
     if pos >= end {
         return bad("no MP3 frame");
     }
@@ -364,16 +361,45 @@ fn wav(b: &[u8]) -> Check {
 /// The deepest boxes are looked at.
 const MAX_BOX_DEPTH: usize = 16;
 
-/// Boxes that only hold other boxes, walked into.
-const CONTAINERS: [&[u8; 4]; 13] = [
-    b"moov", b"trak", b"mdia", b"minf", b"dinf", b"stbl", b"edts", b"mvex", b"moof", b"traf",
-    b"udta", b"mfra", b"tref",
+/// Boxes that point a player elsewhere or hide boxes from this walk:
+/// reference movies, redirects, and the compressed movie (`cmov`, whose
+/// `cmvd` qtdemux decompresses and parses as a movie). Refused with their
+/// own reason; the allow-lists below would refuse them too.
+const REFUSED: [&[u8; 4]; 11] = [
+    b"rmra", b"rdrf", b"rmda", b"rmdr", b"rmvc", b"rmcd", b"rmqu", b"rmcs", b"cmov", b"dcom",
+    b"cmvd",
 ];
 
-/// Boxes that point a player elsewhere: reference movies and redirects.
-const REFUSED: [&[u8; 4]; 8] = [
-    b"rmra", b"rdrf", b"rmda", b"rmdr", b"rmvc", b"rmcd", b"rmqu", b"rmcs",
-];
+/// The boxes an audio file may have inside a box of type `parent`, as
+/// real encoders write them (FDK AAC with `mp4mux`, Apple's and ffmpeg's
+/// M4A, iTunes tags); `None` for a box whose inside is not walked. Any
+/// other box there refuses the file: a fragmented movie (`moov/mvex`,
+/// `moof`), track references, compressed movies, unknown boxes.
+fn allowed_inside(parent: [u8; 4]) -> Option<&'static [&'static [u8; 4]]> {
+    Some(match &parent {
+        b"file" => &[b"ftyp", b"moov", b"mdat", b"free", b"skip", b"wide"],
+        b"moov" => &[b"mvhd", b"trak", b"udta", b"iods", b"free", b"skip"],
+        b"trak" => &[b"tkhd", b"edts", b"mdia", b"udta", b"free", b"skip"],
+        b"edts" => &[b"elst"],
+        b"mdia" => &[b"mdhd", b"hdlr", b"minf", b"free", b"skip"],
+        // A QuickTime-style file has its data handler's `hdlr` here.
+        b"minf" => &[b"smhd", b"hdlr", b"dinf", b"stbl", b"free", b"skip"],
+        b"dinf" => &[b"dref"],
+        b"stbl" => &[
+            b"stsd", b"stts", b"stsc", b"stsz", b"stz2", b"stco", b"co64", b"stss", b"sgpd",
+            b"sbgp", b"free", b"skip",
+        ],
+        b"udta" => &[b"meta", b"free", b"skip"],
+        // iTunes tags: the handler and the item list (not walked: tags).
+        b"meta" => &[b"hdlr", b"ilst", b"free", b"skip"],
+        _ => return None,
+    })
+}
+
+/// The sample descriptions an audio track may have, and the boxes inside
+/// one.
+const SAMPLE_ENTRIES: [&[u8; 4]; 3] = [b"mp4a", b"alac", b"Opus"];
+const SAMPLE_ENTRY_BOXES: [&[u8; 4]; 6] = [b"esds", b"alac", b"dOps", b"btrt", b"chan", b"free"];
 
 /// One box of `b` at `pos` within `end`: its type, and where its body
 /// starts and ends.
@@ -399,17 +425,23 @@ fn next_box(b: &[u8], pos: usize, end: usize) -> Result<([u8; 4], usize, usize),
 }
 
 /// Walks the boxes of `b[start..end]`, `depth` deep, inside a box of type
-/// `parent`, checking each.
+/// `parent`: each must be one [`allowed_inside`] it, and is checked.
 fn walk_boxes(b: &[u8], start: usize, end: usize, depth: usize, parent: [u8; 4]) -> Check {
     if depth > MAX_BOX_DEPTH {
         return bad("boxes nested too deep");
     }
+    let Some(allowed) = allowed_inside(parent) else {
+        return Ok(());
+    };
     let mut pos = start;
     let mut handler = false;
     while pos < end {
         let (kind, body, next) = next_box(b, pos, end)?;
         if REFUSED.contains(&&kind) {
-            return bad("a reference movie or redirect box");
+            return bad("a reference movie, redirect or compressed movie box");
+        }
+        if !allowed.contains(&&kind) {
+            return bad("a box an audio file does not have there");
         }
         match &kind {
             b"hdlr" if &parent == b"mdia" => {
@@ -419,8 +451,10 @@ fn walk_boxes(b: &[u8], start: usize, end: usize, depth: usize, parent: [u8; 4])
                 handler = true;
             }
             b"dref" => dref(b, body, next)?,
-            k if CONTAINERS.contains(&k) => walk_boxes(b, body, next, depth + 1, kind)?,
-            _ => {}
+            b"stsd" => stsd(b, body, next)?,
+            // A full box: its children start after version and flags.
+            b"meta" => walk_boxes(b, body + 4, next, depth + 1, kind)?,
+            _ => walk_boxes(b, body, next, depth + 1, kind)?,
         }
         pos = next;
     }
@@ -452,6 +486,47 @@ fn dref(b: &[u8], body: usize, end: usize) -> Check {
     Ok(())
 }
 
+/// The sample descriptions: each an audio one of [`SAMPLE_ENTRIES`]
+/// (sound description version 0 or 1), with only
+/// [`SAMPLE_ENTRY_BOXES`] after its fields.
+fn stsd(b: &[u8], body: usize, end: usize) -> Check {
+    let Some(count) = u32_be(b, body + 4) else {
+        return bad("a cut sample description");
+    };
+    let mut pos = body + 8;
+    let mut seen = 0_u32;
+    while pos < end {
+        let (kind, entry, next) = next_box(b, pos, end)?;
+        if !SAMPLE_ENTRIES.contains(&&kind) {
+            return bad("a sample description that is not audio");
+        }
+        // 6 reserved bytes and a data reference index, then the sound
+        // description: version 0 has 20 bytes of fields, version 1 36.
+        let fields = match b.get(entry + 8..entry + 10) {
+            Some([0, 0]) => 28,
+            Some([0, 1]) => 44,
+            _ => return bad("a sound description of an unknown version"),
+        };
+        let mut inner = entry + fields;
+        if inner > next {
+            return bad("a cut sound description");
+        }
+        while inner < next {
+            let (child, _, after) = next_box(b, inner, next)?;
+            if !SAMPLE_ENTRY_BOXES.contains(&&child) {
+                return bad("a box an audio sample description does not have");
+            }
+            inner = after;
+        }
+        seen = seen.saturating_add(1);
+        pos = next;
+    }
+    if seen != count || seen == 0 {
+        return bad("a sample description of a bad count");
+    }
+    Ok(())
+}
+
 fn m4a(b: &[u8]) -> Check {
     let (first, _, _) = next_box(b, 0, b.len())?;
     if &first != b"ftyp" {
@@ -460,19 +535,19 @@ fn m4a(b: &[u8]) -> Check {
     if MediaKind::detect(b) != Some(MediaKind::M4a) {
         return bad("an MP4 without an audio brand");
     }
-    let (mut moov, mut mdat) = (false, false);
+    let (mut moov, mut mdat) = (0, 0);
     let mut pos = 0;
     while pos < b.len() {
         let (kind, _, next) = next_box(b, pos, b.len())?;
         match &kind {
-            b"moov" => moov = true,
-            b"mdat" => mdat = true,
+            b"moov" => moov += 1,
+            b"mdat" => mdat += 1,
             _ => {}
         }
         pos = next;
     }
-    if !moov || !mdat {
-        return bad("an M4A without moov or mdat");
+    if moov != 1 || mdat == 0 {
+        return bad("an M4A without one moov and its mdat");
     }
     walk_boxes(b, 0, b.len(), 0, *b"file")
 }

@@ -78,6 +78,10 @@ fn playlists_and_sessions_behind_an_id3_tag_are_refused() {
     let mut tail = MP3_ID3.to_vec();
     tail.extend_from_slice(b"#EXTM3U\nhttp://example.invalid/\n");
     assert!(check_structure(MediaKind::Mp3, &tail).is_err());
+    // An APE tag at the end is refused (its items are not checked).
+    let mut ape = MP3.to_vec();
+    ape.extend_from_slice(b"APETAGEX\xd0\x07\0\0\x20\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0");
+    assert!(check_structure(MediaKind::Mp3, &ape).is_err());
     // A cut last frame, and nothing but a tag.
     assert!(check_structure(MediaKind::Mp3, &MP3[..MP3.len() - 1]).is_err());
     assert!(check_structure(MediaKind::Mp3, &id3_then(b"")).is_err());
@@ -129,6 +133,31 @@ fn m4a_references_redirects_and_other_tracks_are_refused() {
     let mut trailing = M4A.to_vec();
     trailing.extend_from_slice(b"#EXTM3U");
     assert!(check_structure(MediaKind::M4a, &trailing).is_err());
+    // A compressed movie (qtdemux would decompress and parse it, with
+    // whatever redirect it holds), a fragmented movie, and a box no audio
+    // file has in the sample table.
+    let last_udta = M4A.windows(4).rposition(|w| w == b"udta").unwrap();
+    for (at, name) in [
+        (last_udta, b"cmov"),
+        (last_udta, b"mvex"),
+        (find(M4A, b"stco"), b"xyzw"),
+        (find(M4A, b"esds"), b"wave"),
+        (find(M4A, b"mp4a"), b"avc1"),
+    ] {
+        let mut changed = M4A.to_vec();
+        changed[at..at + 4].copy_from_slice(name);
+        assert!(
+            check_structure(MediaKind::M4a, &changed).is_err(),
+            "{}",
+            String::from_utf8_lossy(name)
+        );
+    }
+    let mut fragment = M4A.to_vec();
+    fragment.extend_from_slice(b"\x00\x00\x00\x10moof\x00\x00\x00\x08mfhd");
+    assert!(check_structure(MediaKind::M4a, &fragment).is_err());
+    let mut compressed = M4A.to_vec();
+    compressed.extend_from_slice(b"\x00\x00\x00\x10cmov\x00\x00\x00\x08dcom");
+    assert!(check_structure(MediaKind::M4a, &compressed).is_err());
     let mut no_moov = M4A.to_vec();
     let at = find(&no_moov, b"moov");
     no_moov[at..at + 4].copy_from_slice(b"skip");

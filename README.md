@@ -35,6 +35,8 @@ scripts/check.sh                           # format, lint, test, licence/advisor
 scripts/install-hooks.sh                   # once per clone: run checks before every commit
 ```
 
+At launch Rappel starts itself again once, in the same process, to switch off GStreamer's streaming and network elements (`GST_PLUGIN_FEATURE_RANK`, ADR 0056). A debugger follows it (gdb prints "is executing new program"). To skip the restart, give the variable its value already: Rappel's entries (`DEMOTED` in `crates/app/src/gst_env.rs`, each as `name:none`) at its end, e.g. run `RUST_LOG=rappel=debug` once and copy the value from `/proc/<pid>/environ`; or set `RAPPEL_GST_FEATURES_DEMOTED=1` as well, which skips it even without them (then GStreamer's network elements are not demoted).
+
 Some tests start GTK, so `scripts/check.sh` needs a display: a desktop session, or `xvfb-run -a scripts/check.sh` without one (as CI does).
 
 Cargo rebuilds the UI when a file in `crates/app/data/` changes, judging by the files' modification times. A file copied in with an older time (`cp -p`, `rsync -a`, unpacking an archive) is not noticed; if the app then stops at start with "Unable to retrieve child object …", run `cargo clean -p rappel` (ADR 0047).
