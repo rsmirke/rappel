@@ -14,7 +14,7 @@ Version: **0.2.0-beta.1** in `Cargo.toml`, `Cargo.lock` and `CHANGELOG.md`. Not 
 | 3a. Flaky timing tests | #81 | Time bounds measure CPU time, adjusted for how loaded the machine is. Closes #67. |
 | 3b. Hardening round 2 | #82, #83 | Attack tests on everything since round 1 (ADR 0050), in core and in the app. Closes #50. |
 | 4. Remaining Phase 1 issues | #84 | Add Tags… with suggestions (closes #65); the review card is named for screen readers (refs #48). |
-| 5. Beta preparation | this PR | Version 0.2.0-beta.1, this report and the open questions. |
+| 5. Beta preparation | #85 | Version 0.2.0-beta.1, this report and the open questions. |
 
 ### 1. UI overhaul
 - **Shell (#72, ADR 0040).** Pages stay in one navigation view: a split view was prototyped and dropped (reasons under Decisions). On windows narrower than 400 sp, Study moves from the header to a pill in a bottom bar. The window stack is an `AdwViewStack`. The window fits at 360 × 294.
@@ -59,7 +59,7 @@ Version: **0.2.0-beta.1** in `Cargo.toml`, `Cargo.lock` and `CHANGELOG.md`. Not 
 ### 3a. Robust timing tests (#81, ADR 0049)
 - Time bounds check the CPU time of the thread doing the work. When a time is over its bound, it is divided by how much slower a fixed reference job runs right now (never by less than 1). Hangs are caught by a separate wall-clock timeout.
 - No bound was raised.
-- A CPU clock that does not move is not trusted: the tests fall back to the wall clock.
+- A CPU clock that does not move is not trusted: the tests fall back to `/proc/thread-self/stat`, then to the wall clock.
 - Under 60 busy loops, `phase-1` had 7 to 11 failures per run; this has none in 3 runs.
 - Five regressions injected on purpose all still fail their tests: a dropped index, a quadratic lookup, the same lookup 10 times slower, an uncapped loop, and a missing file-type check.
 
@@ -94,7 +94,8 @@ Version: **0.2.0-beta.1** in `Cargo.toml`, `Cargo.lock` and `CHANGELOG.md`. Not 
 
 ### 5. Beta preparation
 - Version 0.2.0-beta.1; the CHANGELOG's Unreleased section became `[0.2.0-beta.1] — 2026-10-18`.
-- `docs/briefs/QUESTIONS.md`: notes 2–5 added.
+- `docs/briefs/QUESTIONS.md`: notes 2–6 added.
+- `SPEC.md`: Phase 1 steps 3–5 marked done, status "in beta".
 - This report.
 
 ## Open questions
@@ -104,6 +105,7 @@ See `docs/briefs/QUESTIONS.md`. No stop condition came up in any slice: no migra
 3. Restoring a backup still replaces a waiting restore copy. Should it set the copy aside instead?
 4. Open PRs against `main` that overlap `phase-1`: #69 (alpha.4 release) and #56 (Reset Progress for new cards).
 5. Tags are never deleted, so a typo tag that was added and then undone stays in the suggestions.
+6. The draft PR `phase-1` → `main` was opened because the brief asks for it, although batch mode otherwise never targets `main`. It is a draft and is not merged.
 
 ## Things to know
 - **Synthetic keys may have reached your desktop session once** (2026-10-17, about 15:40–15:50 local time). The first version of the screenshot harness used AT-SPI's key synthesis, which goes through the desktop's registry daemon, not only the Xvfb display. These keys may have been sent to whatever window had the focus:
@@ -113,7 +115,7 @@ See `docs/briefs/QUESTIONS.md`. No stop condition came up in any slice: no migra
 
   Your session is Wayland, so only an XWayland window could have received them. The harness was then rebuilt to send input only through XTest on the Xvfb display, with a guard that refuses the real display.
 - **The git pre-commit hook ran GTK tests on your real display once,** for the commit that created `QUESTIONS.md`. Every later commit ran under `xvfb-run` with Wayland unset.
-- **A stash `stash@{0}: "regression probes (scratch)"` is left in the repo.** It holds the deliberate regressions used to prove the timing tests still fail. Dropping a stash is denied to the agents. The same diff is saved in the scratchpad, so `git stash drop` is safe.
+- **A stash `stash@{0}: "regression probes (scratch)"` is left in the repo.** It holds the deliberate regressions used to prove the timing tests still fail. Dropping a stash is denied to the agents. They were throwaway probes, so `git stash drop` is safe.
 - **One hard-rule slip:** an implementer ran `git checkout -- crates/core/proptest-regressions` during 3b-core. Those files had no changes at the time, so nothing was discarded.
 - **New direct dependency:** `libc` in the app (#83), for the `O_NOFOLLOW` / `O_NONBLOCK` constants when reading `window-state.ini`. It was already in `Cargo.lock`, its licence is MIT OR Apache-2.0, and no `unsafe` is used. `glib-build-tools` was removed (#79).
 - **`REFERENCE_CPU`,** the speed of the timing tests' reference job, was measured on this laptop only. CI passed on every PR since #81.
@@ -135,7 +137,7 @@ See `docs/briefs/QUESTIONS.md`. No stop condition came up in any slice: no migra
 ## Screenshots
 These are local files only. They are git-ignored and were never committed or uploaded. All are under `docs/briefs/screenshots/`.
 
-### The final tour of `phase-1` (scratch data: decks "Markdown", "Math", "Scratch (300 cards)")
+### The final tour of `phase-1` (scratch data: decks "Markdown (one card per construct)", "Math", "Scratch (300 cards)")
 Each screen in light and dark, at 1000 × 720 and 360 × 640:
 
 | Screen | Files |
@@ -226,7 +228,7 @@ Each PR's own **Checklist** has the detailed steps. This list is the order to go
     - `git stash drop` the "regression probes (scratch)" stash.
     - Answer the questions in `docs/briefs/QUESTIONS.md`.
     - Decide #69, #56 and #70 before merging this PR.
-18. **Release:** if all is well, mark this PR ready, merge it into `main`, and tag `v0.2.0-beta.1` yourself. Batch mode did not tag.
+18. **Release:** if all is well, mark the draft PR `phase-1` → `main` ready, merge it, and tag `v0.2.0-beta.1` yourself. Batch mode did not tag. Its body closes #50, #53, #57, #62, #65 and #67, which are still open because their PRs merged into `phase-1`, not the default branch.
 
 ## Decisions, with reasons
 Every Decision recorded in the PRs merged into `phase-1`, copied from their descriptions. The Try it and Checklist steps of each PR are not repeated here.
