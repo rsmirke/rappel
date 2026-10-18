@@ -19,7 +19,8 @@ use super::validate::{invalid, media_fields};
 use super::{FieldProblem, ImportProblem, Limits};
 use crate::error::{Error, Result};
 use crate::media::{
-    DETECT_BYTES, Ingested, MediaKind, MediaRef, Sync, ingest, insert_media_row, sync_folder,
+    DETECT_BYTES, Ingested, MediaKind, MediaRef, Sync, check_structure, ingest, insert_media_row,
+    sync_folder,
 };
 
 /// What the import keeps of one media record.
@@ -158,15 +159,22 @@ pub(super) fn check_entries<R: Read + Seek>(
     Ok(())
 }
 
-/// Keeps the first bytes written to it and drops the rest.
+/// Keeps the first bytes written to it, or all of them for an audio file
+/// (at most its 20 MB cap, which the archive reader enforces), whose whole
+/// structure is checked (`check_structure`, ADR 0056).
 #[derive(Debug, Default)]
 struct Head {
     bytes: Vec<u8>,
+    whole: bool,
 }
 
 impl Write for Head {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let room = DETECT_BYTES.saturating_sub(self.bytes.len()).min(buf.len());
+        let room = if self.whole {
+            buf.len()
+        } else {
+            DETECT_BYTES.saturating_sub(self.bytes.len()).min(buf.len())
+        };
         self.bytes.extend_from_slice(&buf[..room]);
         Ok(buf.len())
     }
@@ -178,7 +186,8 @@ impl Write for Head {
 
 /// Reads every media entry once, without writing it anywhere: its size and
 /// CRC (checked by the archive reader, capped at its kind's limit), its
-/// first bytes, which must be of the record's type, and its SHA-256, which
+/// first bytes, which must be of the record's type (an audio file: all of
+/// it plain audio of that type, ADR 0056), and its SHA-256, which
 /// must be the record's hash. So a file whose media lie is refused before
 /// anything is written. Run after [`check_entries`], which pairs the
 /// entries with the notes in order.
@@ -192,7 +201,10 @@ pub(super) fn check_contents<R: Read + Seek>(
         let Some(entry) = archive.media_entry(index) else {
             return Err(invalid("media", index, "hash", FieldProblem::NoMediaFile));
         };
-        let mut head = Head::default();
+        let mut head = Head {
+            bytes: Vec::new(),
+            whole: !kind.is_image(),
+        };
         let copied = match archive.copy_entry(&entry, limits.media(kind), &mut head) {
             Ok(copied) => copied,
             Err(CopyError::Archive(problem)) => return Err(problem),
@@ -200,7 +212,9 @@ pub(super) fn check_contents<R: Read + Seek>(
                 return Err(ImportProblem::InvalidArchive(err.to_string()));
             }
         };
-        if MediaKind::detect(&head.bytes) != Some(kind) {
+        if MediaKind::detect(&head.bytes) != Some(kind)
+            || check_structure(kind, &head.bytes).is_err()
+        {
             return Err(invalid("media", index, "mime", FieldProblem::NotOfItsType));
         }
         if copied.sha256 != *note.media.hash() {

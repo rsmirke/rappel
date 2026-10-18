@@ -508,10 +508,19 @@ impl CardAudio {
     /// Follows `stream`: its errors, its end, a video track (refused), and
     /// the time for the note.
     fn watch(&self, stream: &gtk::MediaFile) {
+        // Each handler acts only while `stream` is still this control's:
+        // a stream let go of (stopped, replaced, or kept by `retire` until
+        // it is prepared) must not touch the state of a newer play.
+        let current = |audio: &Self, stream: &gtk::MediaFile| {
+            audio.imp().stream.borrow().as_ref() == Some(stream)
+        };
         stream.connect_error_notify(glib::clone!(
             #[weak(rename_to = audio)]
             self,
             move |stream| {
+                if !current(&audio, stream) {
+                    return;
+                }
                 if let Some(err) = stream.error() {
                     tracing::debug!("an audio file could not be played: {err}");
                     audio.fail();
@@ -522,7 +531,10 @@ impl CardAudio {
             #[weak(rename_to = audio)]
             self,
             move |stream| {
-                // An audio kind by its first bytes, yet GStreamer found a
+                if !current(&audio, stream) {
+                    return;
+                }
+                // An audio kind by its structure, yet GStreamer found a
                 // picture track in it: not what a card's audio is.
                 if stream.is_prepared() && stream.has_video() {
                     tracing::debug!("an audio file has a video track and is not played");
@@ -536,7 +548,10 @@ impl CardAudio {
             #[weak(rename_to = audio)]
             self,
             move |stream| {
-                if stream.is_ended() && audio.imp().state.get() == State::Playing {
+                if current(&audio, stream)
+                    && stream.is_ended()
+                    && audio.imp().state.get() == State::Playing
+                {
                     audio.set_state(State::Ready);
                 }
             }
@@ -545,7 +560,10 @@ impl CardAudio {
             #[weak(rename_to = audio)]
             self,
             move |stream| {
-                if !stream.is_playing() && audio.imp().state.get() == State::Playing {
+                if current(&audio, stream)
+                    && !stream.is_playing()
+                    && audio.imp().state.get() == State::Playing
+                {
                     audio.set_state(State::Ready);
                 }
             }
@@ -553,12 +571,20 @@ impl CardAudio {
         stream.connect_timestamp_notify(glib::clone!(
             #[weak(rename_to = audio)]
             self,
-            move |_| audio.show_time()
+            move |stream| {
+                if current(&audio, stream) {
+                    audio.show_time();
+                }
+            }
         ));
         stream.connect_duration_notify(glib::clone!(
             #[weak(rename_to = audio)]
             self,
-            move |_| audio.show_time()
+            move |stream| {
+                if current(&audio, stream) {
+                    audio.show_time();
+                }
+            }
         ));
     }
 
@@ -654,6 +680,14 @@ mod tests {
             "the window did not show"
         );
         window
+    }
+
+    /// An `ID3v2.4` tag with no frames, then `rest`: an MP3 by its first
+    /// bytes.
+    fn playlist(rest: &[u8]) -> Vec<u8> {
+        let mut out = b"ID3\x04\0\0\0\0\0\0".to_vec();
+        out.extend_from_slice(rest);
+        out
     }
 
     /// Waits until `audio` is no longer loading, or `limit` passes.
@@ -855,7 +889,27 @@ mod tests {
                     b"<html><script></script></html>".to_vec(),
                     "HTML as WAV",
                 ),
+                (
+                    "mp3",
+                    playlist(b"#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\nfile:///tmp/v.m3u8\n"),
+                    "an HLS playlist behind an ID3 tag",
+                ),
+                (
+                    "mp3",
+                    playlist(
+                        b"<?xml version=\"1.0\"?><MPD xmlns=\"urn:mpeg:dash:schema:mpd:2011\"/>",
+                    ),
+                    "a DASH manifest behind an ID3 tag",
+                ),
+                (
+                    "mp3",
+                    playlist(b"v=0\r\nc=IN IP4 192.0.2.1\r\nm=audio 5004 RTP/AVP 0\r\n"),
+                    "an SDP session behind an ID3 tag",
+                ),
             ];
+            // Refused before GStreamer sees a byte: only the noise (whole
+            // MP3 frames) reaches it.
+            let refused_first = |what: &str| what != "20 MB of MP3 noise";
             let column = gtk::Box::new(gtk::Orientation::Vertical, 0);
             let window = on_screen(&column);
             for (seed, (ext, bytes, what)) in (1_u8..).zip(cases) {
@@ -871,6 +925,10 @@ mod tests {
                 // Read, then started or refused: never stuck loading.
                 let state = settle_loaded(&audio, Duration::from_secs(30));
                 assert_ne!(state, State::Loading, "{what}");
+                if refused_first(what) {
+                    assert_eq!(state, State::Unavailable, "{what}");
+                    assert!(audio.imp().stream.borrow().is_none(), "{what}");
+                }
                 // A stream GStreamer cannot use fails within the timeout;
                 // noise may play (it is muted here) until stopped.
                 let settled = crate::testing::settle_until(

@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use rusqlite::{Connection, params};
 use sha2::{Digest, Sha256};
 
-use super::{DETECT_BYTES, MediaKind, MediaProblem, MediaRef, hex};
+use super::{DETECT_BYTES, MediaKind, MediaProblem, MediaRef, check_structure, hex};
 use crate::data_dir::ensure_data_dir;
 use crate::error::{Error, Result};
 use crate::storage::Store;
@@ -225,7 +225,11 @@ pub(crate) enum CopyFailure {
 }
 
 /// Copies `reader` to `out`: its kind from the first bytes, at most its
-/// kind's limit, hashed as it goes.
+/// kind's limit, hashed as it goes. An audio file is also kept in memory
+/// (at most 20 MB) and must be plain audio of its kind over its whole
+/// length ([`check_structure`], ADR 0056), else it is refused as
+/// [`MediaProblem::Malformed`] (what was written to `out` is then the
+/// caller's to drop).
 pub(crate) fn copy_capped(
     reader: &mut impl Read,
     out: &mut impl Write,
@@ -240,6 +244,7 @@ pub(crate) fn copy_capped(
     let mut hasher = Sha256::new();
     hasher.update(&head[..n]);
     out.write_all(&head[..n]).map_err(CopyFailure::Write)?;
+    let mut whole = (!kind.is_image()).then(|| head[..n].to_vec());
     let mut total = n as u64;
     let mut buf = vec![0; 64 << 10];
     loop {
@@ -257,7 +262,16 @@ pub(crate) fn copy_capped(
             return Err(CopyFailure::Refused(MediaProblem::TooLarge { kind, limit }));
         }
         hasher.update(&buf[..n]);
+        if let Some(whole) = whole.as_mut() {
+            whole.extend_from_slice(&buf[..n]);
+        }
         out.write_all(&buf[..n]).map_err(CopyFailure::Write)?;
+    }
+    if let Some(whole) = whole
+        && let Err(why) = check_structure(kind, &whole)
+    {
+        tracing::debug!("an audio file is refused: {}", why.0);
+        return Err(CopyFailure::Refused(MediaProblem::Malformed));
     }
     Ok(Ingested {
         media: MediaRef::new(hasher.finalize().into(), kind),

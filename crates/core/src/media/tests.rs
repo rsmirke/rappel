@@ -541,6 +541,20 @@ fn add_audio_takes_only_audio() {
         Err(Error::MediaRefused(MediaProblem::Empty)) => {}
         other => panic!("{other:?}"),
     }
+    // An ID3 tag, then a playlist: an MP3 by its first bytes only. Refused
+    // by every way in, after the copy (its whole is looked at).
+    let mut playlist = b"ID3\x04\0\0\0\0\0\0".to_vec();
+    playlist.extend_from_slice(b"#EXTM3U\nfile:///etc/passwd\n");
+    assert_eq!(MediaKind::detect(&playlist), Some(MediaKind::Mp3));
+    for added in [
+        store.add_audio(&playlist[..]),
+        store.add_media(&playlist[..]),
+    ] {
+        match added {
+            Err(Error::MediaRefused(MediaProblem::Malformed)) => {}
+            other => panic!("{other:?}"),
+        }
+    }
     assert_eq!(names(&media_dir(&tmp)), [wav.file_name()]);
     assert_eq!(rows(&store).len(), 1);
 }

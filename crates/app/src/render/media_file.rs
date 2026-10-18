@@ -8,7 +8,11 @@
 //! symbolic link, never blocking on a pipe planted under the name) and
 //! checked on the open handle (`fstat`): a regular file, not empty, within
 //! its kind's limit (10 MB for an image, 20 MB for audio). Its first bytes
-//! must be of the reference's kind (`MediaKind::detect`). What is checked
+//! must be of the reference's kind (`MediaKind::detect`), and an audio
+//! file read for playing must be plain audio of its kind over its whole
+//! length (`check_structure`, ADR 0056): a file stored before that check
+//! existed, or put in the folder by hand, is refused here before a byte
+//! reaches `GStreamer`. What is checked
 //! is what is read: the bytes go to the decoder, never the path, so the
 //! file cannot change between the check and the decode.
 
@@ -16,7 +20,7 @@ use std::fs;
 use std::io::{self, Read};
 use std::path::Path;
 
-use rappel_core::media::{DETECT_BYTES, MediaKind, MediaRef};
+use rappel_core::media::{DETECT_BYTES, MediaKind, MediaRef, check_structure};
 
 /// Why a media file is not read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,6 +69,10 @@ pub fn read_media_file(path: &Path, media: MediaRef) -> Result<Vec<u8>, Unreadab
         .map_err(|_| Unreadable::Refused)?;
     let too_large = u64::try_from(bytes.len()).map_or(true, |n| n > limit);
     if too_large || MediaKind::detect(&bytes) != Some(kind) {
+        return Err(Unreadable::Refused);
+    }
+    if let Err(why) = check_structure(kind, &bytes) {
+        tracing::debug!("a media file is refused: {}", why.0);
         return Err(Unreadable::Refused);
     }
     Ok(bytes)
@@ -118,6 +126,18 @@ mod tests {
             assert_eq!(read_media_file(&path, wrong), Err(Unreadable::Refused));
             assert_eq!(check_media_file(&path, wrong), Err(Unreadable::Refused));
         }
+        // An ID3 tag, then a playlist: an MP3 by its first bytes, refused
+        // when read whole (the look at the first bytes cannot know).
+        let mut playlist = b"ID3\x04\0\0\0\0\0\0".to_vec();
+        playlist.extend_from_slice(b"#EXTM3U\nhttps://example.invalid/a.mp3\n");
+        std::fs::write(&path, &playlist).unwrap();
+        assert_eq!(
+            read_media_file(&path, reference("mp3")),
+            Err(Unreadable::Refused)
+        );
+        // A WAV cut short.
+        std::fs::write(&path, &wav()[..40]).unwrap();
+        assert_eq!(read_media_file(&path, wav_ref), Err(Unreadable::Refused));
         std::fs::write(&path, b"<html><script>x</script></html>").unwrap();
         assert_eq!(read_media_file(&path, wav_ref), Err(Unreadable::Refused));
         assert_eq!(check_media_file(&path, wav_ref), Err(Unreadable::Refused));

@@ -2,6 +2,7 @@
 
 mod clock;
 mod dialogs;
+mod gst_env;
 mod pages;
 mod render;
 mod startup;
@@ -49,6 +50,9 @@ fn main() -> glib::ExitCode {
                 .from_env_lossy(),
         )
         .init();
+    // Before GTK or GStreamer are loaded, and before any thread: may start
+    // the program again in place (ADR 0056).
+    gst_env::ensure_demoted();
 
     if let Err(err) = gio::resources_register_include!("rappel.gresource") {
         tracing::error!("failed to register bundled resources: {err}");

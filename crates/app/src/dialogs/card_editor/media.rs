@@ -93,8 +93,8 @@ pub enum Offered {
     /// [`IMAGE_MIME_TYPES`], added as the other program gave them. It is
     /// never decoded in Rappel's process.
     Picture,
-    /// Text, or nothing the editor takes as images: the text view's own
-    /// paste or drop.
+    /// Text, or nothing the editor takes as images or audio files: the
+    /// text view's own paste or drop.
     Text,
 }
 
