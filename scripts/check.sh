@@ -3,7 +3,10 @@
 # Runs as the git pre-commit hook (scripts/pre-commit.sh) and in CI (.github/workflows/ci.yml).
 set -euo pipefail
 
-cd "$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
+# The repository is the folder above this script. Not `git rev-parse
+# --show-toplevel`: in a pre-commit hook of a linked worktree git sets
+# GIT_DIR, and that answers with the current folder instead.
+cd "$(dirname "$(realpath "$0")")/.."
 
 step() {
     printf '\n\033[1m==> %s\033[0m\n' "$*"

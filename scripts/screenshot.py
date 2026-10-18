@@ -42,9 +42,11 @@ RUN_SECONDS = 115
 # The app never gets these from --env: they keep it on the private display,
 # off the session bus and out of real data.
 PROTECTED = {"DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY", "GDK_BACKEND", "DBUS_SESSION_BUS_ADDRESS",
-             "AT_SPI_BUS_ADDRESS", "NO_AT_BRIDGE", "GTK_A11Y", "RAPPEL_DATA_DIR", "HOME",
+             "AT_SPI_BUS_ADDRESS", "DBUS_SYSTEM_BUS_ADDRESS", "NO_AT_BRIDGE", "GTK_A11Y", "RAPPEL_DATA_DIR", "HOME",
              "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR"}
-REAL_DATA = [os.path.expanduser(f"~/.local/share/{name}") for name in ("rappel", "rappel-dev", "cards")]
+REAL_DATA = [os.path.join(base, name)
+             for base in {os.path.expanduser("~/.local/share"), os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")}
+             for name in ("rappel", "rappel-dev", "cards")]
 
 NAMED = {
     " ": "space", "\n": "Return", "\t": "Tab", "!": "exclam", '"': "quotedbl",
@@ -120,10 +122,11 @@ class X:
         time.sleep(0.1)
 
 
-def start_xvfb(width, height, auth):
-    """Starts Xvfb on a display it picks itself; returns (process, ":N")."""
+def start_xvfb(width, height, auth, holder):
+    """Starts Xvfb on a display it picks itself; returns ":N". The process
+    goes into `holder` at once, so cleanup sees it whatever happens next."""
     read_fd, write_fd = os.pipe()
-    xvfb = subprocess.Popen(["Xvfb", "-displayfd", str(write_fd), "-auth", auth, "-nolisten", "tcp",
+    xvfb = holder["xvfb"] = subprocess.Popen(["Xvfb", "-displayfd", str(write_fd), "-auth", auth, "-nolisten", "tcp",
                              "-screen", "0", f"{width}x{height}x24"],
                             pass_fds=(write_fd,), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                             start_new_session=True)
@@ -131,9 +134,8 @@ def start_xvfb(width, height, auth):
     with os.fdopen(read_fd) as f:
         number = f.readline().strip()
     if not number.isdigit() or xvfb.poll() is not None:
-        stop(xvfb)
         raise Stop("Xvfb did not start")
-    return xvfb, f":{number}"
+    return f":{number}"
 
 
 def stop(proc):
@@ -161,7 +163,7 @@ def main():
     p.add_argument("--steps", default="wait:6 shot:")
     p.add_argument("--env", action="append", default=[], help="extra KEY=VALUE for the app")
     a = p.parse_args()
-    if "/" in a.out or a.out.startswith("."):
+    if not a.out or "/" in a.out or a.out.startswith("."):
         sys.exit("--out is a file name stem, not a path")
     extra = dict(kv.partition("=")[::2] for kv in a.env)
     if PROTECTED & extra.keys():
@@ -180,8 +182,10 @@ def main():
     signal.signal(signal.SIGINT, on_signal)
     signal.signal(signal.SIGALRM, on_signal)
     work = tempfile.mkdtemp(prefix="rappel-shot-")
-    xvfb = app = x = log = None
+    app = x = log = None
+    holder = {"xvfb": None}
     saved = []
+    failed = False
     try:
         data = os.path.join(work, "data")
         if a.data:
@@ -201,7 +205,8 @@ def main():
         deadline = time.monotonic() + STEP_SECONDS
         auth = os.path.join(work, "Xauthority")
         open(auth, "w").close()
-        xvfb, display = start_xvfb(width, height, auth)
+        display = start_xvfb(width, height, auth, holder)
+        xvfb = holder["xvfb"]
         subprocess.run(["xauth", "-f", auth, "add", display, ".", secrets.token_hex(16)], check=True, timeout=10)
         os.environ["XAUTHORITY"] = auth  # for this script's own XOpenDisplay and `import`
         home = os.path.join(work, "home")
@@ -209,6 +214,7 @@ def main():
         env.update(extra)
         env.update(DISPLAY=display, XAUTHORITY=auth, GDK_BACKEND="x11", GSK_RENDERER="cairo", NO_AT_BRIDGE="1",
                    GTK_A11Y="none", DBUS_SESSION_BUS_ADDRESS="unix:path=/nonexistent/rappel-harness",
+                   DBUS_SYSTEM_BUS_ADDRESS="unix:path=/nonexistent/rappel-harness",
                    ADW_DEBUG_COLOR_SCHEME=f"prefer-{a.scheme}", RAPPEL_DATA_DIR=data, HOME=home,
                    XDG_CONFIG_HOME=f"{home}/.config", XDG_CACHE_HOME=f"{home}/.cache",
                    XDG_DATA_HOME=f"{home}/.local/share", XDG_STATE_HOME=f"{home}/.local/state",
@@ -223,10 +229,12 @@ def main():
                 raise Stop("Xvfb exited")
             if app.poll() is not None:
                 print(f"the app exited with {app.returncode}; see {log.name}", file=sys.stderr)
+                failed = True
                 break
             left = deadline - time.monotonic()
             if left <= 0:
                 print("time limit reached", file=sys.stderr)
+                failed = True
                 break
             kind, _, arg = step.partition(":")
             arg = arg.replace("%20", " ")
@@ -247,6 +255,7 @@ def main():
                 raise Stop(f"unknown step {step!r}")
     except Stop as err:
         print(f"stopped: {err}", file=sys.stderr)
+        failed = True
     finally:
         signal.alarm(0)
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
@@ -254,12 +263,14 @@ def main():
         if x is not None:
             x.close()
         stop(app)
-        stop(xvfb)
+        stop(holder["xvfb"])
         if log is not None:
             log.close()
         shutil.rmtree(work, ignore_errors=True)
     for path in saved:
         print(path)
+    if failed:
+        sys.exit(1)
 
 
 if __name__ == "__main__":
