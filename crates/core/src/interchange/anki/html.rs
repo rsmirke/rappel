@@ -830,7 +830,7 @@ impl Converter<'_> {
             .attr("alt")
             .map(|a| collapse(a).trim().to_owned())
             .unwrap_or_default();
-        let remote = src.contains(':') || src.starts_with("//");
+        let remote = has_scheme(src) || src.starts_with("//");
         if remote {
             self.resolver.remote_image(src);
             // A data URI can be huge and says nothing; a URL is shown.
@@ -895,6 +895,25 @@ impl Converter<'_> {
     }
 }
 
+/// Whether `src` is an address rather than a file name: it starts with a
+/// URL scheme (`[a-zA-Z][a-zA-Z0-9+.-]*:`) followed by `//` (a web or file
+/// address), or is a `data:`, `blob:` or `javascript:` URL. A file name may
+/// hold a `:` elsewhere (Anki allows it on most systems): "12:30.png" and
+/// "a:b.png" are names, looked up in the package.
+fn has_scheme(src: &str) -> bool {
+    let Some((scheme, rest)) = src.split_once(':') else {
+        return false;
+    };
+    let mut chars = scheme.chars();
+    let is_scheme = chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-'));
+    is_scheme
+        && (rest.starts_with("//")
+            || ["data", "blob", "javascript"]
+                .iter()
+                .any(|s| scheme.eq_ignore_ascii_case(s)))
+}
+
 /// Wraps the runs of inline pieces in `make`, keeping boundaries between
 /// them (bold text with a line break in it is bold on both lines).
 fn group(inner: Vec<Piece>, out: &mut Vec<Piece>, make: &dyn Fn(Vec<Inl>) -> Inl) {
@@ -938,10 +957,11 @@ fn text_walk(nodes: &[Node], pre: bool, out: &mut String, depth: usize) {
                     out.push_str(source);
                     out.push_str(close);
                 }
-                Node::Sound(name) => {
-                    out.push_str("[sound:");
-                    out.push_str(name);
-                    out.push(']');
+                // In code, a sound is its name and an image its alt text:
+                // code shows neither.
+                Node::Sound(name) => out.push_str(name),
+                Node::Element { name, .. } if name == "img" => {
+                    out.push_str(node.attr("alt").unwrap_or(""));
                 }
                 Node::Element { name, children, .. } => {
                     let breaks = name == "br" || is_block(name);

@@ -255,9 +255,71 @@ fn every_output_reads_back_as_its_text() {
     // text (no character became markup).
     let mut state = 0x9e37_79b9_7f4a_7c15_u64;
     let pieces = [
-        "a", " ", "*", "_", "`", "[", "]", "(", ")", "#", "-", "+", "1.", "$", "\\", "|", "~", "&",
-        "<b>", "</b>", "<i>", "</i>", "<br>", "<div>", "</div>", "&lt;", "&amp;", "!", ">", "=",
-        "<s>", "</s>", "<p>", "</p>", "1)", "\t", "**", "é", ".", ",", ":", "'", "\"", "{", "}",
+        "a",
+        " ",
+        "*",
+        "_",
+        "`",
+        "[",
+        "]",
+        "(",
+        ")",
+        "#",
+        "-",
+        "+",
+        "1.",
+        "$",
+        "\\",
+        "|",
+        "~",
+        "&",
+        "<b>",
+        "</b>",
+        "<i>",
+        "</i>",
+        "<br>",
+        "<div>",
+        "</div>",
+        "&lt;",
+        "&amp;",
+        "!",
+        ">",
+        "=",
+        "<s>",
+        "</s>",
+        "<p>",
+        "</p>",
+        "1)",
+        "\t",
+        "**",
+        "é",
+        ".",
+        ",",
+        ":",
+        "'",
+        "\"",
+        "{",
+        "}",
+        "<a href=\"https://x.org/a&amp;b(c)\">L*</a>",
+        "<ul><li>",
+        "</li><li>",
+        "</li></ul>",
+        "<ol start=3><li>",
+        "</ol>",
+        "<h2>",
+        "</h2>",
+        "<blockquote>",
+        "</blockquote>",
+        "<table><tr><td>",
+        "</td><td>",
+        "</td></tr><tr><td>",
+        "</td></tr></table>",
+        "<pre>",
+        "</pre>",
+        "<code>",
+        "</code>",
+        "<img src=\"a.png\" alt=\"P\">",
+        "[sound:s.mp3]",
     ];
     for _ in 0..10_000 {
         let mut html = String::new();
@@ -272,11 +334,36 @@ fn every_output_reads_back_as_its_text() {
             continue;
         }
         let out = md(&html);
-        let expected =
-            super::super::html::plain_text(&html.replace("<br>", " ").replace("<div>", " "));
+        // What Rappel shows of an image is its alt text, of a sound its name.
+        let readable = html
+            .replace("<img src=\"a.png\" alt=\"P\">", "P")
+            .replace("[sound:s.mp3]", "s.mp3")
+            .replace("<br>", " ")
+            .replace("<div>", " ");
+        let expected = super::super::html::plain_text(&readable);
         // Line breaks may differ (a stray `</div>`), never the characters.
         let got: String = shown(&out).split_whitespace().collect();
         let expected: String = expected.split_whitespace().collect();
         assert_eq!(got, expected, "{html:?} → {out:?}");
     }
+}
+
+#[test]
+fn ampersands_in_urls_and_pipes_in_table_code_read_back() {
+    let out = md("<a href=\"https://x.org/?a=1&amp;amp;b=2\">t</a>");
+    let doc = content::parse(&out);
+    let Block::Paragraph(items) = &doc.blocks[0] else {
+        panic!("{out}")
+    };
+    assert!(
+        matches!(&items[0], Inline::Link { url, .. } if url == "https://x.org/?a=1&amp;b=2"),
+        "{out} → {items:?}"
+    );
+    let out = md("<table><tr><td><code>a|b</code></td><td>c</td></tr></table>");
+    let doc = content::parse(&out);
+    let Block::Table { header, .. } = &doc.blocks[0] else {
+        panic!("{out}")
+    };
+    assert_eq!(header.len(), 2, "{out}");
+    assert_eq!(header[0], [Inline::Code("a|b".to_owned())], "{out}");
 }

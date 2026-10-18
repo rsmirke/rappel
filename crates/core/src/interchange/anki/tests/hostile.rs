@@ -96,7 +96,7 @@ fn a_zstd_bomb_stops_at_the_cap() {
             collection: 16 << 20,
             ..AnkiLimits::DEFAULT
         };
-        let result = env.store.plan_anki_bytes(&bytes, &limits);
+        let result = env.store.plan_anki_bytes(&bytes, &limits, PLAN_NOW);
         env.assert_no_temp();
         assert!(
             matches!(
@@ -162,14 +162,14 @@ fn too_many_entries_or_media_files_are_refused() {
     let bytes = b.build(Container::Legacy);
     let mut limits = AnkiLimits::DEFAULT;
     limits.archive.entries = 10;
-    let result = env.store.plan_anki_bytes(&bytes, &limits);
+    let result = env.store.plan_anki_bytes(&bytes, &limits, PLAN_NOW);
     assert!(matches!(
         result,
         Err(Error::AnkiRefused(AnkiProblem::TooManyEntries { .. }))
     ));
     let mut limits = AnkiLimits::DEFAULT;
     limits.media_files = 10;
-    let result = env.store.plan_anki_bytes(&bytes, &limits);
+    let result = env.store.plan_anki_bytes(&bytes, &limits, PLAN_NOW);
     assert!(matches!(
         result,
         Err(Error::AnkiRefused(AnkiProblem::TooManyMediaFiles { .. }))
@@ -304,7 +304,7 @@ fn giant_fields_are_left_out() {
     };
     let plan = env
         .store
-        .plan_anki_bytes(&b.build(Container::Legacy), &limits)
+        .plan_anki_bytes(&b.build(Container::Legacy), &limits, PLAN_NOW)
         .unwrap();
     assert_eq!(plan.summary().cards, 1);
     assert_eq!(count(&plan.summary().skipped, Skip::TooLong), 2);

@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use super::collection::Notetype;
 use super::html::{MediaUse, Resolver, to_blocks};
 use super::markdown::{Block, Inl, render};
-use super::template::{CardContext, Template, TemplateError, after_answer_rule};
+use super::template::{CardContext, CardFields, Template, TemplateError, after_answer_rule};
 use super::{MAX_EXAMPLES, Skip, Skipped};
 use crate::content::{self, Inline};
 use crate::domain::MAX_CARD_SIDE_BYTES;
@@ -143,13 +143,17 @@ pub(super) fn card_sides(
         .get(index)
         .map_or("", |t| t.name.as_str());
     let cloze = u32::try_from(card.ord.saturating_add(1)).unwrap_or(0);
+    // Once per card: each field's emptiness and the special fields.
+    let prepared = CardFields::new(
+        &named,
+        card.tags,
+        &notetype.name,
+        card.deck,
+        template_name,
+        card.flag,
+    );
     let context = |answer| CardContext {
-        fields: &named,
-        tags: card.tags,
-        notetype: &notetype.name,
-        deck: card.deck,
-        card: template_name,
-        flag: card.flag,
+        fields: &prepared,
         cloze,
         answer,
     };

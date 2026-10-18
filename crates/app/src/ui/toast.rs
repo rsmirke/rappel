@@ -155,6 +155,53 @@ fn show_details(title: &str, details: &str) {
     alert.present(parent.as_ref());
 }
 
+/// A toast of `title` (short: it must fit beside its button at 360 px)
+/// whose **Details** open an alert with `summary` as its text and `lines`
+/// (a list, a line each) below it, left-aligned, as an extra child: an
+/// alert's body is centred, which a list does not read well in. Stays until
+/// dismissed. Plain text.
+pub fn report_toast(title: &str, summary: &str, lines: &str) -> adw::Toast {
+    let toast = adw::Toast::builder()
+        .title(title)
+        .use_markup(false)
+        .timeout(0)
+        .button_label(gettext("_Details"))
+        .build();
+    let (title, summary, lines) = (title.to_owned(), summary.to_owned(), lines.to_owned());
+    toast.connect_button_clicked(move |_| show_report(&title, &summary, &lines));
+    toast
+}
+
+/// The alert of [`report_toast`].
+fn show_report(title: &str, summary: &str, lines: &str) {
+    let parent = gtk::gio::Application::default()
+        .and_downcast::<gtk::Application>()
+        .and_then(|app| app.active_window());
+    let alert = adw::AlertDialog::builder()
+        .heading(title)
+        .body(summary)
+        .body_use_markup(false)
+        .extra_child(&report_label(lines))
+        .build();
+    alert.add_response("close", &gettext("_Close"));
+    alert.set_default_response(Some("close"));
+    alert.set_close_response("close");
+    alert.present(parent.as_ref());
+}
+
+/// A left-aligned, wrapping label of plain text, for a list below an
+/// alert's text.
+pub fn report_label(lines: &str) -> gtk::Label {
+    gtk::Label::builder()
+        .label(lines)
+        .use_markup(false)
+        .wrap(true)
+        .wrap_mode(gtk::pango::WrapMode::WordChar)
+        .xalign(0.0)
+        .justify(gtk::Justification::Left)
+        .build()
+}
+
 /// A toast with plain text (paths and errors may contain `<` or `&`) that
 /// stays until dismissed, so the user cannot miss it. A long text gets a
 /// short title and a Details button ([`toast_text`]).

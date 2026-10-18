@@ -305,6 +305,8 @@ impl AppState {
     /// purges the old ones nothing uses (see [`Store::tidy_media_trash`]).
     /// Blocking (it may read every backup); on its own connection.
     pub fn tidy_media_trash_on_worker(data_dir: &Path) -> rappel_core::Result<TrashTidied> {
+        // A temporary copy an Anki import left after a crash goes too.
+        rappel_core::interchange::remove_stale_anki_temps(data_dir);
         Store::open_concurrent(data_dir)?.tidy_media_trash()
     }
 

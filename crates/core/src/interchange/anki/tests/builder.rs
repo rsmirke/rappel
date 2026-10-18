@@ -144,6 +144,27 @@ impl Builder {
         self
     }
 
+    /// A log entry with its interval and ease factor.
+    #[expect(clippy::too_many_arguments, reason = "a test builder of one table row")]
+    pub(super) fn rev_full(
+        &mut self,
+        id: i64,
+        cid: i64,
+        ease: i64,
+        ivl: i64,
+        factor: i64,
+        time: i64,
+        kind: i64,
+    ) -> &mut Self {
+        self.conn
+            .execute(
+                "INSERT INTO revlog VALUES (?1, ?2, 0, ?3, ?4, 0, ?5, ?6, ?7)",
+                params![id, cid, ease, ivl, factor, time, kind],
+            )
+            .unwrap();
+        self
+    }
+
     /// A log entry.
     pub(super) fn rev(&mut self, id: i64, cid: i64, ease: i64, time: i64, kind: i64) -> &mut Self {
         self.conn

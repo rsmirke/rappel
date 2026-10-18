@@ -12,13 +12,14 @@ use rappel_core::Error;
 use rappel_core::interchange::{AnkiPlan, AnkiSummary};
 
 use super::anki_text::{
-    anki_imported_text, anki_refused_text, anki_view, cancelled_text, importing_text, reading_text,
+    anki_done, anki_imported_text, anki_refused_text, anki_view, cancelled_text, importing_text,
+    reading_text,
 };
 use super::confirm_layout;
 use super::text::{check_failed_text, import_failed_text};
 use crate::i18n::gettext;
 use crate::state::AppState;
-use crate::ui::toast::{info_toast, persistent_toast, show_error};
+use crate::ui::toast::{info_toast, report_toast, show_error};
 use crate::ui::worker;
 use crate::window::RappelWindow;
 
@@ -129,12 +130,12 @@ async fn apply(window: &RappelWindow, data_dir: &Path, plan: AnkiPlan) {
     toast.dismiss();
     match result {
         Ok(Ok(report)) => {
-            let text = anki_imported_text(&report);
-            // The report is worth reading: the toast stays when it has one.
-            let toast = if report.skipped.is_empty() {
-                info_toast(&text)
-            } else {
-                persistent_toast(&text)
+            let done = anki_done(&report);
+            // The report is worth reading: the toast stays when it has one,
+            // its lines left-aligned below what was added.
+            let toast = match &done.report {
+                None => info_toast(&anki_imported_text(&done)),
+                Some(lines) => report_toast(&done.title, &done.summary, lines),
             };
             window.add_toast(toast);
             window.data_changed();

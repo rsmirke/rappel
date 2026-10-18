@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use rusqlite::{Connection, Statement, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
 
-use super::collection::{CardRow, CardWalkError, Collection, Notetype, RevRow};
+use super::collection::{CardRow, CardWalkError, Collection, Column, Notetype, RevRow};
 use super::convert::{CardInfo, Parsed, Report, card_sides, math_drawable, parse_templates};
 use super::html::{MediaUse, Resolver, media_names};
 use super::package::{AnkiLimits, Package, from_archive, remove_stale_temps};
@@ -38,7 +38,7 @@ use crate::storage::{
 use crate::time::now_ms;
 
 /// The most tags a card keeps from its note.
-pub(super) const MAX_TAGS: usize = 100;
+use crate::domain::MAX_TAGS_PER_CARD as MAX_TAGS;
 /// The longest time a review may have taken: an hour (Anki caps answers
 /// at a minute by default; longer ones are a clock or a lunch break).
 const MAX_DURATION_MS: i64 = 3_600_000;
@@ -61,16 +61,23 @@ impl Store {
             Source::File(path.to_path_buf()),
             &AnkiLimits::DEFAULT,
             cancel,
+            now_ms(),
         )
     }
 
     /// [`Self::plan_anki_import`] on bytes, with explicit limits, for tests.
     #[cfg(test)]
-    pub(crate) fn plan_anki_bytes(&self, bytes: &[u8], limits: &AnkiLimits) -> Result<AnkiPlan> {
+    pub(crate) fn plan_anki_bytes(
+        &self,
+        bytes: &[u8],
+        limits: &AnkiLimits,
+        now: i64,
+    ) -> Result<AnkiPlan> {
         self.plan_anki_source(
             Source::Bytes(std::sync::Arc::from(bytes)),
             limits,
             &AtomicBool::new(false),
+            now,
         )
     }
 
@@ -79,15 +86,17 @@ impl Store {
         source: Source,
         limits: &AnkiLimits,
         cancel: &AtomicBool,
+        now: i64,
     ) -> Result<AnkiPlan> {
         let data_dir = self.data_dir()?;
         let opened = source.open().map_err(refusal)?;
         let stamp = opened.stamp;
         let tx = self.conn.unchecked_transaction()?;
         let mut run = Run::open(opened.input, opened.len, limits, &data_dir, cancel)?;
-        let outcome = run.convert(&tx, None, now_ms())?;
+        let outcome = run.convert(&tx, None, now, now)?;
         tx.finish()?;
         Ok(AnkiPlan {
+            planned_at: now,
             source,
             stamp,
             limits: *limits,
@@ -166,7 +175,9 @@ impl Store {
         for column in ["decks.id", "cards.id", "tags.id", "review_events.id"] {
             observe_max_id(&tx, &mut self.ids, column)?;
         }
-        let outcome = run.convert(&tx, Some(&mut self.ids), now)?;
+        // The plan's clock decides what the plan decided (card times, the
+        // reviews kept); only the ids written take this one.
+        let outcome = run.convert(&tx, Some(&mut self.ids), plan.planned_at, now)?;
         if outcome.digest != plan.digest || outcome.summary != *summary {
             return Err(Error::ImportPlanStale);
         }
@@ -182,6 +193,7 @@ impl Store {
             Ok(n) => tracing::info!(files = n, "media files an Anki import uses brought back"),
             Err(err) => tracing::warn!("cannot bring media back from the trash: {err}"),
         }
+        before_commit();
         if cancel.load(Ordering::Relaxed) {
             return Err(Error::ImportCancelled);
         }
@@ -287,7 +299,7 @@ impl<'c> Run<'c> {
         check_cancel(cancel)?;
         let temp = package.extract_collection(data_dir)?;
         check_cancel(cancel)?;
-        let collection = Collection::open(&temp.path).map_err(Error::AnkiRefused)?;
+        let collection = Collection::open(&temp.path, limits).map_err(Error::AnkiRefused)?;
         let notetypes = collection.notetypes(limits).map_err(Error::AnkiRefused)?;
         let decks = collection.decks(limits).map_err(Error::AnkiRefused)?;
         let mut run = Self {
@@ -406,7 +418,13 @@ impl<'c> Run<'c> {
     }
 
     /// Converts every card; with `ids`, writes it too.
-    fn convert(&mut self, conn: &Connection, ids: Option<&mut IdGen>, now: i64) -> Result<Outcome> {
+    fn convert(
+        &mut self,
+        conn: &Connection,
+        ids: Option<&mut IdGen>,
+        planned_at: i64,
+        now: i64,
+    ) -> Result<Outcome> {
         let parsed: HashMap<i64, Parsed<'_>> = self
             .notetypes
             .iter()
@@ -437,15 +455,14 @@ impl<'c> Run<'c> {
             tags_seen: HashSet::new(),
             reviewed: Vec::new(),
             tally: Tally::default(),
-            now,
+            invalid_tags: HashSet::new(),
+            now: planned_at,
         };
         let cancel = self.cancel;
-        let mut count = 0_usize;
         let walked = self.collection.each_card(&self.limits, |card, take_revs| {
-            count += 1;
-            if count.is_multiple_of(256) {
-                check_cancel(cancel)?;
-            }
+            // Every card: one card's work is bounded (its template's work
+            // budget), so this is the longest wait for a cancel.
+            check_cancel(cancel)?;
             let revs = take_revs(card.id).map_err(Error::AnkiRefused)?;
             walk.card(&card, &revs)
         });
@@ -523,6 +540,9 @@ struct Walk<'a, 't> {
     tags_seen: HashSet<String>,
     reviewed: Vec<String>,
     tally: Tally,
+    /// Tags already reported as invalid (each is counted once).
+    invalid_tags: HashSet<String>,
+    /// The plan's clock.
     now: i64,
 }
 
@@ -559,6 +579,13 @@ impl Walk<'_, '_> {
             self.decks.insert(key, choice.clone());
             choice
         };
+        // Where the cards go is a decision too: a deck renamed since the
+        // plan would send them elsewhere.
+        match &choice {
+            DeckChoice::Existing(id) => self.digest.update(id.as_bytes()),
+            DeckChoice::New(_) => self.digest.update(b"new"),
+        }
+        self.digest.update([0]);
         for (media, file) in self.resolver.used.drain(..) {
             if self.used_set.insert(media) {
                 self.used_media.push((media, file));
@@ -566,7 +593,7 @@ impl Walk<'_, '_> {
         }
         self.tally.cards += 1;
         self.tally.suspended += usize::from(planned.suspended);
-        self.tally.reviews += planned.history.reviews.len();
+        self.tally.reviews += planned.history.reviews();
         for tag in &planned.tags {
             self.tags_seen.insert(name_key(tag));
         }
@@ -583,12 +610,12 @@ impl Walk<'_, '_> {
             for tag in &p.tags {
                 w.tag(&card_id, tag)?;
             }
-            if !p.history.reviews.is_empty() || p.history.reset_at.is_some() {
-                for (at, grade, ms) in &p.history.reviews {
-                    w.review(&card_id, *at, *grade, *ms)?;
-                }
-                if let Some(at) = p.history.reset_at {
-                    w.reset(&card_id, at)?;
+            if !p.history.entries.is_empty() {
+                for entry in &p.history.entries {
+                    match *entry {
+                        Entry::Review(at, grade, ms) => w.review(&card_id, at, grade, ms)?,
+                        Entry::Reset(at) => w.reset(&card_id, at)?,
+                    }
                 }
                 self.reviewed.push(card_id);
             }
@@ -618,15 +645,29 @@ impl Walk<'_, '_> {
             report.add(Skip::BrokenNote, &[]);
             return None;
         };
-        let Some(fields) = &note.fields else {
-            report.add(Skip::TooLong, &[]);
-            return None;
+        let fields = match &note.fields {
+            Column::Kept(fields) => fields,
+            Column::TooLong => {
+                report.add(Skip::TooLong, &[]);
+                return None;
+            }
+            Column::Missing => {
+                report.add(Skip::BrokenNote, &[]);
+                return None;
+            }
         };
         let fields: Vec<&str> = fields.split('\u{1f}').collect();
         let example = super::html::plain_text(fields.first().copied().unwrap_or(""));
-        let Some(tags) = &note.tags else {
-            report.add(Skip::TooLong, &[&example]);
-            return None;
+        let tags = match &note.tags {
+            Column::Kept(tags) => tags,
+            Column::TooLong => {
+                report.add(Skip::TooLong, &[&example]);
+                return None;
+            }
+            Column::Missing => {
+                report.add(Skip::BrokenNote, &[&example]);
+                return None;
+            }
         };
         self.resolver.used.clear();
         // Templates see the name as Anki shows it.
@@ -661,11 +702,11 @@ impl Walk<'_, '_> {
             deck,
             front: sides.front,
             back: sides.back,
-            tags: card_tags(tags, report),
+            tags: card_tags(tags, report, &mut self.invalid_tags),
             suspended: card.queue == -1,
             created,
             updated,
-            history: history(revs, card.kind == 0, report),
+            history: history(revs, card.kind == 0, self.now, report),
         })
     }
 
@@ -682,12 +723,21 @@ impl Walk<'_, '_> {
         d.update([u8::from(p.suspended)]);
         d.update(p.created.to_le_bytes());
         d.update(p.updated.to_le_bytes());
-        for (at, grade, ms) in &p.history.reviews {
-            d.update(at.to_le_bytes());
-            d.update([u8::from(*grade == Grade::Pass)]);
-            d.update(ms.to_le_bytes());
+        for entry in &p.history.entries {
+            match *entry {
+                Entry::Review(at, grade, ms) => {
+                    d.update([1]);
+                    d.update(at.to_le_bytes());
+                    d.update([u8::from(grade == Grade::Pass)]);
+                    d.update(ms.to_le_bytes());
+                }
+                Entry::Reset(at) => {
+                    d.update([2]);
+                    d.update(at.to_le_bytes());
+                }
+            }
         }
-        d.update(p.history.reset_at.unwrap_or(-1).to_le_bytes());
+        d.update([0]);
     }
 
     /// The summary and the digest, with the media the cards use.
@@ -726,6 +776,24 @@ impl Walk<'_, '_> {
             reviewed: self.reviewed,
         })
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Runs just before an apply's last cancel check and its commit, so
+    /// tests can cancel there.
+    pub(super) static BEFORE_COMMIT: std::cell::RefCell<Option<Box<dyn FnMut()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Before an apply commits (a test hook; nothing otherwise).
+fn before_commit() {
+    #[cfg(test)]
+    BEFORE_COMMIT.with_borrow_mut(|hook| {
+        if let Some(hook) = hook {
+            hook();
+        }
+    });
 }
 
 fn check_cancel(cancel: &AtomicBool) -> Result<()> {
@@ -919,15 +987,19 @@ pub(super) fn rappel_deck_name(anki: &str) -> (String, bool) {
 }
 
 /// A note's tags as Rappel tags: split at whitespace, each checked; at most
-/// [`MAX_TAGS`], each name once.
-fn card_tags(tags: &str, report: &mut Report) -> Vec<String> {
+/// [`MAX_TAGS`], each name once. An invalid tag is reported once in the
+/// whole import (`reported`), a card with too many once.
+fn card_tags(tags: &str, report: &mut Report, reported: &mut HashSet<String>) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut keys: HashSet<String> = HashSet::new();
     let mut extra = 0;
     for tag in tags.split_whitespace() {
         let tag = tag.replace('\0', "\u{FFFD}");
         if check_tag_name(&tag).is_err() {
-            report.add(Skip::InvalidTag, &[&tag]);
+            // A bounded set: past it, tags are counted again.
+            if reported.len() >= 100_000 || reported.insert(tag.clone()) {
+                report.add(Skip::InvalidTag, &[&tag]);
+            }
             continue;
         }
         if !keys.insert(name_key(&tag)) {
@@ -945,50 +1017,83 @@ fn card_tags(tags: &str, report: &mut Report) -> Vec<String> {
     out
 }
 
-/// A card's review history in Rappel's terms.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(super) struct History {
-    /// (time, grade, duration in ms), oldest first.
-    pub(super) reviews: Vec<(i64, Grade, i64)>,
-    /// A reset after the reviews, for a card Anki has as new again
-    /// (forgotten).
-    pub(super) reset_at: Option<i64>,
+/// One entry of a card's log in Rappel's terms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Entry {
+    /// A review: time, grade, duration in ms.
+    Review(i64, Grade, i64),
+    /// A reset (Anki's "Forget").
+    Reset(i64),
 }
 
-/// Maps Anki's log entries of one card: Again is Fail, Hard, Good and
-/// Easy are Pass; learning, review and relearning entries are kept; manual
-/// entries, cramming and anything out of range are left out (counted). A
-/// card that is new in Anki (`is_new`) but has reviews was forgotten: a
-/// reset follows its last entry, so it is new in Rappel too.
-pub(super) fn history(revs: &[RevRow], is_new: bool, report: &mut Report) -> History {
+/// A card's review history in Rappel's terms, oldest first.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct History {
+    pub(super) entries: Vec<Entry>,
+}
+
+impl History {
+    /// How many reviews it has.
+    pub(super) fn reviews(&self) -> usize {
+        self.entries
+            .iter()
+            .filter(|e| matches!(e, Entry::Review(..)))
+            .count()
+    }
+}
+
+/// Maps Anki's log entries of one card (oldest first) to Rappel's. Again
+/// is Fail; Hard, Good and Easy are Pass. Kept: learning, review and
+/// relearning entries (types 0 to 2), and filtered-deck entries that
+/// rescheduled (type 3 with an ease factor; Anki 26.9 logs a review
+/// answered early in a filtered deck that reschedules so, and a preview
+/// or cram that does not with factor 0, checked with its library). A
+/// "Forget" (a manual entry, type 4 or 5, with ease, interval and factor 0)
+/// after a review is a reset at its time. Left out and counted: other
+/// manual entries ("Set Due Date"), filtered entries without a factor,
+/// anything out of range or after `now` (the plan's clock). A card that is
+/// new in Anki (`is_new`) whose history ends with a review was forgotten
+/// otherwise: a reset follows it, so it is new in Rappel too.
+pub(super) fn history(revs: &[RevRow], is_new: bool, now: i64, report: &mut Report) -> History {
     let mut out = History::default();
-    let mut manual = 0;
-    let mut filtered = 0;
-    let mut bad = 0;
-    let mut last_manual: Option<i64> = None;
+    let (mut manual, mut filtered, mut bad) = (0, 0, 0);
+    let mut reviewed = false;
     for rev in revs {
-        if !timestamp_ok(rev.id) || rev.id == super::super::validate::MAX_TIMESTAMP {
+        if !timestamp_ok(rev.id) || rev.id >= super::super::validate::MAX_TIMESTAMP || rev.id > now
+        {
             bad += 1;
             continue;
         }
-        match (rev.kind, rev.ease) {
-            (0..=2, 1) => out.reviews.push((rev.id, Grade::Fail, duration(rev.time))),
-            (0..=2, 2..=4) => out.reviews.push((rev.id, Grade::Pass, duration(rev.time))),
-            (3, _) => filtered += 1,
-            (4 | 5, _) | (0..=2, 0) => {
-                manual += 1;
-                last_manual = Some(last_manual.map_or(rev.id, |m: i64| m.max(rev.id)));
+        let grade = match rev.ease {
+            1 => Some(Grade::Fail),
+            2..=4 => Some(Grade::Pass),
+            _ => None,
+        };
+        let forget = rev.ease == 0 && rev.ivl == 0 && rev.factor == 0;
+        let manual_kind = matches!(rev.kind, 4 | 5);
+        match grade {
+            Some(grade) if (0..=2).contains(&rev.kind) || (rev.kind == 3 && rev.factor != 0) => {
+                out.entries
+                    .push(Entry::Review(rev.id, grade, duration(rev.time)));
+                reviewed = true;
             }
+            _ if rev.kind == 3 => filtered += 1,
+            _ if manual_kind && forget && reviewed => {
+                out.entries.push(Entry::Reset(rev.id));
+                reviewed = false;
+            }
+            _ if manual_kind || (rev.ease == 0 && (0..=2).contains(&rev.kind)) => manual += 1,
             _ => bad += 1,
         }
     }
-    out.reviews.sort_by_key(|(at, _, _)| *at);
     report.add_n(Skip::ManualEntry, manual, &[]);
     report.add_n(Skip::FilteredReview, filtered, &[]);
     report.add_n(Skip::BadReview, bad, &[]);
-    if is_new && let Some((last, _, _)) = out.reviews.last() {
-        let after = last + 1;
-        out.reset_at = Some(last_manual.filter(|m| *m > after).unwrap_or(after));
+    if is_new
+        && reviewed
+        && let Some(Entry::Review(last, _, _)) = out.entries.last()
+    {
+        out.entries.push(Entry::Reset(last + 1));
     }
     out
 }
@@ -998,7 +1103,7 @@ fn duration(ms: i64) -> i64 {
 }
 
 /// When a card was made: its Anki id is the time in milliseconds; one out
-/// of range (or in the future) is the import's time.
+/// of range (or after the plan's clock, `now`) is the plan's time.
 fn card_time(id: i64, now: i64) -> i64 {
     if timestamp_ok(id) && id <= now {
         id

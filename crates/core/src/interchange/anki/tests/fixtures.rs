@@ -8,7 +8,6 @@ use super::*;
 use crate::Error;
 use crate::domain::CardState;
 use crate::interchange::AnkiFormat;
-use crate::test_support::DAY_MS;
 
 const PACKAGES: [&str; 4] = [
     "current.apkg",
@@ -111,8 +110,8 @@ fn the_plan_counts_what_is_imported_and_what_is_not() {
         assert_eq!(examples(k, Skip::MissingMedia), ["gone.png"]);
         assert_eq!(count(k, Skip::UnsupportedMedia), 1);
         assert_eq!(examples(k, Skip::UnsupportedMedia), ["pic.svg"]);
-        // "Set due date" and "Forget".
-        assert_eq!(count(k, Skip::ManualEntry), 2);
+        // "Set due date"; "Forget" is a reset.
+        assert_eq!(count(k, Skip::ManualEntry), 1);
         // Anki leaves unused files out of a deck package, not out of a
         // collection package.
         let unused = usize::from(name == "current.colpkg");
@@ -150,7 +149,7 @@ fn cards_become_plain_markdown_cards() {
             .clone()
     };
     // HTML: bold, italic, underline as text, entities, lists, line breaks.
-    let basic = find("Bonjour **bold** *italic* under \\& \\<x\\> café é😀\u{a0}!");
+    let basic = find("Bonjour **bold** *italic* under \\& \\<x\\> café é😀\u{a0}\\!");
     assert_eq!(basic.0, "Default");
     assert_eq!(
         basic.2,
@@ -266,7 +265,7 @@ fn the_history_is_kept_and_the_schedule_rebuilt_from_it() {
     let (mut env, _) = imported("current.apkg");
     let basic = card_id(
         &env,
-        "Bonjour **bold** *italic* under \\& \\<x\\> café é😀\u{a0}!",
+        "Bonjour **bold** *italic* under \\& \\<x\\> café é😀\u{a0}\\!",
     );
     // Seven seconds each (the fixture's timer, to the second).
     let grades: Vec<(String, Option<String>, i64)> = log(&env, &basic)
@@ -317,7 +316,7 @@ fn tags_are_kept() {
             .collect()
     };
     assert_eq!(
-        names("Bonjour **bold** *italic* under \\& \\<x\\> café é😀\u{a0}!"),
+        names("Bonjour **bold** *italic* under \\& \\<x\\> café é😀\u{a0}\\!"),
         ["geo::europe", "über", "日本語"]
     );
     assert_eq!(names("chat"), ["marked"]);
@@ -339,7 +338,7 @@ fn importing_twice_adds_nothing() {
     assert_eq!(count(&s.skipped, Skip::AlreadyInRappel), 16);
     let report = env
         .store
-        .apply_anki_at(&plan, T0 + 500 * DAY_MS, &AtomicBool::new(false))
+        .apply_anki_at(&plan, APPLY_NOW, &AtomicBool::new(false))
         .unwrap();
     assert_eq!(report.cards, 0);
     assert!(report.backup.is_none(), "nothing written, no backup");
@@ -369,12 +368,12 @@ fn a_cancelled_import_writes_nothing() {
     let source = crate::interchange::source::Source::Bytes(std::sync::Arc::from(&bytes[..]));
     let plan = env
         .store
-        .plan_anki_source(source.clone(), &AnkiLimits::DEFAULT, &cancel);
+        .plan_anki_source(source.clone(), &AnkiLimits::DEFAULT, &cancel, PLAN_NOW);
     assert!(matches!(plan, Err(Error::ImportCancelled)), "{plan:?}");
     env.assert_no_temp();
     let plan = env.plan(&bytes).unwrap();
     cancel.store(true, Ordering::Relaxed);
-    let applied = env.store.apply_anki_at(&plan, T0, &cancel);
+    let applied = env.store.apply_anki_at(&plan, APPLY_NOW, &cancel);
     assert!(
         matches!(applied, Err(Error::ImportCancelled)),
         "{applied:?}"
@@ -386,6 +385,15 @@ fn a_cancelled_import_writes_nothing() {
 
 #[test]
 fn a_database_changed_since_the_plan_refuses_the_apply() {
+    // Without a change, the plan applies, at any time (even one before the
+    // package's cards were made): the plan's clock decides.
+    let mut control = Env::new();
+    let plan = control.plan(&fixture("current.apkg")).unwrap();
+    let applied = control
+        .store
+        .apply_anki_at(&plan, T0, &AtomicBool::new(false));
+    assert_eq!(applied.unwrap().cards, 16);
+
     let mut env = Env::new();
     let plan = env.plan(&fixture("current.apkg")).unwrap();
     // The same card as one of the package's: the plan would add it, the
@@ -412,7 +420,9 @@ fn a_file_changed_since_the_plan_refuses_the_apply() {
         .plan_anki_import(&path, &AtomicBool::new(false))
         .unwrap();
     std::fs::write(&path, fixture("legacy.apkg")).unwrap();
-    let applied = env.store.apply_anki_at(&plan, T0, &AtomicBool::new(false));
+    let applied = env
+        .store
+        .apply_anki_at(&plan, APPLY_NOW, &AtomicBool::new(false));
     assert!(
         matches!(applied, Err(Error::ImportFileChanged)),
         "{applied:?}"

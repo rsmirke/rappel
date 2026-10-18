@@ -2,7 +2,8 @@
 //! as Rappel's Markdown (ADR 0061). Text is escaped so nothing in it is
 //! ever read as Markdown or math: every character that can start markup
 //! anywhere (`\`, `` ` ``, `*`, `_`, `[`, `]`, `<`, `>`, `$`, `~`, `|`, `&`,
-//! `#`) is backslash-escaped, and so is a `-`, `+` or `=` or a number's
+//! `#`, and `!`, which a link after it would turn into an image) is
+//! backslash-escaped, and so is a `-`, `+` or `=` or a number's
 //! `.` or `)` that starts a line. Lines are trimmed, so none is indented
 //! into a code block.
 
@@ -45,7 +46,7 @@ pub(super) fn escape(text: &str, out: &mut String) {
     for c in text.chars() {
         if matches!(
             c,
-            '\\' | '`' | '*' | '_' | '[' | ']' | '<' | '>' | '$' | '~' | '|' | '&' | '#'
+            '\\' | '`' | '*' | '_' | '[' | ']' | '<' | '>' | '$' | '~' | '|' | '&' | '#' | '!'
         ) {
             out.push('\\');
         }
@@ -70,13 +71,16 @@ fn escape_line_start(line: &str) -> String {
 #[derive(Debug, Clone, Copy, Default)]
 #[expect(
     clippy::struct_excessive_bools,
-    reason = "four independent flags, one per kind of inline container"
+    reason = "independent flags, one per kind of container"
 )]
 struct Open {
     strong: bool,
     em: bool,
     strike: bool,
     link: bool,
+    /// In a table cell, where a `|` ends the cell even in a code span
+    /// unless escaped (GFM).
+    table: bool,
 }
 
 /// One inline rendered: plain Markdown, or emphasis whose delimiters are
@@ -106,8 +110,8 @@ fn inlines(items: &[Inl], open: Open, out: &mut String) {
     }
 }
 
-/// `items` with neighbouring emphasis of one kind merged (`*a**b*` would
-/// read as one run of delimiters).
+/// `items` with neighbouring emphasis of one kind, and neighbouring code
+/// spans, merged (`*a**b*` would read as one run of delimiters).
 fn merged(items: &[Inl]) -> Vec<Inl> {
     let mut out: Vec<Inl> = Vec::with_capacity(items.len());
     for item in items {
@@ -115,6 +119,8 @@ fn merged(items: &[Inl]) -> Vec<Inl> {
             (Some(Inl::Strong(a)), Inl::Strong(b))
             | (Some(Inl::Em(a)), Inl::Em(b))
             | (Some(Inl::Strike(a)), Inl::Strike(b)) => a.extend(b.iter().cloned()),
+            // Two code spans side by side would read as one fence.
+            (Some(Inl::Code(a)), Inl::Code(b)) => a.push_str(b),
             _ => out.push(item.clone()),
         }
     }
@@ -196,7 +202,7 @@ fn part(item: &Inl, open: Open) -> Part {
             }
             return Part::Wrapped { delimiter, inner };
         }
-        Inl::Code(code) => code_span(code, &mut out),
+        Inl::Code(code) => code_span(code, open.table, &mut out),
         Inl::Link { children, url } => {
             let mut inner = String::new();
             inlines(children, Open { link: true, ..open }, &mut inner);
@@ -207,7 +213,8 @@ fn part(item: &Inl, open: Open) -> Part {
             out.push_str(inner.trim());
             out.push_str("](<");
             for c in url.chars() {
-                if matches!(c, '<' | '>' | '\\') {
+                // `&` too: `&amp;` would be read as a character reference.
+                if matches!(c, '<' | '>' | '\\' | '&') {
                     out.push('\\');
                 }
                 out.push(c);
@@ -239,9 +246,13 @@ fn part(item: &Inl, open: Open) -> Part {
 }
 
 /// A code span: backticks one more than the longest run inside, and a
-/// space inside each end when the code starts or ends with one.
-fn code_span(code: &str, out: &mut String) {
-    let code = code.replace(['\n', '\r'], " ");
+/// space inside each end when the code starts or ends with one. In a table
+/// cell (`table`), each `|` is escaped, which GFM reads back as `|`.
+fn code_span(code: &str, table: bool, out: &mut String) {
+    let mut code = code.replace(['\n', '\r'], " ");
+    if table {
+        code = code.replace('|', "\\|");
+    }
     let fence = "`".repeat(longest_run(&code, '`') + 1);
     let pad = code.starts_with('`') || code.ends_with('`');
     out.push_str(&fence);
@@ -271,14 +282,19 @@ fn longest_run(text: &str, c: char) -> usize {
 /// Inline content as one paragraph: each line trimmed and its start
 /// escaped.
 fn paragraph(items: &[Inl]) -> String {
-    let md = paragraph_once(items);
+    paragraph_in(items, Open::default())
+}
+
+/// [`paragraph`] with what is open around it.
+fn paragraph_in(items: &[Inl], open: Open) -> String {
+    let md = paragraph_once(items, open);
     // Emphasis delimiters that Rappel's parser would read otherwise (runs
     // that merge, flanking rules) would show as stray asterisks: the
     // paragraph is written again without emphasis.
     if text_of_parsed(&md) == text_of_tree(items) {
         md
     } else {
-        paragraph_once(&without_emphasis(items))
+        paragraph_once(&without_emphasis(items), open)
     }
 }
 
@@ -348,9 +364,9 @@ fn without_emphasis(items: &[Inl]) -> Vec<Inl> {
     out
 }
 
-fn paragraph_once(items: &[Inl]) -> String {
+fn paragraph_once(items: &[Inl], open: Open) -> String {
     let mut raw = String::new();
-    inlines(items, Open::default(), &mut raw);
+    inlines(items, open, &mut raw);
     raw.split('\n')
         .map(|line| {
             // A hard break's backslash ends the line; an escaped one is
@@ -371,7 +387,7 @@ fn paragraph_once(items: &[Inl]) -> String {
 
 /// One line of inline content (a heading, a table cell): breaks are
 /// spaces.
-fn one_line(items: &[Inl]) -> String {
+fn one_line(items: &[Inl], table: bool) -> String {
     let flat: Vec<Inl> = items
         .iter()
         .map(|i| match i {
@@ -379,7 +395,13 @@ fn one_line(items: &[Inl]) -> String {
             other => other.clone(),
         })
         .collect();
-    paragraph(&flat).replace("\\\n", " ").replace('\n', " ")
+    let open = Open {
+        table,
+        ..Open::default()
+    };
+    paragraph_in(&flat, open)
+        .replace("\\\n", " ")
+        .replace('\n', " ")
 }
 
 /// Writes `blocks` as Markdown.
@@ -392,7 +414,7 @@ fn block(b: &Block) -> String {
     match b {
         Block::Para(items) => paragraph(items),
         Block::Heading(level, items) => {
-            let line = one_line(items);
+            let line = one_line(items, false);
             if line.is_empty() {
                 String::new()
             } else {
@@ -420,11 +442,16 @@ fn block(b: &Block) -> String {
             start,
             items,
         } => {
-            // A paragraph with a list under it keeps the list tight.
+            // A paragraph with a list under it keeps the list tight, if
+            // the list may interrupt a paragraph (CommonMark: a numbered
+            // one only when it starts at 1).
             let tight_item = |item: &Vec<Block>| {
                 item.len() <= 1
                     || (matches!(item[0], Block::Para(_))
-                        && item[1..].iter().all(|b| matches!(b, Block::List { .. })))
+                        && item[1..].iter().all(|b| match b {
+                            Block::List { ordered, start, .. } => !ordered || *start == 1,
+                            _ => false,
+                        }))
             };
             let loose = !items.iter().all(tight_item);
             let mut out = Vec::new();
@@ -471,7 +498,7 @@ fn block(b: &Block) -> String {
             let row = |cells: &[Vec<Inl>]| {
                 let mut line = String::from("|");
                 for c in 0..columns {
-                    let cell = cells.get(c).map(|c| one_line(c)).unwrap_or_default();
+                    let cell = cells.get(c).map(|c| one_line(c, true)).unwrap_or_default();
                     line.push(' ');
                     line.push_str(&cell);
                     line.push_str(" |");

@@ -49,6 +49,11 @@ pub(crate) struct AnkiLimits {
     pub notetypes: usize,
     /// Fields or templates of one note type.
     pub notetype_parts: usize,
+    /// Fields and templates of all note types together.
+    pub notetype_parts_total: usize,
+    /// The names of decks, note types, fields and templates together, in
+    /// bytes.
+    pub names: usize,
     /// One card template (question or answer), in bytes.
     pub template: usize,
     /// Decks.
@@ -70,6 +75,8 @@ impl AnkiLimits {
         note_tags: 64 << 10,
         notetypes: 10_000,
         notetype_parts: 1_000,
+        notetype_parts_total: 200_000,
+        names: 16 << 20,
         template: 256 << 10,
         decks: 100_000,
         legacy_json: 64 << 20,
@@ -170,13 +177,17 @@ impl<R: Read + Seek> Package<R> {
             // MediaEntries { repeated MediaEntry entries = 1; }
             // MediaEntry { string name = 1; uint32 size = 2; bytes sha1 = 3;
             //              optional uint32 legacy_zip_filename = 255; }
-            for (index, field) in Fields::new(&bytes).enumerate() {
+            // The files are numbered by their place among the entries
+            // (field 1) only.
+            let mut index = 0_u32;
+            for field in Fields::new(&bytes) {
                 let (number, value) = field.map_err(|_| damaged())?;
                 let (1, Value::Bytes(entry)) = (number, value) else {
                     continue;
                 };
                 let mut name = None;
-                let mut file = u32::try_from(index).map_err(|_| damaged())?;
+                let mut file = index;
+                index = index.checked_add(1).ok_or_else(damaged)?;
                 for field in Fields::new(entry) {
                     match field.map_err(|_| damaged())? {
                         (1, Value::Bytes(b)) => {
@@ -199,19 +210,28 @@ impl<R: Read + Seek> Package<R> {
                 }
             }
         } else {
-            // {"0": "name.png", ...}
-            let map: serde_json::Map<String, serde_json::Value> =
-                serde_json::from_slice(&bytes).map_err(|_| damaged())?;
-            if map.len() > self.limits.media_files {
-                return Err(AnkiProblem::TooManyMediaFiles {
-                    limit: self.limits.media_files,
-                });
-            }
-            for (key, value) in map {
-                let (Some(file), serde_json::Value::String(name)) =
-                    (file_number(key.as_bytes()), value)
-                else {
-                    return Err(damaged());
+            // {"0": "name.png", ...}, read with bounds: a name too long
+            // is kept empty, which is not a usable name.
+            let list =
+                super::json::media_list(&bytes, self.limits.media_files, self.limits.media_name)
+                    .map_err(|refused| {
+                        if refused.1 {
+                            AnkiProblem::TooManyMediaFiles {
+                                limit: self.limits.media_files,
+                            }
+                        } else {
+                            damaged()
+                        }
+                    })?;
+            for (key, name) in list {
+                let file = key
+                    .kept()
+                    .and_then(|k| file_number(k.as_bytes()))
+                    .ok_or_else(damaged)?;
+                let name = match name {
+                    super::json::Text::Kept(name) => name,
+                    super::json::Text::TooLong => String::new(),
+                    super::json::Text::Other => return Err(damaged()),
                 };
                 files.push(ListedFile { name, file });
             }
@@ -231,8 +251,7 @@ impl<R: Read + Seek> Package<R> {
             .archive
             .anki_entry(name)
             .ok_or(Error::AnkiRefused(AnkiProblem::NoCollection))?;
-        let mut temp = TempCollection::create(data_dir)?;
-        let mut file = temp.file()?;
+        let (mut temp, mut file) = TempCollection::create(data_dir)?;
         let mut out = HashingWriter {
             file: &mut file,
             hasher: Sha256::new(),
@@ -284,13 +303,15 @@ pub(super) struct TempCollection {
 }
 
 impl TempCollection {
-    /// A new, empty file `<data_dir>/.anki-import-<random>`, mode `0600`.
-    fn create(data_dir: &Path) -> Result<Self> {
+    /// A new, empty file `<data_dir>/.anki-import-<random>`, mode `0600`,
+    /// and its handle (the file made, never another one opened by name).
+    fn create(data_dir: &Path) -> Result<(Self, File)> {
         crate::data_dir::ensure_data_dir(data_dir)?;
         let mut random = [0; 8];
         getrandom::fill(&mut random).map_err(|err| Error::Random(Box::new(err)))?;
         let path = data_dir.join(format!("{TEMP_PREFIX}{}", hex(&random)));
-        OpenOptions::new()
+        let file = OpenOptions::new()
+            .read(true)
             .write(true)
             .create_new(true)
             .mode(0o600)
@@ -299,21 +320,13 @@ impl TempCollection {
                 path: path.clone(),
                 source,
             })?;
-        Ok(Self {
-            path,
-            sha256: [0; 32],
-        })
-    }
-
-    fn file(&self) -> Result<File> {
-        OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&self.path)
-            .map_err(|source| Error::Io {
-                path: self.path.clone(),
-                source,
-            })
+        Ok((
+            Self {
+                path,
+                sha256: [0; 32],
+            },
+            file,
+        ))
     }
 }
 
@@ -537,6 +550,16 @@ impl<'a, R: Read + Seek> DataReader<'a, R> {
         let inner = match &mut self.data {
             Data::Plain(inner) => &mut **inner,
             Data::Zstd(decoder) => {
+                // A frame with a checksum must have the one of what came
+                // out (xxHash64's low 32 bits, computed as it decoded).
+                let frame = &decoder.decoder;
+                if let Some(expected) = frame.get_checksum_from_data()
+                    && frame.get_calculated_checksum() != Some(expected)
+                {
+                    return Err(ReadFailure::Damaged(
+                        "the compressed data's checksum is wrong".to_owned(),
+                    ));
+                }
                 // The frame ended; nothing may follow it in the entry.
                 let inner = decoder.get_mut();
                 let mut rest = [0; 1];

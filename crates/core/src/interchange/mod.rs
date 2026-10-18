@@ -33,7 +33,7 @@ use std::path::PathBuf;
 
 pub use anki::{
     ANKI_EXTENSIONS, AnkiFormat, AnkiPlan, AnkiProblem, AnkiReport, AnkiSummary, FileKind, Skip,
-    Skipped, file_kind,
+    Skipped, file_kind, remove_stale_anki_temps,
 };
 pub(crate) use format::FORMAT_VERSION;
 

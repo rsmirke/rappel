@@ -2034,10 +2034,10 @@ msgstr ""
 msgid "The import stopped unexpectedly"
 msgstr ""
 
-#. Translators: {count} is a number of notes (Anki's), {limit} the most tags a card keeps.
+#. Translators: {count} is a number of cards, {limit} the most tags a card keeps.
 #: crates/app/src/transfer/anki_text.rs
-msgid "{count} note with more than {limit} tags, the rest left out"
-msgid_plural "{count} notes with more than {limit} tags, the rest left out"
+msgid "{count} card with more than {limit} tags, the rest left out"
+msgid_plural "{count} cards with more than {limit} tags, the rest left out"
 msgstr[0] ""
 msgstr[1] ""
 

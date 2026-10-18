@@ -8,8 +8,7 @@ use crate::i18n::{fill, gettext, ngettext, pgettext};
 use crate::ui::text::{counted, decks_cards_reviews, group_digits, isolate, list_separator};
 use crate::ui::toast::titled;
 
-/// The most tags a card keeps from its note (core's limit).
-const MAX_TAGS: usize = 100;
+use rappel_core::domain::MAX_TAGS_PER_CARD as MAX_TAGS;
 
 /// What the Anki import dialog says.
 #[derive(Debug, PartialEq, Eq)]
@@ -40,11 +39,11 @@ fn is_change(reason: Skip) -> bool {
 fn reason_text(reason: Skip, n: usize) -> String {
     if reason == Skip::TooManyTags {
         return fill(
-            // Translators: {count} is a number of notes (Anki's), {limit}
-            // the most tags a card keeps.
+            // Translators: {count} is a number of cards, {limit} the most
+            // tags a card keeps.
             &ngettext(
-                "{count} note with more than {limit} tags, the rest left out",
-                "{count} notes with more than {limit} tags, the rest left out",
+                "{count} card with more than {limit} tags, the rest left out",
+                "{count} cards with more than {limit} tags, the rest left out",
                 n,
             ),
             &[
@@ -337,17 +336,32 @@ pub(super) fn anki_view(summary: &AnkiSummary) -> AnkiView {
     }
 }
 
-/// The toast after an Anki import: what was added, then the report
-/// behind Details.
-pub(super) fn anki_imported_text(report: &AnkiReport) -> String {
-    let added = decks_cards_reviews(report.new_decks, report.cards, report.reviews).map_or_else(
+/// What the toast after an Anki import says: its title, what was added,
+/// and the report (behind Details), if anything was left out or changed.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct DoneView {
+    pub(super) title: String,
+    pub(super) summary: String,
+    pub(super) report: Option<String>,
+}
+
+/// The toast after an Anki import.
+pub(super) fn anki_done(report: &AnkiReport) -> DoneView {
+    let summary = decks_cards_reviews(report.new_decks, report.cards, report.reviews).map_or_else(
         || gettext("Nothing was imported: everything was already here"),
         |added| fill(&gettext("Imported {added}"), &[("added", &added)]),
     );
-    match report_text(&report.skipped) {
-        None => titled(&gettext("Import done"), added),
-        Some(lines) => titled(&gettext("Import done"), format!("{added}.\n\n{lines}")),
+    DoneView {
+        title: gettext("Import done"),
+        summary,
+        report: report_text(&report.skipped),
     }
+}
+
+/// The toast after an Anki import without a report: the title, or the
+/// title and what was added behind Details if that does not fit.
+pub(super) fn anki_imported_text(done: &DoneView) -> String {
+    titled(&done.title, done.summary.clone())
 }
 
 /// The toast for a package Rappel cannot read.
@@ -489,7 +503,7 @@ mod tests {
         }
         assert_eq!(
             reason_text(Skip::TooManyTags, 3),
-            "3 notes with more than 100 tags, the rest left out"
+            "3 cards with more than 100 tags, the rest left out"
         );
     }
 
@@ -524,25 +538,29 @@ mod tests {
             skipped: vec![skipped(Skip::EmptyFront, 1, &["poisson"])],
             backup: None,
         };
-        let text = anki_imported_text(&report);
-        let ToastText::Detailed { title, details } = toast_text(&text) else {
-            panic!("{text}");
-        };
-        assert_eq!(title, "Import done");
-        assert!(title.chars().count() <= TOAST_FITS_WITH_BUTTON);
+        let done = anki_done(&report);
+        assert_eq!(done.title, "Import done");
+        assert!(done.title.chars().count() <= TOAST_FITS_WITH_BUTTON);
+        assert_eq!(done.summary, "Imported 5 decks, 16 cards and 16 reviews");
         assert_eq!(
-            details,
-            "Imported 5 decks, 16 cards and 16 reviews.\n\nLeft out:\n• 1 card with an empty front (“\u{2068}poisson\u{2069}”)"
+            done.report.as_deref(),
+            Some("Left out:\n• 1 card with an empty front (“\u{2068}poisson\u{2069}”)")
         );
         let plain = AnkiReport {
             skipped: Vec::new(),
             ..report
         };
-        let text = anki_imported_text(&plain);
+        let done = anki_done(&plain);
+        assert_eq!(done.report, None);
+        let text = anki_imported_text(&done);
         assert_eq!(
             text,
             "Import done. Imported 5 decks, 16 cards and 16 reviews"
         );
+        let ToastText::Detailed { title, .. } = toast_text(&text) else {
+            panic!("{text}");
+        };
+        assert_eq!(title, "Import done");
     }
 
     #[test]

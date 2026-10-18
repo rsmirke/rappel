@@ -20,6 +20,7 @@ mod convert;
 mod entities;
 mod html;
 mod import;
+mod json;
 mod markdown;
 mod package;
 mod proto;
@@ -111,10 +112,11 @@ pub enum Skip {
     BadMediaName,
     /// Media: a file no imported card uses. Not imported.
     UnusedMedia,
-    /// Tags: a tag Rappel cannot have (with a comma, too long). Examples
-    /// are the tags.
+    /// Tags: a tag Rappel cannot have (with a comma, too long), counted
+    /// once per name. Examples are the tags.
     InvalidTag,
-    /// Tags: a note with more than 100 tags; the rest are left out.
+    /// Tags: a card whose note has more than 100 tags; the rest are left
+    /// out. Counted per card.
     TooManyTags,
     /// Decks: a deck name longer than Rappel allows, shortened.
     DeckNameShortened,
@@ -180,6 +182,9 @@ impl AnkiSummary {
 #[derive(Clone)]
 pub struct AnkiPlan {
     source: crate::interchange::source::Source,
+    /// The plan's clock, which the apply decides by too (card times, the
+    /// reviews kept), so the same package gives the same decisions.
+    planned_at: i64,
     stamp: Option<crate::interchange::source::Stamp>,
     limits: package::AnkiLimits,
     /// The SHA-256 of the collection.
@@ -251,6 +256,14 @@ pub enum AnkiProblem {
     /// Something in the package cannot be read (says what, not the text).
     #[error("the package is damaged: {0}")]
     Damaged(String),
+}
+
+/// Removes the temporary collections an Anki import left in `data_dir`
+/// after a crash (each import removes its own, and the next one these):
+/// only names an import makes, regular files. Failures are only logged.
+/// The app calls it at startup.
+pub fn remove_stale_anki_temps(data_dir: &std::path::Path) {
+    package::remove_stale_temps(data_dir);
 }
 
 /// Whether a file is a Rappel export or an Anki package, by its name's

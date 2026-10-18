@@ -6,6 +6,8 @@
 //! field as it is and is reported. Templates are untrusted: nesting is
 //! bounded, and the output stops at a cap.
 
+use std::borrow::Cow;
+
 use super::cloze;
 
 /// How deep sections nest at most.
@@ -107,9 +109,15 @@ impl<'a> Template<'a> {
     }
 
     /// Renders the template for `card`. The output stops once it is
-    /// longer than `cap` bytes ([`Rendered::too_long`]).
+    /// longer than `cap` bytes, or once the work done passes four times
+    /// that (the bytes each node reads or writes): then
+    /// [`Rendered::too_long`]. A template of many nodes over a large field
+    /// so costs at most that much, whatever it asks.
     pub(super) fn render(&self, card: &CardContext<'_>, cap: usize) -> Rendered {
-        let mut out = Rendered::default();
+        let mut out = Rendered {
+            work: cap.saturating_mul(4),
+            ..Rendered::default()
+        };
         render(&self.nodes, card, cap, &mut out);
         out
     }
@@ -122,53 +130,87 @@ fn push<'a>(stack: &mut [(&str, bool, Vec<Node<'a>>)], nodes: &mut Vec<Node<'a>>
     }
 }
 
+/// A card's fields as its templates see them, prepared once per card: each
+/// field's value (HTML) and whether it is empty, and the special fields'
+/// values.
+#[derive(Debug, Clone)]
+pub(super) struct CardFields<'a> {
+    fields: Vec<(&'a str, &'a str, bool)>,
+    /// `Tags`, `Type`, `Deck`, `Subdeck`, `Card`, `CardFlag`, `FrontSide`,
+    /// escaped, with whether each is empty.
+    specials: [(&'static str, String, bool); 7],
+}
+
+impl<'a> CardFields<'a> {
+    /// `fields` are the note's (names and values), `tags` its tags as Anki
+    /// writes them, `notetype` its note type's name, `deck` the deck's name
+    /// as Anki writes it (`A::B`), `card` the template's name, `flag` the
+    /// card's flag (0 for none).
+    pub(super) fn new(
+        fields: &[(&'a str, &'a str)],
+        tags: &str,
+        notetype: &str,
+        deck: &str,
+        card: &str,
+        flag: i64,
+    ) -> Self {
+        let special = |name, value: String| {
+            let empty = is_empty_field(&value);
+            (name, value, empty)
+        };
+        Self {
+            fields: fields
+                .iter()
+                .map(|(n, v)| (*n, *v, is_empty_field(v)))
+                .collect(),
+            specials: [
+                special("Tags", html_escape(tags.trim())),
+                special("Type", html_escape(notetype)),
+                special("Deck", html_escape(deck)),
+                special(
+                    "Subdeck",
+                    html_escape(deck.rsplit("::").next().unwrap_or(deck)),
+                ),
+                special("Card", html_escape(card)),
+                special(
+                    "CardFlag",
+                    if flag > 0 {
+                        format!("flag{flag}")
+                    } else {
+                        String::new()
+                    },
+                ),
+                special("FrontSide", String::new()),
+            ],
+        }
+    }
+
+    /// The value of the field or special field `name`, and whether it is
+    /// empty, without copying it.
+    fn get(&self, name: &str) -> Option<(&str, bool)> {
+        if let Some((_, v, e)) = self.specials.iter().find(|(n, _, _)| *n == name) {
+            return Some((v, *e));
+        }
+        self.fields
+            .iter()
+            .find(|(n, _, _)| *n == name)
+            .or_else(|| {
+                self.fields
+                    .iter()
+                    .find(|(n, _, _)| n.eq_ignore_ascii_case(name))
+            })
+            .map(|(_, v, e)| (*v, *e))
+    }
+}
+
 /// What a card's template sees.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct CardContext<'a> {
-    /// The note's fields: names and values (HTML).
-    pub(super) fields: &'a [(&'a str, &'a str)],
-    /// The note's tags as Anki writes them, separated by spaces.
-    pub(super) tags: &'a str,
-    /// The note type's name.
-    pub(super) notetype: &'a str,
-    /// The deck's name as Anki writes it, `A::B`.
-    pub(super) deck: &'a str,
-    /// The template's name.
-    pub(super) card: &'a str,
-    /// The card's flag, 0 for none.
-    pub(super) flag: i64,
+    pub(super) fields: &'a CardFields<'a>,
     /// The cloze number of this card (its template ord plus one).
     pub(super) cloze: u32,
     /// Rendering the answer (else the question).
     pub(super) answer: bool,
-}
-
-impl CardContext<'_> {
-    fn field(&self, name: &str) -> Option<&str> {
-        self.fields
-            .iter()
-            .find(|(n, _)| *n == name)
-            .or_else(|| {
-                self.fields
-                    .iter()
-                    .find(|(n, _)| n.eq_ignore_ascii_case(name))
-            })
-            .map(|(_, v)| *v)
-    }
-
-    /// A special field's value, if `name` is one.
-    fn special(&self, name: &str) -> Option<String> {
-        Some(match name {
-            "Tags" => html_escape(self.tags.trim()),
-            "Type" => html_escape(self.notetype),
-            "Deck" => html_escape(self.deck),
-            "Subdeck" => html_escape(self.deck.rsplit("::").next().unwrap_or(self.deck)),
-            "Card" => html_escape(self.card),
-            "CardFlag" if self.flag > 0 => format!("flag{}", self.flag),
-            "FrontSide" | "CardFlag" => String::new(),
-            _ => return None,
-        })
-    }
 }
 
 /// A rendered template.
@@ -183,13 +225,15 @@ pub(super) struct Rendered {
     /// card's cloze.
     pub(super) cloze_used: bool,
     pub(super) cloze_found: bool,
-    /// The output reached the cap and was cut.
+    /// The output reached the cap, or the work its budget, and was cut.
     pub(super) too_long: bool,
+    /// The work left (bytes read or written).
+    work: usize,
 }
 
 impl Rendered {
     fn push(&mut self, text: &str, cap: usize) {
-        if self.too_long {
+        if !self.charge(text.len()) {
             return;
         }
         if self.html.len() + text.len() > cap {
@@ -197,6 +241,21 @@ impl Rendered {
             return;
         }
         self.html.push_str(text);
+    }
+
+    /// Takes `bytes` of work from the budget; `false` (and cut) once it is
+    /// spent.
+    fn charge(&mut self, bytes: usize) -> bool {
+        if self.too_long {
+            return false;
+        }
+        if let Some(left) = self.work.checked_sub(bytes.max(1)) {
+            self.work = left;
+            true
+        } else {
+            self.too_long = true;
+            false
+        }
     }
 }
 
@@ -218,67 +277,72 @@ fn render(nodes: &[Node<'_>], card: &CardContext<'_>, cap: usize, out: &mut Rend
                 negated,
                 children,
             } => {
-                let value = card
-                    .special(field)
-                    .or_else(|| card.field(field).map(str::to_owned));
-                let filled = value.as_deref().is_some_and(|v| !is_empty_field(v));
+                if !out.charge(1) {
+                    return;
+                }
+                let filled = card.fields.get(field).is_some_and(|(_, empty)| !empty);
                 if filled != *negated {
                     render(children, card, cap, out);
                 }
             }
             Node::Replace { filters, field } => {
-                let text = replacement(filters, field, card, out);
-                out.push(&text, cap);
+                if let Some(text) = replacement(filters, field, card, out) {
+                    out.push(&text, cap);
+                }
             }
         }
     }
 }
 
-/// The value of `{{filters:field}}`.
-fn replacement(
+/// The value of `{{filters:field}}`, borrowed when no filter changes it;
+/// `None` once the work budget is spent.
+fn replacement<'v>(
     filters: &[&str],
     field: &str,
-    card: &CardContext<'_>,
+    card: &CardContext<'v>,
     out: &mut Rendered,
-) -> String {
-    let value = if let Some(v) = card.special(field) {
-        v
-    } else if let Some(v) = card.field(field) {
-        v.to_owned()
-    } else {
+) -> Option<Cow<'v, str>> {
+    let Some((value, _)) = card.fields.get(field) else {
         if !field.is_empty() {
             add_once(&mut out.unknown_fields, field);
         }
-        return String::new();
+        return Some(Cow::Borrowed(""));
     };
     // `type:` asks for an answer to be typed: nothing on the question, the
     // expected answer on the answer.
     if filters.contains(&"type") {
         if !card.answer {
-            return String::new();
+            return Some(Cow::Borrowed(""));
         }
         if filters.contains(&"cloze") {
-            return cloze::only(&value, card.cloze);
+            if !out.charge(value.len()) {
+                return None;
+            }
+            return Some(Cow::Owned(cloze::only(value, card.cloze)));
         }
-        return value;
+        return Some(Cow::Borrowed(value));
     }
     // Filters apply from the field outwards: `text:cloze:Text` is cloze,
-    // then text.
-    let mut value = value;
+    // then text. Each that reads the value is charged for it.
+    let mut value: Cow<'v, str> = Cow::Borrowed(value);
     for filter in filters.iter().rev() {
+        let reads = !matches!(*filter, "hint" | "nc") && !filter.starts_with("tts");
+        if reads && is_known(filter) && !out.charge(value.len()) {
+            return None;
+        }
         value = match *filter {
             "cloze" => {
                 out.cloze_used = true;
                 let mut found = cloze::Found::default();
                 let v = cloze::render(&value, card.cloze, card.answer, &mut found);
                 out.cloze_found |= found.active;
-                v
+                Cow::Owned(v)
             }
-            "cloze-only" => cloze::only(&value, card.cloze),
-            "text" => html_escape(&super::html::plain_text(&value)),
-            "furigana" => ruby(&value, Ruby::Both),
-            "kana" => ruby(&value, Ruby::Reading),
-            "kanji" => ruby(&value, Ruby::Base),
+            "cloze-only" => Cow::Owned(cloze::only(&value, card.cloze)),
+            "text" => Cow::Owned(html_escape(&super::html::plain_text(&value))),
+            "furigana" => Cow::Owned(ruby(&value, Ruby::Both)),
+            "kana" => Cow::Owned(ruby(&value, Ruby::Reading)),
+            "kanji" => Cow::Owned(ruby(&value, Ruby::Base)),
             // Shown as they are: a hint is shown plainly (Rappel has no
             // "show hint" button), text to speech and "no combining" only
             // matter to Anki's audio and search.
@@ -290,7 +354,15 @@ fn replacement(
             }
         };
     }
-    value
+    Some(value)
+}
+
+/// Whether `filter` is one that changes the value (and so reads it).
+fn is_known(filter: &str) -> bool {
+    matches!(
+        filter,
+        "cloze" | "cloze-only" | "text" | "furigana" | "kana" | "kanji"
+    )
 }
 
 /// Whether a field counts as empty for `{{#…}}`: only whitespace, `<br>`
@@ -398,23 +470,30 @@ pub(super) fn after_answer_rule(template: &str) -> Option<&str> {
 mod tests {
     use super::*;
 
-    fn card<'a>(fields: &'a [(&'a str, &'a str)], answer: bool) -> CardContext<'a> {
+    fn prepared<'a>(fields: &[(&'a str, &'a str)]) -> CardFields<'a> {
+        CardFields::new(
+            fields,
+            " geo::europe leech ",
+            "Basic",
+            "A::B::C",
+            "Card 1",
+            0,
+        )
+    }
+
+    fn card<'a>(fields: &'a CardFields<'a>, answer: bool) -> CardContext<'a> {
         CardContext {
             fields,
-            tags: " geo::europe leech ",
-            notetype: "Basic",
-            deck: "A::B::C",
-            card: "Card 1",
-            flag: 0,
             cloze: 1,
             answer,
         }
     }
 
     fn render_str(template: &str, fields: &[(&str, &str)], answer: bool) -> Rendered {
+        let prepared = prepared(fields);
         Template::parse(template)
             .unwrap()
-            .render(&card(fields, answer), 1 << 20)
+            .render(&card(&prepared, answer), 1 << 20)
     }
 
     #[test]
@@ -517,9 +596,10 @@ mod tests {
         let big = "x".repeat(1000);
         let fields = [("F", big.as_str())];
         let template = "{{F}}".repeat(10_000);
+        let prepared = prepared(&fields);
         let out = Template::parse(&template)
             .unwrap()
-            .render(&card(&fields, false), 50_000);
+            .render(&card(&prepared, false), 50_000);
         assert!(out.too_long);
         assert!(out.html.len() <= 50_000);
     }

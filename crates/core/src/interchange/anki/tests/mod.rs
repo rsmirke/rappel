@@ -7,6 +7,7 @@ mod builder;
 mod convert;
 mod fixtures;
 mod hostile;
+mod review;
 
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
@@ -15,6 +16,12 @@ use super::package::AnkiLimits;
 use super::{AnkiPlan, AnkiReport, Skip, Skipped};
 use crate::storage::Store;
 use crate::test_support::T0;
+
+/// The plan's clock in these tests: after every time the fixtures hold
+/// (2026-10, the time Anki made them), whatever the real clock says.
+const PLAN_NOW: i64 = T0 + 400 * crate::test_support::DAY_MS;
+/// The apply's clock: later still.
+const APPLY_NOW: i64 = PLAN_NOW + crate::test_support::DAY_MS;
 
 /// A store in a temporary data directory.
 struct Env {
@@ -34,16 +41,14 @@ impl Env {
     }
 
     fn plan(&self, bytes: &[u8]) -> crate::Result<AnkiPlan> {
-        self.store.plan_anki_bytes(bytes, &AnkiLimits::DEFAULT)
+        self.store
+            .plan_anki_bytes(bytes, &AnkiLimits::DEFAULT, PLAN_NOW)
     }
 
     fn import(&mut self, bytes: &[u8]) -> crate::Result<AnkiReport> {
         let plan = self.plan(bytes)?;
-        self.store.apply_anki_at(
-            &plan,
-            T0 + 400 * crate::test_support::DAY_MS,
-            &AtomicBool::new(false),
-        )
+        self.store
+            .apply_anki_at(&plan, APPLY_NOW, &AtomicBool::new(false))
     }
 
     /// Every live card: (deck name, front, back, suspended), in creation
