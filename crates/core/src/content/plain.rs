@@ -145,6 +145,9 @@ pub(super) fn push_inline_text(inline: &Inline, out: &mut String) {
         | Inline::Strikethrough(inlines)
         | Inline::Link {
             content: inlines, ..
+        }
+        | Inline::Audio {
+            content: inlines, ..
         } => push_inlines_text(inlines, out),
         Inline::Image { alt, .. } => out.push_str(alt),
         Inline::LineBreak => out.push('\n'),

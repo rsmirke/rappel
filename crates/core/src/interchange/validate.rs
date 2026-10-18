@@ -9,12 +9,13 @@
 //! first broken rule of a row is the one reported.
 
 use super::format::{
-    CardRecord, DeckRecord, EARLY_TEST_VERSION, EventRecord, FORMAT_VERSION, SettingsRecord,
-    TagRecord,
+    CardRecord, DeckRecord, EARLY_TEST_VERSION, EventRecord, FORMAT_VERSION, MediaRecord,
+    SettingsRecord, TagRecord,
 };
 use super::{FieldProblem, ImportProblem, Limits};
 use crate::domain::{Grade, Settings, has_nul};
 use crate::id::uuid_v7_value;
+use crate::media::{MediaKind, MediaRef, parse_hex};
 
 /// 9999-12-31T23:59:59.999Z, the latest timestamp a file may hold.
 pub(super) const MAX_TIMESTAMP: i64 = 253_402_300_799_999;
@@ -191,18 +192,44 @@ pub(super) fn event_fields(e: &EventRecord) -> Result<Kind, FieldError> {
     }
 }
 
-/// `exported_at` and `media`, checked before any list.
-pub(super) fn check_top_level(exported_at: i64, has_media: bool) -> Result<(), ImportProblem> {
+/// `exported_at`, checked before any list (then the media records, which
+/// [`super::media::MediaList`] checks as they are read).
+pub(super) fn check_top_level(exported_at: i64) -> Result<(), ImportProblem> {
     if !timestamp_ok(exported_at) {
         return Err(ImportProblem::InvalidTopLevel {
             field: "exported_at",
             reason: FieldProblem::TimestampOutOfRange,
         });
     }
-    if has_media {
-        return Err(ImportProblem::UnsupportedMedia);
-    }
     Ok(())
+}
+
+/// A media record's own fields, in this order: the hash (64 lowercase hex
+/// digits, and after `previous`, the record before: the list is sorted by
+/// hash, each once), the type (one Rappel keeps), the size (above zero,
+/// within the kind's limit) and `created_at`.
+pub(super) fn media_fields(
+    m: &MediaRecord,
+    previous: Option<&[u8; 32]>,
+    limits: &Limits,
+) -> Result<(MediaRef, u64), FieldError> {
+    let hash = parse_hex(m.hash.as_bytes()).ok_or(("hash", FieldProblem::NotHash))?;
+    match previous {
+        Some(p) if *p == hash => return Err(("hash", FieldProblem::DuplicateId)),
+        Some(p) if *p > hash => return Err(("hash", FieldProblem::OutOfOrder)),
+        _ => {}
+    }
+    let kind = MediaKind::from_mime(&m.mime).ok_or(("mime", FieldProblem::UnknownMediaType))?;
+    let bytes = match u64::try_from(m.bytes) {
+        Err(_) => return Err(("bytes", FieldProblem::Negative)),
+        Ok(0) => return Err(("bytes", FieldProblem::Empty)),
+        Ok(n) if n > limits.media(kind) => return Err(("bytes", FieldProblem::TooLarge)),
+        Ok(n) => n,
+    };
+    if !timestamp_ok(m.created_at) {
+        return Err(("created_at", FieldProblem::TimestampOutOfRange));
+    }
+    Ok((MediaRef::new(hash, kind), bytes))
 }
 
 /// Each setting present is within its range; checked last.

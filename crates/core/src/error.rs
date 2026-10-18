@@ -410,6 +410,20 @@ pub enum Error {
     /// import, which needs a backup first, cannot run.
     #[error("this database cannot be backed up, so nothing can be imported into it")]
     NoBackupDir,
+
+    /// A file offered as an image or an audio file is not one Rappel
+    /// keeps (ADR 0054). Nothing was recorded.
+    #[error("cannot add this file: {0}")]
+    MediaRefused(#[source] crate::media::MediaProblem),
+
+    /// Reading a file being added as media failed. Nothing was recorded.
+    #[error("cannot read the media file: {0}")]
+    MediaRead(#[source] io::Error),
+
+    /// This store has no data directory (an in-memory store), so it has
+    /// no media folder.
+    #[error("this database has no media folder")]
+    NoMediaDir,
 }
 
 /// `Result` with [`Error`] as the error type.

@@ -106,7 +106,8 @@ fn formulas_in(inlines: &[Inline]) -> usize {
             Inline::Emphasis(inner)
             | Inline::Strong(inner)
             | Inline::Strikethrough(inner)
-            | Inline::Link { content: inner, .. } => formulas_in(inner),
+            | Inline::Link { content: inner, .. }
+            | Inline::Audio { content: inner, .. } => formulas_in(inner),
             _ => 0,
         })
         .sum()

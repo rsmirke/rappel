@@ -92,7 +92,7 @@ fn json_problem(err: &serde_json::Error) -> ImportProblem {
 /// tags, card tags, review events, then settings. The first broken rule is
 /// the one reported.
 pub(super) fn check(doc: &Document, limits: &Limits) -> Result<(), ImportProblem> {
-    check_top_level(doc)?;
+    check_top_level(doc, limits)?;
     let decks = check_decks(doc, limits)?;
     let cards = check_cards(doc, &decks, limits)?;
     let tags = check_tags(doc, limits)?;
@@ -101,15 +101,23 @@ pub(super) fn check(doc: &Document, limits: &Limits) -> Result<(), ImportProblem
     check_settings(doc)
 }
 
-fn check_top_level(doc: &Document) -> Result<(), ImportProblem> {
+fn check_top_level(doc: &Document, limits: &Limits) -> Result<(), ImportProblem> {
     if !timestamp_ok(doc.exported_at) {
         return Err(ImportProblem::InvalidTopLevel {
             field: "exported_at",
             reason: FieldProblem::TimestampOutOfRange,
         });
     }
+    // The media records on their own, then against the archive's media
+    // entries, which the oracle's archives never have (ADR 0054).
+    let mut previous = None;
+    for (index, m) in doc.media.iter().enumerate() {
+        let (media, _) = super::super::validate::media_fields(m, previous.as_ref(), limits)
+            .map_err(|(field, reason)| invalid("media", index, field, reason))?;
+        previous = Some(*media.hash());
+    }
     if !doc.media.is_empty() {
-        return Err(ImportProblem::UnsupportedMedia);
+        return Err(invalid("media", 0, "hash", FieldProblem::NoMediaFile));
     }
     Ok(())
 }

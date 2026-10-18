@@ -71,6 +71,7 @@ fn export_delete_all_import_revives_everything() {
                 present: 8,
                 revived: 0
             },
+            media: TableCounts::default(),
             settings: SettingsImport::Unchanged,
             conflicts: vec![],
         }
@@ -148,6 +149,7 @@ fn a_mixed_import_revives_adds_and_skips() {
                 present: 8,
                 revived: 0
             },
+            media: TableCounts::default(),
             settings: SettingsImport::Unchanged,
             conflicts: vec![],
         }
@@ -250,6 +252,7 @@ fn a_row_deleted_in_the_file_but_live_here_is_present() {
                 present: 8,
                 revived: 0
             },
+            media: TableCounts::default(),
             settings: SettingsImport::Unchanged,
             conflicts: vec![],
         }

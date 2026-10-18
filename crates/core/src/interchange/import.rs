@@ -23,6 +23,7 @@ use rusqlite::{Connection, TransactionBehavior};
 use super::archive::Archive;
 use super::engine::{Engine, Found, Stop};
 use super::format::SettingsRecord;
+use super::media::{check_contents, check_entries, store_new_media};
 use super::source::Source;
 use super::stream::{Focus, ReadEnd, Table, read_document, read_header};
 use super::validate::version_problem;
@@ -49,6 +50,10 @@ impl Store {
     /// name of a database tag is mapped onto it, not a conflict. It also
     /// says whether the file's settings would be applied: only into a
     /// database without decks. Pass the plan to [`Self::apply_import`].
+    ///
+    /// Every media file of the archive is read once, without being written
+    /// anywhere, and must have its record's hash and type (ADR 0054); the
+    /// summary counts the new and present ones.
     ///
     /// The file is read as a stream: the plan holds the summary and a
     /// fingerprint of the file, not its content.
@@ -83,6 +88,9 @@ impl Store {
                 let (sha256, found) = read_step_by_step(&tx, &mut archive, limits, None)?;
                 (Mode::StepByStep, sha256, found)
             };
+        // Last, every media file's content, read once and kept nowhere: a
+        // file whose media lie is refused before anything is written.
+        check_contents(&found.media, &mut archive, limits).map_err(Error::ImportRefused)?;
         // Read only: ending the transaction cannot lose anything.
         tx.finish()?;
         Ok(ImportPlan {
@@ -111,14 +119,18 @@ impl Store {
     /// database is backed up (no backup, no import), then, in one
     /// transaction, the file is read again, compared again and written row
     /// by row, and refused if any decision differs from the plan's (the
-    /// database changed since). Last, the schedule cache of every card
-    /// that got log entries is rebuilt from its log. A card brought back
+    /// database changed since). Then the new media files are copied into
+    /// the media folder (hashed again; a file that is not the plan's is
+    /// [`Error::ImportFileChanged`], and files copied before stay there
+    /// unused) and recorded. Last, the schedule cache of every card that
+    /// got log entries is rebuilt from its log. A card brought back
     /// keeps its schedule, which deleting it did not touch.
     ///
     /// # Errors
     /// [`Error::ImportConflicts`], [`Error::ImportPlanStale`],
-    /// [`Error::ImportFileChanged`], [`Error::NoBackupDir`], IO, backup,
-    /// scheduler and SQLite errors. On error nothing is written.
+    /// [`Error::ImportFileChanged`], [`Error::NoBackupDir`],
+    /// [`Error::NoMediaDir`], IO, backup, scheduler and SQLite errors. On
+    /// error nothing is written to the database.
     pub fn apply_import(&mut self, plan: &ImportPlan) -> Result<ImportReport> {
         self.apply_import_at(plan, now_ms())
     }
@@ -136,6 +148,7 @@ impl Store {
                 tags: 0,
                 card_tags: 0,
                 review_events: 0,
+                media: 0,
                 settings_applied: false,
                 revived_decks: 0,
                 revived_cards: 0,
@@ -180,6 +193,14 @@ impl Store {
         if found.digest != plan.digest || found.summary != *summary {
             return Err(Error::ImportPlanStale);
         }
+        // The new media files, into the media folder, before the rows
+        // commit: a file that is not the plan's drops the transaction.
+        let media = if found.media.new_count() > 0 {
+            let dir = self.media_dir.clone().ok_or(Error::NoMediaDir)?;
+            store_new_media(&tx, &found.media, &mut archive, &plan.limits, &dir)?
+        } else {
+            0
+        };
         let settings_applied = summary.settings == SettingsImport::Applied;
         if settings_applied {
             replace_settings(&tx, &stored_of(&found.settings))?;
@@ -196,6 +217,7 @@ impl Store {
             tags = summary.tags.new,
             card_tags = summary.card_tags.new,
             review_events = summary.review_events.new,
+            media,
             settings_applied,
             revived_decks = summary.decks.revived,
             revived_cards = summary.cards.revived,
@@ -207,6 +229,7 @@ impl Store {
             tags: summary.tags.new,
             card_tags: summary.card_tags.new,
             review_events: summary.review_events.new,
+            media,
             settings_applied,
             revived_decks: summary.decks.revived,
             revived_cards: summary.cards.revived,
@@ -271,7 +294,8 @@ fn read_in_one_pass<R: Read + Seek>(
     limits: &Limits,
     applying: Option<&ImportPlan>,
 ) -> Result<Option<([u8; 32], Found)>> {
-    let mut engine = Engine::new(conn, *limits, applying.is_some(), false)?;
+    let media_entries = archive.media_entries().len();
+    let mut engine = Engine::new(conn, *limits, applying.is_some(), false, media_entries)?;
     let end =
         read_document(archive, limits, &mut engine, Focus::All).map_err(|p| refuse(applying, p))?;
     if let Some(plan) = applying {
@@ -286,6 +310,7 @@ fn read_in_one_pass<R: Read + Seek>(
     fell_back = fell_back
         || end.problem(false).is_some()
         || engine.check_top_level().is_err()
+        || check_entries(engine.media(), archive).is_err()
         || engine.check_settings().is_err();
     if fell_back {
         return match applying {
@@ -293,6 +318,7 @@ fn read_in_one_pass<R: Read + Seek>(
             None => Ok(None),
         };
     }
+    engine.classify_media().map_err(stop_error)?;
     Ok(Some((end.sha256, engine.finish())))
 }
 
@@ -321,7 +347,8 @@ fn read_step_by_step<R: Read + Seek>(
 
     // The shape of the whole document: its JSON errors come before any
     // rule.
-    let mut checks = Engine::new(conn, *limits, false, true)?.checks_only();
+    let media_entries = archive.media_entries().len();
+    let mut checks = Engine::new(conn, *limits, false, true, media_entries)?.checks_only();
     before_read();
     let end = read_document(archive, limits, &mut checks, Focus::Structure)
         .map_err(|p| refuse(applying, p))?;
@@ -330,6 +357,7 @@ fn read_step_by_step<R: Read + Seek>(
         return Err(refuse(applying, problem));
     }
     checks.check_top_level().map_err(|p| refuse(applying, p))?;
+    check_entries(checks.media(), archive).map_err(|p| refuse(applying, p))?;
 
     // Every rule, list by list, before anything is compared with the
     // database: a file refused here costs no query.
@@ -339,12 +367,13 @@ fn read_step_by_step<R: Read + Seek>(
     checks.check_settings().map_err(|p| refuse(applying, p))?;
 
     // The file is valid: compare (and write) list by list.
-    let mut engine = Engine::new(conn, *limits, applying.is_some(), true)?;
-    engine.adopt_top_level(&checks);
+    let mut engine = Engine::new(conn, *limits, applying.is_some(), true, media_entries)?;
+    engine.adopt_top_level(&mut checks);
     drop(checks);
     for table in Table::ALL {
         read_table(&mut engine, archive, limits, table, &sha256, applying)?;
     }
+    engine.classify_media().map_err(stop_error)?;
     Ok((sha256, engine.finish()))
 }
 

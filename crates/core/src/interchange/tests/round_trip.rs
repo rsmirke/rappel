@@ -37,6 +37,7 @@ fn export_import_export_gives_identical_bytes_and_schedules() {
                 present: 0,
                 revived: 0
             },
+            media: TableCounts::default(),
             settings: SettingsImport::Unchanged,
             conflicts: vec![],
         }
@@ -107,6 +108,7 @@ fn importing_the_same_file_twice_is_a_noop() {
                 present: 8,
                 revived: 0
             },
+            media: TableCounts::default(),
             settings: SettingsImport::Unchanged,
             conflicts: vec![],
         }

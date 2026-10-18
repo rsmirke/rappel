@@ -385,42 +385,24 @@ proptest! {
     }
 }
 
-/// Deep nesting where the format holds free JSON values (`media` items,
-/// parsed as `serde_json::Value`, recursively; settings are typed since
-/// version 2)
-/// stops at `serde_json`'s recursion limit (128) with an error, on a small
-/// stack, instead of overflowing it. A shallow nesting gets through the
-/// parser to the check behind it, which shows the path is reached.
+/// Deep nesting inside `media`, whose items are typed records (ADR 0054;
+/// before, they were free JSON values parsed recursively): refused as
+/// JSON at any depth, on a small stack, without overflowing it. Nesting
+/// far past `serde_json`'s recursion limit is refused by the depth limit
+/// of the reader under it.
 #[test]
 fn deeply_nested_json_is_refused() {
     let text = String::from_utf8(read_cards_json(&base().0, &Limits::DEFAULT).unwrap()).unwrap();
-    // The empty field, and the same field holding VALUE.
-    let fields = [(
-        r#""media": []"#,
-        r#""media": [VALUE]"#,
-        ImportProblem::UnsupportedMedia,
-    )];
-    for (empty, holding, shallow_problem) in fields {
-        assert!(text.contains(empty), "{empty}");
-        for depth in [3, 200, 10_000, 1_000_000] {
-            let value = format!("{}1{}", "[".repeat(depth), "]".repeat(depth));
-            let nested = text.replacen(empty, &holding.replace("VALUE", &value), 1);
-            let problem = refused(plan(&stored_archive(nested.as_bytes())));
-            if depth == 3 {
-                assert_eq!(problem, shallow_problem);
-            } else {
-                assert!(
-                    matches!(problem, ImportProblem::Json(_)),
-                    "{depth}: {problem}"
-                );
-                // Refused for its depth, not for something else.
-                let control = serde_json::from_str::<Value>(&nested).unwrap_err();
-                assert!(
-                    control.to_string().contains("recursion limit exceeded"),
-                    "{depth}: {control}"
-                );
-            }
-        }
+    let empty = r#""media": []"#;
+    assert!(text.contains(empty), "{empty}");
+    for depth in [3, 200, 10_000, 1_000_000] {
+        let value = format!("{}1{}", "[".repeat(depth), "]".repeat(depth));
+        let nested = text.replacen(empty, &format!(r#""media": [{value}]"#), 1);
+        let problem = refused(plan(&stored_archive(nested.as_bytes())));
+        assert!(
+            matches!(problem, ImportProblem::Json(_)),
+            "{depth}: {problem}"
+        );
     }
 }
 

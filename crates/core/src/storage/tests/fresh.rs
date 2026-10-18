@@ -21,6 +21,7 @@ fn fresh_database_is_created_private_migrated_and_not_backed_up() {
             "cards_fts_docsize",
             "cards_fts_idx",
             "decks",
+            "media",
             "review_events",
             "settings",
             "tags"

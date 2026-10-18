@@ -63,6 +63,31 @@ pub(crate) fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
     PathBuf::from(name)
 }
 
+/// A small PNG for media tests: the signature, an `IHDR` chunk and `n`
+/// as the image's width, so files made with different `n` differ. Not a
+/// valid image: only its kind matters to the media store (ADR 0054).
+pub(crate) fn png_bytes(n: u32) -> Vec<u8> {
+    let mut out = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
+    out.extend_from_slice(&n.to_be_bytes());
+    out.extend_from_slice(&[0, 0, 0, 1, 8, 6, 0, 0, 0]);
+    out
+}
+
+/// A small WAV for media tests: a RIFF/WAVE header and `n` as the sample
+/// rate, then `n % 64 + 1` bytes of silence.
+pub(crate) fn wav_bytes(n: u32) -> Vec<u8> {
+    let data = (n % 64 + 1) as usize;
+    let mut out = b"RIFF".to_vec();
+    out.extend_from_slice(&u32::try_from(36 + data).unwrap().to_le_bytes());
+    out.extend_from_slice(b"WAVEfmt \x10\0\0\0\x01\0\x01\0");
+    out.extend_from_slice(&n.to_le_bytes());
+    out.extend_from_slice(&n.to_le_bytes());
+    out.extend_from_slice(b"\x01\0\x08\0data");
+    out.extend_from_slice(&u32::try_from(data).unwrap().to_le_bytes());
+    out.extend(std::iter::repeat_n(0x80, data));
+    out
+}
+
 /// The stack hostile input is parsed on in tests: a quarter of what a
 /// spawned thread gets by default (2 MiB) and a sixteenth of the main
 /// thread's usual 8 MiB, so a recursion that only just passes here has a

@@ -283,3 +283,302 @@ fn a_missing_local_header_is_refused() {
         ImportProblem::InvalidArchive("an entry's header is missing".to_owned())
     );
 }
+
+/// One entry of [`raw_archive`]: what its headers say, and its data.
+struct Raw {
+    name: Vec<u8>,
+    method: u16,
+    flags: u16,
+    crc: u32,
+    /// The size its headers declare, decompressed.
+    size: u32,
+    /// The bytes in the file (compressed with `method`).
+    data: Vec<u8>,
+}
+
+/// A stored entry whose headers tell the truth.
+fn raw(name: &[u8], data: &[u8]) -> Raw {
+    Raw {
+        name: name.to_vec(),
+        method: 0,
+        flags: 0,
+        crc: crc32fast::hash(data),
+        size: u32::try_from(data.len()).unwrap(),
+        data: data.to_vec(),
+    }
+}
+
+/// An archive written by hand, entry by entry, then the central
+/// directory, then the end record.
+fn raw_archive(entries: &[Raw]) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    let mut offsets = Vec::new();
+    let name_len = |e: &Raw| u16::try_from(e.name.len()).unwrap().to_le_bytes();
+    for e in entries {
+        offsets.push(u32::try_from(bytes.len()).unwrap());
+        bytes.extend_from_slice(b"PK\x03\x04\x14\0");
+        bytes.extend_from_slice(&e.flags.to_le_bytes());
+        bytes.extend_from_slice(&e.method.to_le_bytes());
+        bytes.extend_from_slice(&[0, 0, 0x21, 0]);
+        bytes.extend_from_slice(&e.crc.to_le_bytes());
+        bytes.extend_from_slice(&u32::try_from(e.data.len()).unwrap().to_le_bytes());
+        bytes.extend_from_slice(&e.size.to_le_bytes());
+        bytes.extend_from_slice(&name_len(e));
+        bytes.extend_from_slice(&[0, 0]);
+        bytes.extend_from_slice(&e.name);
+        bytes.extend_from_slice(&e.data);
+    }
+    let directory_at = u32::try_from(bytes.len()).unwrap();
+    for (e, offset) in entries.iter().zip(offsets) {
+        bytes.extend_from_slice(b"PK\x01\x02\x14\0\x14\0");
+        bytes.extend_from_slice(&e.flags.to_le_bytes());
+        bytes.extend_from_slice(&e.method.to_le_bytes());
+        bytes.extend_from_slice(&[0, 0, 0x21, 0]);
+        bytes.extend_from_slice(&e.crc.to_le_bytes());
+        bytes.extend_from_slice(&u32::try_from(e.data.len()).unwrap().to_le_bytes());
+        bytes.extend_from_slice(&e.size.to_le_bytes());
+        bytes.extend_from_slice(&name_len(e));
+        bytes.extend_from_slice(&[0; 12]);
+        bytes.extend_from_slice(&offset.to_le_bytes());
+        bytes.extend_from_slice(&e.name);
+    }
+    let size = u32::try_from(bytes.len()).unwrap() - directory_at;
+    bytes.extend(end(
+        u16::try_from(entries.len()).unwrap(),
+        size,
+        directory_at,
+    ));
+    bytes
+}
+
+/// `cards.json` with these media records, and the `media/` directory.
+fn json_and_dir(records: &[Value]) -> [Raw; 2] {
+    let doc = super::media::doc_with(records);
+    [
+        raw(b"cards.json", &serde_json::to_vec(&doc).unwrap()),
+        raw(b"media/", b""),
+    ]
+}
+
+/// A PNG of `n` and its reference.
+fn png(n: u32) -> (crate::media::MediaRef, Vec<u8>) {
+    let bytes = crate::test_support::png_bytes(n);
+    (
+        super::media::media_of(&bytes, crate::media::MediaKind::Png),
+        bytes,
+    )
+}
+
+/// Media entry names with paths, look-alikes and upper-case hex are not
+/// media names: each refuses the file as an unexpected entry, from the
+/// central directory, before anything is read.
+#[test]
+fn media_names_beyond_the_one_form_are_refused() {
+    let (m, bytes) = png(1);
+    let hex = m.hex();
+    let names = [
+        format!("media/../{hex}.png"),
+        format!("media/../../etc/{hex}.png"),
+        format!("media/x/{hex}.png"),
+        format!("media//{hex}.png"),
+        format!("media/{hex}.png/"),
+        format!("media/{hex}.png/x"),
+        format!("media/./{hex}.png"),
+        format!("media\\{hex}.png"),
+        format!("/media/{hex}.png"),
+        format!("media/{}.png", hex.to_uppercase()),
+        format!("media/{}.png", &hex[1..]),
+        format!("media/{hex}0.png"),
+        format!("media/{hex}.PNG"),
+        format!("media/{hex}.svg"),
+        format!("media/{hex}.jpeg"),
+        format!("media/{hex}.png\0"),
+        format!("media/{hex}"),
+        format!("Media/{hex}.png"),
+        format!("x/media/{hex}.png"),
+    ];
+    for name in names {
+        let [json, dir] = json_and_dir(&[super::media::record(&m, &bytes, T0)]);
+        let archive = raw_archive(&[json, dir, raw(name.as_bytes(), &bytes)]);
+        let problem = plan_quickly(archive, "a media name");
+        assert!(
+            matches!(&problem, ImportProblem::UnexpectedEntry(_)),
+            "{name:?}: {problem}"
+        );
+    }
+}
+
+/// The same media name twice, or one hash under two extensions: one file,
+/// one entry.
+#[test]
+fn a_media_file_twice_is_refused() {
+    let (m, bytes) = png(2);
+    let name = format!("media/{}", m.file_name());
+    let other_ext = format!("media/{}.gif", m.hex());
+    for second in [name.clone(), other_ext] {
+        let [json, dir] = json_and_dir(&[super::media::record(&m, &bytes, T0)]);
+        let archive = raw_archive(&[
+            json,
+            dir,
+            raw(name.as_bytes(), &bytes),
+            raw(second.as_bytes(), &bytes),
+        ]);
+        assert_eq!(
+            plan_quickly(archive, "a media file twice"),
+            ImportProblem::UnexpectedEntry("(a name used twice)".to_owned()),
+            "{second}"
+        );
+    }
+}
+
+/// A media entry that is empty, encrypted, compressed another way or
+/// declares more than its kind's limit is refused from its central
+/// record.
+#[test]
+fn media_entries_stored_wrongly_are_refused() {
+    let (m, bytes) = png(3);
+    let name = format!("media/{}", m.file_name());
+    let record = || vec![super::media::record(&m, &bytes, T0)];
+    let mut empty = raw(name.as_bytes(), b"");
+    empty.size = 0;
+    let mut encrypted = raw(name.as_bytes(), &bytes);
+    encrypted.flags = 1;
+    let mut bzip = raw(name.as_bytes(), &bytes);
+    bzip.method = 12;
+    let mut huge = raw(name.as_bytes(), &bytes);
+    huge.size = 10_000_001;
+    let cases = [
+        (
+            empty,
+            ImportProblem::InvalidArchive("a media file is empty".to_owned()),
+        ),
+        (encrypted, ImportProblem::UnsupportedEntry("a media file")),
+        (bzip, ImportProblem::UnsupportedEntry("a media file")),
+        (
+            huge,
+            ImportProblem::EntryTooLarge {
+                entry: "a media file",
+                limit: 10_000_000,
+            },
+        ),
+    ];
+    for (entry, expected) in cases {
+        let [json, dir] = json_and_dir(&record());
+        let archive = raw_archive(&[json, dir, entry]);
+        assert_eq!(plan_quickly(archive, "a media entry"), expected);
+    }
+}
+
+/// A deflated media entry that declares 64 bytes (and its record says so)
+/// but inflates to far more than an image may be: reading stops one byte
+/// past the limit, so the bomb costs at most the limit.
+#[test]
+fn a_media_bomb_stops_at_its_limit() {
+    use flate2::Compression;
+    use flate2::write::DeflateEncoder;
+    let (m, _) = png(4);
+    let mut inflated = crate::test_support::png_bytes(4);
+    inflated.resize(12 << 20, 0);
+    let mut encoder = DeflateEncoder::new(Vec::new(), Compression::best());
+    encoder.write_all(&inflated).unwrap();
+    let data = encoder.finish().unwrap();
+    drop(inflated);
+    let mut record = super::media::record(&m, b"", T0);
+    record["bytes"] = json!(64);
+    let [json, dir] = json_and_dir(&[record]);
+    let bomb = Raw {
+        name: format!("media/{}", m.file_name()).into_bytes(),
+        method: 8,
+        flags: 0,
+        crc: 0,
+        size: 64,
+        data,
+    };
+    let archive = raw_archive(&[json, dir, bomb]);
+    assert_eq!(
+        plan_quickly(archive, "a media bomb"),
+        ImportProblem::EntryTooLarge {
+            entry: "a media file",
+            limit: 10_000_000,
+        }
+    );
+}
+
+/// A media entry whose name says one hash and whose content has another
+/// is refused when its content is read, before anything is written.
+#[test]
+fn a_media_file_with_the_wrong_hash_is_refused() {
+    let (m, _) = png(5);
+    let (_, other) = png(6);
+    let [json, dir] = json_and_dir(&[super::media::record(&m, &other, T0)]);
+    let archive = raw_archive(&[
+        json,
+        dir,
+        raw(format!("media/{}", m.file_name()).as_bytes(), &other),
+    ]);
+    assert_eq!(
+        plan_quickly(archive, "a wrong hash"),
+        ImportProblem::InvalidField {
+            table: "media",
+            index: 0,
+            field: "hash",
+            reason: FieldProblem::MediaFileDiffers,
+        }
+    );
+}
+
+/// Thousands of media entries: refused quickly when the list of media
+/// does not have them (from the first one, in hash order), and planned
+/// within a time bound when it does.
+#[test]
+fn thousands_of_media_entries_are_quick() {
+    const N: u32 = 20_000;
+    let files: Vec<_> = (0..N).map(png).collect();
+    let mut sorted: Vec<_> = files.iter().collect();
+    sorted.sort_by_key(|(m, _)| *m);
+    let entries = |with: &[Value]| {
+        let [json, dir] = json_and_dir(with);
+        let mut all = vec![json, dir];
+        all.extend(
+            files
+                .iter()
+                .map(|(m, b)| raw(format!("media/{}", m.file_name()).as_bytes(), b)),
+        );
+        all
+    };
+    let without = zip64_archive(&entries(&[]));
+    assert_eq!(
+        plan_quickly(without, "media entries without records"),
+        ImportProblem::UnexpectedEntry(format!("\"media/{}\"", sorted[0].0.file_name()))
+    );
+    let records: Vec<Value> = sorted
+        .iter()
+        .map(|(m, b)| super::media::record(m, b, T0))
+        .collect();
+    let with = zip64_archive(&entries(&records));
+    let plan = within(
+        Duration::from_secs(60),
+        "planning 20,000 media files",
+        move || Store::in_memory().plan_import_bytes(&with, &Limits::DEFAULT),
+    )
+    .unwrap();
+    assert_eq!(plan.summary().media.new, N as usize);
+}
+
+/// [`raw_archive`] for more entries than a classic end record counts: the
+/// same entries through the zip crate's writer, which writes a zip64 end
+/// record past 65,534.
+fn zip64_archive(entries: &[Raw]) -> Vec<u8> {
+    let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
+    let stored = SimpleFileOptions::DEFAULT.compression_method(CompressionMethod::Stored);
+    for e in entries {
+        let name = String::from_utf8(e.name.clone()).unwrap();
+        if name.ends_with('/') {
+            zip.add_directory(name, SimpleFileOptions::DEFAULT).unwrap();
+        } else {
+            zip.start_file(name, stored).unwrap();
+            zip.write_all(&e.data).unwrap();
+        }
+    }
+    zip.finish().unwrap().into_inner()
+}

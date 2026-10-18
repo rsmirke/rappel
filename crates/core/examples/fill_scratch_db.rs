@@ -3,7 +3,7 @@
 //! try studying without waiting days (ADR 0014).
 //!
 //! ```text
-//! cargo run -p rappel-core --example fill_scratch_db -- /tmp/rappel-scratch [count] [--due N] [--markdown] [--math] [--tags] [--suspended N]
+//! cargo run -p rappel-core --example fill_scratch_db -- /tmp/rappel-scratch [count] [--due N] [--markdown] [--math] [--tags] [--suspended N] [--media]
 //! RAPPEL_DATA_DIR=/tmp/rappel-scratch cargo run -p rappel
 //! ```
 //!
@@ -19,7 +19,11 @@
 //! cards of the first deck get tags (ADR 0029): a few names that differ by
 //! accents and case, one card with a very long list, every fifth card none.
 //! With `--suspended N`, the last N cards of the first deck are suspended
-//! (ADR 0035), so they never overlap the first `--due N` ones.
+//! (ADR 0035), so they never overlap the first `--due N` ones. With
+//! `--media`, it adds the deck "Media" (ADR 0054): cards showing small
+//! images it draws itself (a square, a wide and a tall PNG), one playing a
+//! one-second WAV tone, one naming a file that is not there, and one with a
+//! remote image, which is shown as text; the same files every run.
 //! The directory
 //! must be absolute and is never one of the
 //! app's own data directories, release or debug: this is for throwaway
@@ -55,7 +59,7 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<String, String> {
-    let usage = "usage: fill_scratch_db <absolute scratch dir> [count] [--due N] [--markdown] [--math] [--tags] [--suspended N]";
+    let usage = "usage: fill_scratch_db <absolute scratch dir> [count] [--due N] [--markdown] [--math] [--tags] [--suspended N] [--media]";
     let number = |arg: Option<std::ffi::OsString>| {
         arg.as_ref()
             .and_then(|n| n.to_str())
@@ -65,7 +69,7 @@ fn run() -> Result<String, String> {
     let mut args = std::env::args_os().skip(1);
     let dir = PathBuf::from(args.next().ok_or(usage)?);
     let (mut count, mut due, mut markdown, mut math, mut tags) = (None, 0, false, false, false);
-    let mut suspended = 0;
+    let (mut suspended, mut media) = (0, false);
     while let Some(arg) = args.next() {
         if arg == "--due" {
             due = number(args.next())?;
@@ -77,6 +81,8 @@ fn run() -> Result<String, String> {
             tags = true;
         } else if arg == "--suspended" {
             suspended = number(args.next())?;
+        } else if arg == "--media" {
+            media = true;
         } else if count.is_none() {
             count = Some(number(Some(arg))?);
         } else {
@@ -84,8 +90,8 @@ fn run() -> Result<String, String> {
         }
     }
     let count = count.unwrap_or(DEFAULT_COUNT);
-    if count == 0 && !markdown && !math {
-        return Err("nothing to add: count is 0 and no --markdown or --math".to_owned());
+    if count == 0 && !markdown && !math && !media {
+        return Err("nothing to add: count is 0 and no --markdown, --math or --media".to_owned());
     }
     if due > count {
         return Err(format!("--due {due} is more than the {count} cards"));
@@ -132,11 +138,130 @@ fn run() -> Result<String, String> {
         }
         added.push(format!("{} cards to “{}”", cards.len(), deck.name));
     }
+    if media {
+        added.push(fill_media_deck(&mut store)?);
+    }
     Ok(format!(
         "Added {} in {}",
         added.join(" and "),
         dir.display()
     ))
+}
+
+/// The "Media" deck for `--media`: images drawn here, a WAV tone, a
+/// missing file and a remote image. Returns what to report.
+fn fill_media_deck(store: &mut Store) -> Result<String, String> {
+    let deck = store.create_deck("Media").map_err(|e| e.to_string())?;
+    let add = |bytes: &[u8]| {
+        store
+            .add_media_bytes(bytes)
+            .map(|m| m.reference())
+            .map_err(|e| e.to_string())
+    };
+    let square = add(&png(64, 64)?)?;
+    let wide = add(&png(600, 80)?)?;
+    let tall = add(&png(80, 400)?)?;
+    let tone = add(&wav_tone())?;
+    // A file that was never added: 64 zeros of hash.
+    let missing = format!("media:{}.png", "0".repeat(64));
+    let cards = [
+        (
+            format!("![A square of colours]({square})"),
+            "A 64 × 64 PNG".to_owned(),
+        ),
+        (
+            "Which way is it wider?".to_owned(),
+            format!("![A wide band of colours]({wide})\n\nWider than tall."),
+        ),
+        (
+            format!("![A tall band of colours]({tall})"),
+            "Taller than wide".to_owned(),
+        ),
+        (
+            "What do you hear?".to_owned(),
+            format!("[A 440 Hz tone]({tone})"),
+        ),
+        (
+            format!("![A file that is not there]({missing})"),
+            "Shown as missing".to_owned(),
+        ),
+        (
+            "![A remote image](https://example.org/cat.png)".to_owned(),
+            "Shown as text, never fetched".to_owned(),
+        ),
+    ];
+    for (front, back) in &cards {
+        store
+            .add_card(&deck.id, front, back)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(format!(
+        "{} cards and 4 media files to “{}”",
+        cards.len(),
+        deck.name
+    ))
+}
+
+/// A `width` × `height` RGB PNG of a colour gradient, encoded here (an
+/// `IHDR`, one zlib-compressed `IDAT` of unfiltered rows, an `IEND`).
+fn png(width: u32, height: u32) -> Result<Vec<u8>, String> {
+    use flate2::Compression;
+    use flate2::write::ZlibEncoder;
+    let mut rows = Vec::new();
+    for y in 0..height {
+        rows.push(0); // Filter: none.
+        for x in 0..width {
+            let red = u8::try_from(x * 255 / width.max(1)).unwrap_or(u8::MAX);
+            let green = u8::try_from(y * 255 / height.max(1)).unwrap_or(u8::MAX);
+            rows.extend_from_slice(&[red, green, 160]);
+        }
+    }
+    let mut zlib = ZlibEncoder::new(Vec::new(), Compression::default());
+    zlib.write_all(&rows).map_err(|e| e.to_string())?;
+    let data = zlib.finish().map_err(|e| e.to_string())?;
+    let mut header = width.to_be_bytes().to_vec();
+    header.extend_from_slice(&height.to_be_bytes());
+    // 8 bits per channel, RGB, deflate, no filter method, no interlace.
+    header.extend_from_slice(&[8, 2, 0, 0, 0]);
+    let mut out = b"\x89PNG\r\n\x1a\n".to_vec();
+    for (kind, body) in [(b"IHDR", header), (b"IDAT", data), (b"IEND", Vec::new())] {
+        let len = u32::try_from(body.len()).map_err(|e| e.to_string())?;
+        out.extend_from_slice(&len.to_be_bytes());
+        let start = out.len();
+        out.extend_from_slice(kind);
+        out.extend_from_slice(&body);
+        let crc = crc32fast::hash(&out[start..]);
+        out.extend_from_slice(&crc.to_be_bytes());
+    }
+    Ok(out)
+}
+
+/// One second of a 440 Hz tone (a triangle wave), 8 kHz, 8-bit mono WAV.
+fn wav_tone() -> Vec<u8> {
+    const RATE: u32 = 8_000;
+    let samples: Vec<u8> = (0..RATE)
+        .map(|i| {
+            let phase = (i * 440 * 256 / RATE) % 256;
+            let rise = if phase < 128 { phase } else { 255 - phase };
+            u8::try_from(68 + rise * 120 / 127).unwrap_or(128)
+        })
+        .collect();
+    let data = u32::try_from(samples.len()).unwrap_or(u32::MAX);
+    let mut out = b"RIFF".to_vec();
+    out.extend_from_slice(&(36 + data).to_le_bytes());
+    out.extend_from_slice(b"WAVEfmt ");
+    out.extend_from_slice(&16u32.to_le_bytes());
+    // PCM, mono, the rate, bytes per second, block align 1, 8 bits.
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&RATE.to_le_bytes());
+    out.extend_from_slice(&RATE.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&8u16.to_le_bytes());
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(&data.to_le_bytes());
+    out.extend_from_slice(&samples);
+    out
 }
 
 /// The first deck: `count` cards, the first `due` of them with a past review

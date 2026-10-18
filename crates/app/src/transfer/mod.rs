@@ -17,7 +17,7 @@ use rappel_core::Error;
 use rappel_core::interchange::{FILE_EXTENSION, IMPORT_EXTENSIONS, ImportPlan, ImportSummary};
 
 use crate::state::AppState;
-use crate::ui::toast::{info_toast, show_error};
+use crate::ui::toast::{info_toast, persistent_toast, show_error};
 use crate::ui::{dialog, worker};
 use crate::window::RappelWindow;
 use names::Names;
@@ -42,7 +42,16 @@ pub async fn export(window: &RappelWindow, state: &AppState) {
     })
     .await;
     match result {
-        Ok(Ok(_)) => window.add_toast(info_toast(&exported_text(&path))),
+        Ok(Ok(summary)) => {
+            let text = exported_text(&path, summary.missing_media);
+            // Lost media files are worth reading, so that toast stays.
+            let toast = if summary.missing_media > 0 {
+                persistent_toast(&text)
+            } else {
+                info_toast(&text)
+            };
+            window.add_toast(toast);
+        }
         Ok(Err(err)) => show_error(window, "an export", &format!("The export failed: {err}")),
         Err(_) => show_error(window, "an export", "The export stopped unexpectedly"),
     }

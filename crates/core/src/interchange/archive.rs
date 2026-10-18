@@ -1,20 +1,23 @@
 //! Writing and reading the `.rappel` zip archive.
 //!
-//! An export holds `cards.json` and an empty `media/` directory. It is
-//! written with the `zip` crate. It is read here, not by the `zip` crate,
+//! An export holds `cards.json`, the `media/` directory and one entry
+//! `media/<sha256>.<ext>` per media file, stored as they are (ADR 0054). It
+//! is written with the `zip` crate. It is read here, not by the `zip` crate,
 //! whose reader keeps every central record in memory and, when one end
 //! record does not work out, tries every earlier one it can find
 //! (ADR 0053): nothing is ever extracted to disk, nothing is read into
 //! memory whole, and every read is bounded by the limits. The end record
 //! must end the file; the central directory it names is walked record by
 //! record, exactly as many as it declares and within the size it declares;
-//! each name is compared byte for byte with the names Rappel writes and
-//! any other entry refuses the file, so paths in entry names (zip-slip)
-//! cannot matter; an entry's data is streamed (Stored, or Deflate through
-//! `flate2`) with a hard cap on the bytes it decompresses to, its CRC and
-//! size checked at its end, and hashed as it goes.
+//! each name is compared byte for byte with the names Rappel writes (a
+//! media name is parsed as `media/`, 64 lowercase hex digits, a dot and a
+//! known extension) and any other entry refuses the file, so paths in
+//! entry names (zip-slip) cannot matter; an entry's data is streamed
+//! (Stored, or Deflate through `flate2`) with a hard cap on the bytes it
+//! decompresses to, its CRC and size checked at its end, and hashed as it
+//! goes.
 
-use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::ops::Range;
 
 use flate2::read::DeflateDecoder;
@@ -24,6 +27,7 @@ use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
 
 use super::{ImportProblem, Limits};
+use crate::media::MediaRef;
 
 /// The JSON document's entry name.
 pub(super) const JSON_ENTRY: &str = "cards.json";
@@ -52,27 +56,60 @@ const ZIP64_LOCATOR_SIGNATURE: [u8; 4] = *b"PK\x06\x07";
 const ZIP64_EOCD_LEN: usize = 56;
 const ZIP64_EOCD_SIGNATURE: [u8; 4] = *b"PK\x06\x06";
 
-/// The archive bytes for `json`. Deterministic: fixed entry order, the
-/// zip format's earliest timestamp (1980-01-01) instead of the clock,
-/// fixed permissions, no extra fields and no comment.
+/// Writes an archive: `cards.json` (deflated), the `media/` directory,
+/// then each media file the caller adds, in the caller's order, stored as
+/// it is (images and audio are compressed already). Deterministic: the zip
+/// format's earliest timestamp (1980-01-01) instead of the clock, fixed
+/// permissions, no extra fields and no comment.
+pub(super) struct ArchiveWriter<W: Write + Seek> {
+    zip: ZipWriter<W>,
+}
+
+impl<W: Write + Seek> ArchiveWriter<W> {
+    /// An archive in `out` holding `json` and the `media/` directory.
+    pub(super) fn new(out: W, json: &[u8]) -> ZipResult<Self> {
+        // `DEFAULT` (not `default()`) has the fixed 1980 timestamp.
+        let file = SimpleFileOptions::DEFAULT
+            .compression_method(CompressionMethod::Deflated)
+            .unix_permissions(0o600);
+        let dir = SimpleFileOptions::DEFAULT.unix_permissions(0o700);
+        let mut zip = ZipWriter::new(out);
+        zip.start_file(JSON_ENTRY, file)?;
+        zip.write_all(json)?;
+        zip.add_directory(MEDIA_DIR, dir)?;
+        Ok(Self { zip })
+    }
+
+    /// Starts the entry `media/<file_name>`; its data is what is then
+    /// written to the returned writer.
+    pub(super) fn start_media(&mut self, file_name: &str) -> ZipResult<&mut ZipWriter<W>> {
+        let stored = SimpleFileOptions::DEFAULT
+            .compression_method(CompressionMethod::Stored)
+            .unix_permissions(0o600);
+        self.zip
+            .start_file(format!("{MEDIA_DIR}{file_name}"), stored)?;
+        Ok(&mut self.zip)
+    }
+
+    /// Writes the central directory and returns `out`.
+    pub(super) fn finish(self) -> ZipResult<W> {
+        self.zip.finish()
+    }
+}
+
+/// The archive bytes for `json`, without media.
+#[cfg(test)]
 pub(super) fn write_archive(json: &[u8]) -> ZipResult<Vec<u8>> {
-    // `DEFAULT` (not `default()`) has the fixed 1980 timestamp.
-    let file = SimpleFileOptions::DEFAULT
-        .compression_method(CompressionMethod::Deflated)
-        .unix_permissions(0o600);
-    let dir = SimpleFileOptions::DEFAULT.unix_permissions(0o700);
-    let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
-    zip.start_file(JSON_ENTRY, file)?;
-    zip.write_all(json)?;
-    zip.add_directory(MEDIA_DIR, dir)?;
-    Ok(zip.finish()?.into_inner())
+    Ok(ArchiveWriter::new(io::Cursor::new(Vec::new()), json)?
+        .finish()?
+        .into_inner())
 }
 
 /// The decompressed `cards.json` of the archive `bytes`, whole, for tests
 /// that look at or change the JSON of an export.
 #[cfg(test)]
 pub(super) fn read_cards_json(bytes: &[u8], limits: &Limits) -> Result<Vec<u8>, ImportProblem> {
-    let mut archive = Archive::open(Cursor::new(bytes), bytes.len() as u64, limits)?;
+    let mut archive = Archive::open(io::Cursor::new(bytes), bytes.len() as u64, limits)?;
     let entry = archive.json_entry();
     let mut reader = archive.open_entry(&entry, limits.json)?;
     let mut json = Vec::new();
@@ -91,15 +128,32 @@ pub(super) enum Role {
     Json,
     /// The `media/` directory.
     MediaDir,
+    /// `media/<sha256>.<ext>`, a media file, by its central name only.
+    Media(MediaRef),
 }
 
 impl Role {
-    /// The entry's name, for messages.
+    /// The entry's name, for messages. A media file is not named: its name
+    /// is the file's.
     pub(super) fn name(self) -> &'static str {
         match self {
             Self::Json => JSON_ENTRY,
             Self::MediaDir => MEDIA_DIR,
+            Self::Media(_) => "a media file",
         }
+    }
+
+    /// The role of an entry named `name` (its central record's name), or
+    /// `None` for a name Rappel never writes.
+    fn of(name: &[u8]) -> Option<Self> {
+        if name == JSON_ENTRY.as_bytes() {
+            return Some(Self::Json);
+        }
+        if name == MEDIA_DIR.as_bytes() {
+            return Some(Self::MediaDir);
+        }
+        let file = name.strip_prefix(MEDIA_DIR.as_bytes())?;
+        MediaRef::from_name_bytes(file).map(Self::Media)
     }
 }
 
@@ -152,7 +206,11 @@ impl<R: Read> Read for Window<R> {
     }
 }
 
-impl<R: Seek> Seek for Window<R> {
+/// The longest forward seek done by reading (half the import's read
+/// buffer).
+const SKIP_BY_READING: u64 = 32 << 10;
+
+impl<R: Read + Seek> Seek for Window<R> {
     fn seek(&mut self, to: SeekFrom) -> io::Result<u64> {
         let target = match to {
             SeekFrom::Start(n) => Some(n),
@@ -160,8 +218,17 @@ impl<R: Seek> Seek for Window<R> {
             SeekFrom::Current(d) => self.pos.checked_add_signed(d),
         }
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "seek before the start"))?;
-        // A seek to where the reader already is costs nothing (a seek
-        // would empty a `BufReader`'s buffer).
+        // A seek to where the reader already is costs nothing, and a short
+        // one forward reads past the bytes: a seek would empty a
+        // `BufReader`'s buffer, and an archive of 100,000 small media files
+        // has its local headers a few bytes apart, read in order.
+        if target > self.pos && target - self.pos <= SKIP_BY_READING {
+            let gap = target - self.pos;
+            let skipped = io::copy(&mut (&mut *self).take(gap), &mut io::sink())?;
+            if skipped == gap {
+                return Ok(target);
+            }
+        }
         if target != self.pos {
             self.inner.seek(SeekFrom::Start(target))?;
             self.pos = target;
@@ -177,6 +244,8 @@ pub(super) struct Archive<R> {
     entries: Vec<Entry>,
     /// `cards.json`.
     json: Entry,
+    /// The media entries' positions in `entries`, sorted by hash.
+    media: Vec<u32>,
 }
 
 impl<R> std::fmt::Debug for Archive<R> {
@@ -221,7 +290,7 @@ impl<R: Read + Seek> Archive<R> {
             .checked_add(end.directory_size)
             .filter(|e| *e <= end.end_start)
             .ok_or_else(not_layout)?;
-        let mut entries = walk_directory(&mut reader, &end)?;
+        let mut entries = walk_directory(&mut reader, &end, limits)?;
         for entry in &mut entries {
             locate_data(&mut reader, entry)?;
         }
@@ -237,20 +306,30 @@ impl<R: Read + Seek> Archive<R> {
             .find(|e| e.role == Role::Json)
             .cloned()
             .ok_or(ImportProblem::MissingEntry(JSON_ENTRY))?;
+        let media = media_by_hash(&entries)?;
         Ok(Self {
             reader,
             entries,
             json,
+            media,
         })
     }
 
     /// The entries, in archive order.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the media import (phase 2, slice 2) lists them")
-    )]
+    #[cfg(test)]
     pub(super) fn entries(&self) -> &[Entry] {
         &self.entries
+    }
+
+    /// The media entries, sorted by hash (each hash once).
+    pub(super) fn media_entries(&self) -> impl ExactSizeIterator<Item = &Entry> {
+        self.media.iter().map(|&i| &self.entries[i as usize])
+    }
+
+    /// The media entry `n` of [`Self::media_entries`].
+    pub(super) fn media_entry(&self, n: usize) -> Option<Entry> {
+        let i = *self.media.get(n)?;
+        self.entries.get(i as usize).cloned()
     }
 
     /// `cards.json`.
@@ -291,13 +370,6 @@ impl<R: Read + Seek> Archive<R> {
     /// Streams `entry`'s data to `out`, at most `cap` bytes once
     /// decompressed, and returns how many bytes it had and their SHA-256.
     /// Nothing is kept in memory but a buffer.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the media import (phase 2, slice 2) copies media with it"
-        )
-    )]
     pub(super) fn copy_entry(
         &mut self,
         entry: &Entry,
@@ -332,10 +404,6 @@ pub(super) struct Copied {
 
 /// Why [`Archive::copy_entry`] failed.
 #[derive(Debug)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the media import (phase 2, slice 2) reports them")
-)]
 pub(super) enum CopyError {
     /// The entry is damaged or larger than the cap.
     Archive(ImportProblem),
@@ -577,6 +645,7 @@ fn u64_at(bytes: &[u8], i: usize) -> u64 {
 fn walk_directory<R: Read + Seek>(
     reader: &mut Window<R>,
     end: &EndRecord,
+    limits: &Limits,
 ) -> Result<Vec<Entry>, ImportProblem> {
     let short = || ImportProblem::InvalidArchive("the list of entries is cut short".to_owned());
     reader
@@ -587,6 +656,7 @@ fn walk_directory<R: Read + Seek>(
     let mut entries: Vec<Entry> = Vec::with_capacity(capacity);
     let mut name = Vec::new();
     let mut extra = Vec::new();
+    let (mut seen_json, mut seen_dir) = (false, false);
     for _ in 0..end.entries {
         let mut record = [0; CENTRAL_LEN];
         directory.read_exact(&mut record).map_err(|_| short())?;
@@ -617,16 +687,19 @@ fn walk_directory<R: Read + Seek>(
         if skipped != comment_len {
             return Err(short());
         }
-        let role = match name.as_slice() {
-            n if n == JSON_ENTRY.as_bytes() => Role::Json,
-            n if n == MEDIA_DIR.as_bytes() => Role::MediaDir,
-            other => return Err(ImportProblem::UnexpectedEntry(shown_name(other))),
+        let Some(role) = Role::of(&name) else {
+            return Err(ImportProblem::UnexpectedEntry(shown_name(&name)));
         };
-        // A name used twice would make the archive mean two things.
-        if entries.iter().any(|e| e.role == role) {
-            return Err(ImportProblem::UnexpectedEntry(
-                "(a name used twice)".to_owned(),
-            ));
+        // A name used twice would make the archive mean two things. Media
+        // names are compared once the walk is done ([`media_by_hash`]), by
+        // sorting, so the check stays quick for 100,000 of them.
+        let repeated = match role {
+            Role::Json => std::mem::replace(&mut seen_json, true),
+            Role::MediaDir => std::mem::replace(&mut seen_dir, true),
+            Role::Media(_) => false,
+        };
+        if repeated {
+            return Err(twice());
         }
         let [compressed, size, local] = zip64_values(
             [
@@ -639,11 +712,27 @@ fn walk_directory<R: Read + Seek>(
         // Bit 0: encrypted; bit 6: strong encryption.
         let encrypted = flags & 0x41 != 0;
         let supported = match role {
-            Role::Json => matches!(method, STORED | DEFLATED),
+            Role::Json | Role::Media(_) => matches!(method, STORED | DEFLATED),
             Role::MediaDir => size == 0 && matches!(method, STORED | DEFLATED),
         };
         if encrypted || !supported {
             return Err(ImportProblem::UnsupportedEntry(role.name()));
+        }
+        if let Role::Media(media) = role {
+            // Refused from the size it declares; reading it is capped at
+            // the same limit whatever it declares.
+            if size == 0 {
+                return Err(ImportProblem::InvalidArchive(
+                    "a media file is empty".to_owned(),
+                ));
+            }
+            let limit = limits.media(media.kind());
+            if size > limit {
+                return Err(ImportProblem::EntryTooLarge {
+                    entry: role.name(),
+                    limit,
+                });
+            }
         }
         entries.push(Entry {
             role,
@@ -663,6 +752,30 @@ fn walk_directory<R: Read + Seek>(
         ));
     }
     Ok(entries)
+}
+
+/// A name used twice.
+fn twice() -> ImportProblem {
+    ImportProblem::UnexpectedEntry("(a name used twice)".to_owned())
+}
+
+/// The positions of the media entries, sorted by hash. Two entries with
+/// the same hash (the same name, or the same hash with two extensions)
+/// refuse the file: one file, one entry.
+fn media_by_hash(entries: &[Entry]) -> Result<Vec<u32>, ImportProblem> {
+    let hash = |i: u32| match entries[i as usize].role {
+        Role::Media(media) => Some(*media.hash()),
+        Role::Json | Role::MediaDir => None,
+    };
+    let mut media: Vec<u32> = (0..entries.len())
+        .filter_map(|i| u32::try_from(i).ok())
+        .filter(|&i| hash(i).is_some())
+        .collect();
+    media.sort_unstable_by_key(|&i| hash(i));
+    if media.windows(2).any(|w| hash(w[0]) == hash(w[1])) {
+        return Err(twice());
+    }
+    Ok(media)
 }
 
 /// The compressed size, size and local header offset of a central record,

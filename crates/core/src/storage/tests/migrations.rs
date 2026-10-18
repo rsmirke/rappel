@@ -590,3 +590,43 @@ fn migrations_0009_and_0010_add_suspension_and_index_every_card() {
     // The pre-migration backup is the version-8 database.
     assert_eq!(e.backups().len(), 1);
 }
+
+/// Migration 0011 on a version 10 database: the empty media table, and
+/// everything else as it was (cards, log, schedule, tags, settings, the
+/// search index).
+#[test]
+fn migration_0011_adds_the_media_table_and_keeps_everything_else() {
+    use crate::test_support::schedule_table;
+
+    let e = env();
+    let before = {
+        let mut v10 = e.open_with(DAY0, &MIGRATIONS[..10]).unwrap();
+        insert_sample(&v10.conn);
+        v10.add_tag(CARD, "Algebra").unwrap();
+        assert!(!tables(&v10.conn).contains(&"media".to_owned()));
+        (
+            schedule_table(&v10),
+            v10.review_events(CARD).unwrap(),
+            old_cards(&v10.conn),
+            v10.settings().unwrap(),
+            v10.card_tags(CARD).unwrap(),
+            count(&v10.conn, "cards_fts"),
+        )
+    };
+    let store = e.open_with(DAY0, &MIGRATIONS[..11]).unwrap();
+    assert_eq!(store.schema_version().unwrap(), 11);
+    assert_eq!(count(&store.conn, "media"), 0);
+    assert_eq!(
+        (
+            schedule_table(&store),
+            store.review_events(CARD).unwrap(),
+            old_cards(&store.conn),
+            store.settings().unwrap(),
+            store.card_tags(CARD).unwrap(),
+            count(&store.conn, "cards_fts"),
+        ),
+        before
+    );
+    // The pre-migration backup is the version-10 database.
+    assert_eq!(e.backups().len(), 1);
+}
