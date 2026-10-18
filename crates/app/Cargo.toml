@@ -21,6 +21,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 unicode-segmentation.workspace = true
 libc.workspace = true
+glycin.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
@@ -28,6 +29,10 @@ proptest.workspace = true
 # the app itself never reaches SQL (ADR 0052).
 rusqlite.workspace = true
 tempfile.workspace = true
+# Only to write hostile images by hand in tests (a PNG header claiming a
+# huge size, a decompression bomb): its chunks' CRCs and zlib data.
+crc32fast.workspace = true
+flate2.workspace = true
 
 [lints]
 workspace = true

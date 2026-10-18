@@ -522,3 +522,35 @@ fn the_table_refuses_bad_rows() {
         assert!(insert(&hash, mime, bytes).is_err(), "{hash} {mime} {bytes}");
     }
 }
+
+#[test]
+fn add_image_takes_only_images() {
+    let (tmp, store) = store();
+    assert_eq!(store.media_folder(), Some(media_dir(&tmp).as_path()));
+    let png = store.add_image(&png_bytes(3)[..]).unwrap();
+    assert_eq!(png.kind(), MediaKind::Png);
+    // An audio file is refused before anything is written.
+    match store.add_image(&wav_bytes(1)[..]) {
+        Err(Error::MediaRefused(MediaProblem::NotImage)) => {}
+        other => panic!("{other:?}"),
+    }
+    let svg = b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>";
+    match store.add_image(&svg[..]) {
+        Err(Error::MediaRefused(MediaProblem::NotMedia)) => {}
+        other => panic!("{other:?}"),
+    }
+    match store.add_image(&b""[..]) {
+        Err(Error::MediaRefused(MediaProblem::Empty)) => {}
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(names(&media_dir(&tmp)), [png.file_name()]);
+    assert_eq!(rows(&store).len(), 1);
+    // A file larger than the first bytes read is copied whole.
+    let mut big = png_bytes(4);
+    big.resize(100_000, 7);
+    let media = store.add_image(&big[..]).unwrap();
+    assert_eq!(
+        fs::read(media_dir(&tmp).join(media.file_name())).unwrap(),
+        big
+    );
+}

@@ -66,6 +66,31 @@ impl Store {
         self.add_media(bytes)
     }
 
+    /// [`Self::add_media`] for an image only (the editor's Insert Image…,
+    /// paste and drop): a file of an audio kind is refused as
+    /// [`MediaProblem::NotImage`] before anything is written.
+    ///
+    /// # Errors
+    /// As [`Self::add_media`].
+    pub fn add_image(&self, mut reader: impl Read) -> Result<MediaRef> {
+        let mut head = [0; DETECT_BYTES];
+        let n = read_full(&mut reader, &mut head).map_err(Error::MediaRead)?;
+        if let Some(kind) = MediaKind::detect(&head[..n])
+            && !kind.is_image()
+        {
+            return Err(Error::MediaRefused(MediaProblem::NotImage));
+        }
+        // Empty and unknown files are refused by `add_media` itself.
+        self.add_media(io::Cursor::new(&head[..n]).chain(reader))
+    }
+
+    /// The media folder, inside the data directory; `None` for a store
+    /// without one. It may not exist yet: it is made with the first file.
+    #[must_use]
+    pub fn media_folder(&self) -> Option<&Path> {
+        self.media_dir.as_deref()
+    }
+
     /// [`Self::add_media`] at time `now`, the row's `created_at` the first
     /// time the file is added.
     pub(crate) fn add_media_at(&self, reader: &mut impl Read, now: i64) -> Result<MediaRef> {

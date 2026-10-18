@@ -72,6 +72,15 @@ impl ErrorSlot {
         show_toast_from(widget, toast);
     }
 
+    /// The text of the error toast last shown through this slot, if any.
+    #[cfg(test)]
+    pub fn shown_text(&self) -> Option<String> {
+        self.0
+            .borrow()
+            .as_ref()
+            .and_then(|toast| toast.title().map(String::from))
+    }
+
     /// Whether no error toast was shown through this slot since the last
     /// [`Self::clear`].
     #[cfg(test)]

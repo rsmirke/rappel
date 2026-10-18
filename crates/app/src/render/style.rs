@@ -4,6 +4,7 @@
 
 use rappel_core::content::{Block, Document, Inline};
 
+use super::images::image_count;
 use super::math::MAX_FORMULAS;
 
 /// Whether the back is shown after the reveal: not when there is nothing
@@ -65,8 +66,8 @@ pub fn table_cell_classes(
 /// most a side draws.
 pub fn widget_cost(block: &Block) -> usize {
     match block {
-        Block::Paragraph(inlines)
-        | Block::Heading {
+        Block::Paragraph(inlines) => 1 + formula_cost(inlines) + image_cost(inlines),
+        Block::Heading {
             content: inlines, ..
         } => 1 + formula_cost(inlines),
         Block::Rule => 1,
@@ -89,6 +90,18 @@ pub fn widget_cost(block: &Block) -> usize {
                 .map(|cell| 1 + formula_cost(cell))
                 .sum::<usize>()
         }
+    }
+}
+
+/// The widgets the `media:` images of a paragraph add (ADR 0055): a box
+/// for the column, and per image three (its widget, the button and the
+/// picture, or the placeholder's line, icon and label). A paragraph also
+/// has its text runs, each a label, at most one more than its images,
+/// which the 1 of the paragraph and this count's 3 per image cover.
+fn image_cost(inlines: &[Inline]) -> usize {
+    match image_count(inlines) {
+        0 => 0,
+        n => 1 + 3 * n,
     }
 }
 
@@ -166,6 +179,20 @@ mod tests {
         // At most MAX_FORMULAS are charged to a block.
         let many = "$x$ ".repeat(MAX_FORMULAS * 3);
         assert_eq!(cost(&many), 1 + 2 * MAX_FORMULAS);
+    }
+
+    #[test]
+    fn media_images_cost_their_widgets() {
+        let cost = |md: &str| parse(md).blocks.iter().map(widget_cost).sum::<usize>();
+        let media = format!("![a](media:{}.png)", "ab".repeat(32));
+        assert_eq!(cost(&format!("x {media} y")), 1 + 1 + 3);
+        assert_eq!(cost(&format!("{media} {media}")), 1 + 1 + 6);
+        // Not drawn: no cost beyond the label.
+        assert_eq!(cost("![a](https://e.org/x.png)"), 1);
+        assert_eq!(cost(&format!("# {media}")), 1);
+        // Many images on many lines stay within the side's widget budget
+        // only as far as they fit; the rest is plain text.
+        assert!(cost(&format!("{media}\n").repeat(1_000)) > 2_000);
     }
 
     #[test]

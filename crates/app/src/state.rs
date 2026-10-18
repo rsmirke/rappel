@@ -12,6 +12,7 @@ use rappel_core::domain::{
     Card, CardState, Deck, DeckSummary, Grade, ReviewEvent, SettingKey, Settings, Tag, TaggedCard,
 };
 use rappel_core::interchange::{ExportSummary, ImportPlan, ImportReport};
+use rappel_core::media::MediaRef;
 use rappel_core::scheduling::StudyInput;
 use rappel_core::stats::{CardInfo, DayGrid, Stats};
 use rappel_core::storage::{
@@ -148,6 +149,38 @@ impl AppState {
     /// [`Self::export_on_worker`].
     pub fn set_desired_retention_on_worker(data_dir: &Path, value: f32) -> rappel_core::Result<()> {
         Store::open_concurrent(data_dir)?.set_desired_retention(value)
+    }
+
+    /// Copies the image `file` gives into the media store of the database
+    /// in `data_dir` (see [`Store::add_image`]) and returns its reference.
+    /// Blocking (a file of up to 10 MB is hashed, copied and synced); runs
+    /// on a worker thread, on its own connection like
+    /// [`Self::export_on_worker`]. `file` may be any `GFile` the file
+    /// chooser, a drop or the clipboard gives (a portal's too).
+    pub fn add_image_on_worker(
+        data_dir: &Path,
+        file: &gtk::gio::File,
+    ) -> rappel_core::Result<MediaRef> {
+        use gtk::prelude::*;
+        let stream = file
+            .read(gtk::gio::Cancellable::NONE)
+            .map_err(|err| rappel_core::Error::MediaRead(std::io::Error::other(err)))?;
+        Store::open_concurrent(data_dir)?.add_image(stream.into_read())
+    }
+
+    /// [`Self::add_image_on_worker`] for bytes (a pasted picture, encoded
+    /// as PNG).
+    pub fn add_image_bytes_on_worker(
+        data_dir: &Path,
+        bytes: &[u8],
+    ) -> rappel_core::Result<MediaRef> {
+        Store::open_concurrent(data_dir)?.add_image(bytes)
+    }
+
+    /// The media folder, where card images are read from (it may not
+    /// exist yet). `None` for a store without a data directory.
+    pub fn media_folder(&self) -> Option<PathBuf> {
+        self.0.store.borrow().media_folder().map(Path::to_path_buf)
     }
 
     /// The data directory the database lives in.

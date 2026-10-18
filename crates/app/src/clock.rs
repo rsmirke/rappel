@@ -182,9 +182,8 @@ mod tests {
     /// (UTC+1), CEST (UTC+2) from the last Sunday of March 02:00 to the
     /// last Sunday of October 03:00.
     fn paris() -> glib::TimeZone {
-        // `new` falls back to UTC on a bad identifier; the expected values
-        // below differ from UTC, so that would fail the tests.
-        glib::TimeZone::new(Some("CET-1CEST,M3.5.0,M10.5.0/3"))
+        glib::TimeZone::from_identifier(Some("CET-1CEST,M3.5.0,M10.5.0/3"))
+            .expect("a valid POSIX rule")
     }
 
     #[test]
@@ -390,7 +389,7 @@ mod tests {
             "XST-1XDT,M3.5.0/23,M10.5.0/1",
         ];
         for rule in zones {
-            let tz = glib::TimeZone::new(Some(rule));
+            let tz = glib::TimeZone::from_identifier(Some(rule)).expect("a valid POSIX rule");
             for from in [
                 utc(2026, 3, 27, 0, 0),
                 utc(2026, 10, 23, 0, 0),
@@ -423,7 +422,8 @@ mod tests {
     /// 01:00 EEST = 22:00 UTC the evening before.
     #[test]
     fn a_start_hour_of_midnight_skipped_by_daylight_saving() {
-        let tz = glib::TimeZone::new(Some("EET-2EEST,M3.5.0/0,M10.5.0/1"));
+        let tz = glib::TimeZone::from_identifier(Some("EET-2EEST,M3.5.0/0,M10.5.0/1"))
+            .expect("a valid POSIX rule");
         assert_eq!(
             day_start_ms(utc(2026, 3, 29, 12, 0), &tz, 0).unwrap(),
             utc(2026, 3, 28, 22, 0)

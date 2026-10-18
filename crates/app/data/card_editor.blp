@@ -76,6 +76,23 @@ template $RappelCardEditor: Adw.Dialog {
                 title: _("Front");
                 vexpand: true;
 
+                // Adds an image file to the media store and its reference
+                // at the cursor (ADR 0055). Named for the side, since the
+                // two buttons look alike.
+                header-suffix: Gtk.Button front_image_button {
+                  icon-name: "insert-image-symbolic";
+                  tooltip-text: _("Insert Image…");
+                  valign: center;
+
+                  accessibility {
+                    label: _("Insert Image in Front");
+                  }
+
+                  styles [
+                    "flat",
+                  ]
+                };
+
                 // A frame, not a card: GtkFrame clips its child to its
                 // rounded corners (`gtk_frame_init` sets overflow hidden),
                 // and libadwaita draws it as a 1 px border that follows
@@ -86,7 +103,7 @@ template $RappelCardEditor: Adw.Dialog {
                 // libadwaita's style-class docs say it "cannot be used with
                 // GtkSourceView"
                 // (gnome.pages.gitlab.gnome.org/libadwaita/doc/1.9/style-classes.html).
-                Gtk.Frame {
+                Gtk.Frame front_frame {
                   vexpand: true;
 
                   child: Gtk.ScrolledWindow {
@@ -129,7 +146,24 @@ template $RappelCardEditor: Adw.Dialog {
                 title: _("Back");
                 vexpand: true;
 
-                Gtk.Frame {
+                // Adds an image file to the media store and its reference
+                // at the cursor (ADR 0055). Named for the side, since the
+                // two buttons look alike.
+                header-suffix: Gtk.Button back_image_button {
+                  icon-name: "insert-image-symbolic";
+                  tooltip-text: _("Insert Image…");
+                  valign: center;
+
+                  accessibility {
+                    label: _("Insert Image in Back");
+                  }
+
+                  styles [
+                    "flat",
+                  ]
+                };
+
+                Gtk.Frame back_frame {
                   vexpand: true;
 
                   child: Gtk.ScrolledWindow {

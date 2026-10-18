@@ -105,6 +105,21 @@ pub fn temporary_state() -> (tempfile::TempDir, crate::state::AppState) {
     (tmp, state)
 }
 
+/// A real PNG of `w` × `h` grey pixels, encoded by GDK (needs GTK).
+pub fn png_bytes(w: i32, h: i32) -> Vec<u8> {
+    use gtk::gdk;
+    use gtk::prelude::*;
+    let pixels = vec![0x80_u8; usize::try_from(w * h * 4).expect("a small image")];
+    let texture = gdk::MemoryTexture::new(
+        w,
+        h,
+        gdk::MemoryFormat::R8g8b8a8,
+        &glib::Bytes::from_owned(pixels),
+        usize::try_from(w * 4).expect("a small image"),
+    );
+    texture.save_to_png_bytes().to_vec()
+}
+
 /// Runs the default main context until `done` holds or `timeout` has
 /// passed, and says whether `done` held. For waiting on GTK (a widget being
 /// mapped), not for timing: the timeout only stops a test that would hang.

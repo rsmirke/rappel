@@ -18,6 +18,7 @@
     <file preprocess="xml-stripblanks">browser_page.ui</file>
     <file preprocess="xml-stripblanks">browser_dialogs.ui</file>
     <file preprocess="xml-stripblanks">card_editor.ui</file>
+    <file preprocess="xml-stripblanks">image_dialog.ui</file>
     <file preprocess="xml-stripblanks">tag_suggestions.ui</file>
     <file preprocess="xml-stripblanks">discard_dialog.ui</file>
     <file preprocess="xml-stripblanks">review_page.ui</file>

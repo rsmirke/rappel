@@ -15,8 +15,22 @@ yanked = "deny"
 # REVIEW BY 2027-01-16 (cargo-deny has no expiry field). Review sooner when
 # RaTeX, ab_glyph or fontdb update, and remove the entry once RaTeX moves
 # to `skrifa`.
+#
+# RUSTSEC-2024-0436 (`paste`), RUSTSEC-2026-0371 (`zbus_names`) and the
+# `zvariant` / `zvariant_derive` notices of the same announcement (ADR 0055):
+# unmaintained, not vulnerable, with no fixed version. They reach us only
+# through glycin (the sandboxed image decoder): `paste` is a build-time
+# macro of glycin-common and gufo-common; the z* crates are zbus 5's
+# D-Bus types, merged into zbus 6, which glycin talks to its own sandboxed
+# loader over a private socket with (never the session or system bus).
+# glycin 4.0.3 has the same tree. REVIEW BY 2027-01-16, and remove them
+# once glycin moves to zbus 6 and off `paste`.
 ignore = [
     { id = "RUSTSEC-2026-0192", reason = "ttf-parser is unmaintained, not vulnerable; it parses only the bundled KaTeX fonts and installed system fonts. Review by 2027-01-16 (ADR 0021)." },
+    { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained, not vulnerable; a build-time macro of glycin's crates. Review by 2027-01-16 (ADR 0055)." },
+    { id = "RUSTSEC-2026-0370", reason = "zvariant is unmaintained (merged into zbus 6), not vulnerable; glycin's D-Bus types for its private loader socket. Review by 2027-01-16 (ADR 0055)." },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names is unmaintained (merged into zbus 6), not vulnerable; through glycin only. Review by 2027-01-16 (ADR 0055)." },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive is unmaintained (merged into zbus 6), not vulnerable; through glycin only. Review by 2027-01-16 (ADR 0055)." },
 ]
 
 [licenses]

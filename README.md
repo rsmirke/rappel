@@ -2,7 +2,7 @@
 
 A native GNOME flashcard app. Two grades only (Fail and Pass), Markdown cards with LaTeX math, FSRS scheduling. Everything stays on your computer: no network access, no accounts.
 
-**Status:** early development (0.1.0 released). You can create decks, add Markdown cards and study them with Fail and Pass on an FSRS schedule. Math (`$…$`, `$$…$$`) is drawn like KaTeX does; images are placeholders for now. See [SPEC.md](SPEC.md) for what is planned.
+**Status:** early development (0.1.0 released). You can create decks, add Markdown cards and study them with Fail and Pass on an FSRS schedule. Math (`$…$`, `$$…$$`) is drawn like KaTeX does, and PNG, JPEG, WebP and GIF images can be pasted, dropped or inserted into cards. See [SPEC.md](SPEC.md) for what is planned.
 
 ## Building
 
@@ -13,6 +13,12 @@ You need:
   GtkSourceView's introspection data (Blueprint needs it)
   (Fedora: `gtk4-devel libadwaita-devel gtksourceview5-devel`;
   Debian/Ubuntu: `libgtk-4-dev libadwaita-1-dev libgtksourceview-5-dev gir1.2-gtksource-5`)
+- the development files of Little CMS 2, libseccomp and fontconfig, for the image decoder
+  [glycin](https://gitlab.gnome.org/GNOME/glycin) (ADR 0055)
+  (Fedora: `lcms2-devel libseccomp-devel fontconfig-devel`;
+  Debian/Ubuntu: `liblcms2-dev libseccomp-dev libfontconfig-dev`)
+- to show images, glycin's image loaders and bubblewrap, its sandbox, at run time (most GNOME
+  systems have both) (Fedora: `glycin-loaders bubblewrap`; Debian/Ubuntu: `glycin-loaders bubblewrap`)
 - `blueprint-compiler` and `glib-compile-resources` (from GLib) on your `PATH`
 - [`cargo-deny`](https://github.com/EmbarkStudios/cargo-deny) for the quality gate (`cargo install cargo-deny`)
 
