@@ -76,6 +76,15 @@ pub fn on_main_context<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static
 /// run the tests in a desktop session or under `xvfb-run -a` (ADR 0024).
 pub fn with_gtk<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
     on_main_context(|| {
+        // `gtk_init` would call `setlocale (LC_ALL, "")` while other test
+        // threads read the locale (GLib's date formats, `strftime`):
+        // glibc's `setlocale` is "MT-Unsafe const:locale" (GNU C Library
+        // manual, "Setting the Locale"), so the tests keep the C locale.
+        // Not in the child process that reads the French catalog through
+        // the C library: it runs that one test alone and needs the locale.
+        if !gtk::is_initialized() && !crate::i18n::tests::real_gettext() {
+            gtk::disable_setlocale();
+        }
         gtk::init().expect("GTK needs a display for this test; run it under `xvfb-run -a`");
         f()
     })

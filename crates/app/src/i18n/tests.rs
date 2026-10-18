@@ -66,16 +66,35 @@ pub fn in_french<T>(f: impl FnOnce() -> T) -> T {
     f()
 }
 
-/// The translation of a message in the catalog of [`in_french`], or `None`
-/// outside it (the real lookup then gives the English text, since the
-/// tests bind no domain).
+/// Whether this process is the child of
+/// `the_c_library_reads_the_french_catalog`, the one test process that
+/// reads catalogs through the C library.
+pub fn real_gettext() -> bool {
+    static REAL: OnceLock<bool> = OnceLock::new();
+    *REAL.get_or_init(|| std::env::var_os(REAL_GETTEXT).is_some())
+}
+
+/// What a lookup gives in the tests: the translation in the catalog of
+/// [`in_french`]; else the English text by English's rule (singular for
+/// exactly one), never through the C library (see `i18n::gettext`); in the
+/// child process of `the_c_library_reads_the_french_catalog`, `None`, so
+/// the C library is asked.
 pub fn translated(
     context: Option<&str>,
     id: &str,
     plural: Option<&str>,
     n: usize,
 ) -> Option<String> {
-    let catalog = CATALOG.with(Cell::get)?;
+    let Some(catalog) = CATALOG.with(Cell::get) else {
+        if real_gettext() {
+            return None;
+        }
+        let english = match plural {
+            Some(plural) if n != 1 => plural,
+            _ => id,
+        };
+        return Some(english.to_owned());
+    };
     let key = match context {
         Some(context) => format!("{context}\u{4}{id}"),
         None => id.to_owned(),
@@ -896,7 +915,19 @@ fn french_lookups_pick_the_plural_by_french_rules() {
             Some("{count} xs")
         );
     });
-    assert_eq!(translated(None, "Anything", None, 0), None);
+    // Outside it, English by English's rule, without the C library.
+    assert_eq!(
+        translated(None, "Anything", None, 0).as_deref(),
+        Some("Anything")
+    );
+    assert_eq!(
+        translated(None, "{count} x", Some("{count} xs"), 1).as_deref(),
+        Some("{count} x")
+    );
+    assert_eq!(
+        translated(None, "{count} x", Some("{count} xs"), 0).as_deref(),
+        Some("{count} xs")
+    );
 }
 
 /// Set for the child process of `the_c_library_reads_the_french_catalog`.
@@ -1060,6 +1091,7 @@ const UNDO_TITLES: &[&str] = &[
     "Card deleted",
     "Card suspended",
     "Card unsuspended",
+    "Deck deleted",
 ];
 
 /// A sample value for a placeholder, as long as such a value usually is.

@@ -893,6 +893,7 @@ msgstr ""
 msgid "These fonts are licensed under the <a href=\"https://openfontlicense.org\">SIL Open Font License, Version 1.1</a>. They are data shipped with Rappel, not part of its code."
 msgstr ""
 
+#. Translators: put your name here (one per line, with an e-mail address in <> if you like); libadwaita lists it under Translated by.
 #: crates/app/src/dialogs/about.rs
 msgid "translator-credits"
 msgstr ""

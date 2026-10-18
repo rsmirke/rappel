@@ -110,6 +110,19 @@ pub fn bind(dir: &std::path::Path) {
     }
 }
 
+// In the tests, the lookups below never reach the C library (only the
+// child process of `the_c_library_reads_the_french_catalog` does, alone in
+// its process): they give the English text, or `tests::in_french`'s. Test
+// threads run in parallel with the GTK test thread, and the C library's
+// lookups read the locale while `setlocale` may be changing it: glibc
+// marks `gettext`, `dcgettext` and the like MT-Safe with "env" and reading
+// the locale, and `setlocale` "MT-Unsafe const:locale", which "modifies
+// … the locale … calling such functions concurrently with functions that
+// read the locale is unsafe" (GNU C Library manual, "POSIX Safety
+// Concepts", "Setting the Locale", "Translation with gettext"). A test
+// run once died with SIGSEGV after this module arrived; the testing
+// harness also keeps GTK from calling `setlocale` (`testing::with_gtk`).
+
 /// `msgid` in the user's language.
 pub fn gettext(msgid: &str) -> String {
     #[cfg(test)]

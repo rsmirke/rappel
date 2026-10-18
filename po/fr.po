@@ -895,6 +895,7 @@ msgstr "Polices KaTeX"
 msgid "These fonts are licensed under the <a href=\"https://openfontlicense.org\">SIL Open Font License, Version 1.1</a>. They are data shipped with Rappel, not part of its code."
 msgstr "Ces polices sont distribuées sous la <a href=\"https://openfontlicense.org\">SIL Open Font License, Version 1.1</a>. Ce sont des données livrées avec Rappel, pas une partie de son code."
 
+#. Translators: put your name here (one per line, with an e-mail address in <> if you like); libadwaita lists it under Translated by.
 #: crates/app/src/dialogs/about.rs
 msgid "translator-credits"
 msgstr "Claude (Anthropic)"
@@ -1494,7 +1495,7 @@ msgstr "Réinitialisation impossible : {error}"
 
 #: crates/app/src/pages/deck_page.rs
 msgid "The reset can no longer be undone"
-msgstr "Réinitialisation non annulable"
+msgstr "Annulation plus possible"
 
 #. Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
 #: crates/app/src/pages/deck_page.rs
@@ -1612,7 +1613,7 @@ msgstr "La copie laissée en attente par la restauration est renommée en « ra
 
 #: crates/app/src/pages/recovery_page.rs
 msgid "The waiting copy is gone. Restart Rappel to check again."
-msgstr "Copie disparue. Redémarrez Rappel pour vérifier à nouveau."
+msgstr "Copie en attente perdue. Redémarrez Rappel pour vérifier à nouveau."
 
 #. Translators: a toast; {error} is why, in English.
 #: crates/app/src/pages/recovery_page.rs

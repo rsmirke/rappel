@@ -81,11 +81,10 @@ pub fn show(parent: &impl IsA<gtk::Widget>) {
     // Opened in the browser only when clicked; Rappel fetches nothing.
     dialog.set_website(REPOSITORY);
     dialog.set_issue_url(&issue_url());
-    if let Some(credits) = translator_credits(gettext(
-        // Translators: put your name here (one per line, with an e-mail
-        // address in <> if you like); libadwaita lists it under Translated by.
-        "translator-credits",
-    )) {
+    // Translators: put your name here (one per line, with an e-mail
+    // address in <> if you like); libadwaita lists it under Translated by.
+    let credits = gettext("translator-credits");
+    if let Some(credits) = translator_credits(credits) {
         dialog.set_translator_credits(&credits);
     }
     dialog.add_credit_section(Some(&gettext("Built With")), &LIBRARIES);
