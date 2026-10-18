@@ -244,8 +244,10 @@ template $RappelCardEditor: Adw.Dialog {
           orientation: vertical;
         }
 
-        // Not focusable: the rendered labels are not (see render/mod.rs),
-        // so Tab goes from the tags straight to the header buttons.
+        // Not focusable itself: the rendered labels are not (see
+        // render/mod.rs); only a drawn image is, a button that opens it at
+        // full size (ADR 0055), so Tab goes from the tags to the preview's
+        // images, then to the header buttons.
         Gtk.ScrolledWindow preview_pane {
           hscrollbar-policy: never;
           hexpand: true;

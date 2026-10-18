@@ -304,7 +304,7 @@ impl CardImage {
         line.update_property(&[gtk::accessible::Property::Label(&text)]);
         let icon = gtk::Image::builder()
             .icon_name("image-missing-symbolic")
-            .valign(gtk::Align::Start)
+            .valign(gtk::Align::Center)
             .accessible_role(gtk::AccessibleRole::Presentation)
             .build();
         // Plain text (the alt text is card content), with breaks in long
