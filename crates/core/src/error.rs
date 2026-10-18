@@ -424,6 +424,13 @@ pub enum Error {
     /// no media folder.
     #[error("this database has no media folder")]
     NoMediaDir,
+
+    /// The system clock is not set to a real date (before October 2026,
+    /// when Rappel first cleaned up media, or past year 9999), so the
+    /// media trash cannot date what it holds (ADR 0057). Nothing was
+    /// changed.
+    #[error("the system clock is not set to the right date; set the date and time, then try again")]
+    ClockWrong,
 }
 
 /// `Result` with [`Error`] as the error type.

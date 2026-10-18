@@ -52,6 +52,7 @@ impl Store {
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let card = insert_card(&tx, &mut self.ids, deck_id, front_md, back_md, now)?;
+        recover_named_media(&tx, self.media_dir.as_deref(), front_md, back_md, now);
         tx.commit()?;
         Ok(card)
     }
@@ -88,6 +89,7 @@ impl Store {
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let card = insert_card(&tx, &mut self.ids, deck_id, front_md, back_md, now)?;
         let tags = set_card_tags_in(&tx, &mut self.ids, &card.id, tag_names, now)?;
+        recover_named_media(&tx, self.media_dir.as_deref(), front_md, back_md, now);
         tx.commit()?;
         Ok(TaggedCard { card, tags })
     }
@@ -136,6 +138,7 @@ impl Store {
                 card_from_row,
             )?;
             index_card_in(&tx, id, front_md, back_md)?;
+            recover_named_media(&tx, self.media_dir.as_deref(), front_md, back_md, now);
         }
         let tags = match tag_names {
             Some(names) => set_card_tags_in(&tx, &mut self.ids, id, names, now)?,
@@ -181,6 +184,7 @@ impl Store {
             .optional()?
             .ok_or_else(|| Error::CardNotFound(id.to_owned()))?;
         index_card_in(&tx, id, front_md, back_md)?;
+        recover_named_media(&tx, self.media_dir.as_deref(), front_md, back_md, now);
         tx.commit()?;
         Ok(card)
     }
@@ -257,6 +261,32 @@ impl Store {
         tx.execute("UPDATE cards SET deleted_at = NULL WHERE id = ?1", [id])?;
         tx.commit()?;
         Ok(card)
+    }
+}
+
+/// Brings back from the media trash the files a card being written names
+/// and the media folder lacks (ADR 0057): an editor may have held a
+/// reference to a file that a clean-up took while it was open. Inside the
+/// write's transaction. A failure is only logged, never refuses the write:
+/// the file stays in the trash, and the next start brings it back, since
+/// the card now uses it.
+fn recover_named_media(
+    tx: &Connection,
+    media_dir: Option<&std::path::Path>,
+    front_md: &str,
+    back_md: &str,
+    now: i64,
+) {
+    let Some(media_dir) = media_dir else {
+        return;
+    };
+    match crate::media::recover_refs(tx, media_dir, &[front_md, back_md], now) {
+        Ok(0) => {}
+        Ok(n) => tracing::info!(
+            files = n,
+            "media files a card names brought back from the trash"
+        ),
+        Err(err) => tracing::warn!("cannot bring a card's media back from the trash: {err}"),
     }
 }
 

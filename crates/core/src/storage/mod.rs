@@ -25,6 +25,7 @@ use crate::data_dir::ensure_data_dir;
 use crate::error::{Error, Result};
 use crate::id::IdGen;
 use crate::time::now_ms;
+pub(crate) use backup::backup_names;
 pub use backup::{BackupInfo, list_backups};
 use backup::{check_rows, has_backup_for_day};
 pub(crate) use backup::{create_backup, prune_backups};
@@ -99,7 +100,9 @@ impl Store {
     ///    made if none exists for today (UTC); that one failing only logs a
     ///    warning. Old backups are pruned by the rule in ADR 0026, never
     ///    deleting the one just made.
-    /// 5. Pending migrations run, one transaction each.
+    /// 5. Pending migrations run, one transaction each. Then every file of
+    ///    the media trash the database has a row for goes back to the media
+    ///    folder (ADR 0057).
     /// 6. The stored settings are read and checked, so a damaged value stops
     ///    the open here, naming its key, and not later by chance in the
     ///    first read that needs it (ADR 0052). [`reset_setting`] puts its
@@ -186,7 +189,36 @@ impl Store {
         store.open_warnings = warnings;
         store.backup_dir = Some(backup_dir.to_path_buf());
         store.media_dir = media_dir_of(db_path);
+        if !is_new {
+            store.recover_trashed_rows(now_ms);
+        }
         Ok(store)
+    }
+
+    /// Step 5b of [`Store::open`]: brings back from the media trash every
+    /// file the database has a row for (a clean-up cut off before its
+    /// commit, a restored backup; ADR 0057). It only lists the trash, so it
+    /// costs nothing while the trash is empty. A failure is only logged:
+    /// the files stay in the trash, which the next start looks at again
+    /// and never purges while a row names them.
+    fn recover_trashed_rows(&mut self, now_ms: i64) {
+        let Some(media_dir) = self.media_dir.clone() else {
+            return;
+        };
+        let result = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(Error::from)
+            .and_then(|tx| {
+                let n = crate::media::recover_rows(&tx, &media_dir, now_ms)?;
+                tx.commit()?;
+                Ok(n)
+            });
+        match result {
+            Ok(0) => {}
+            Ok(n) => tracing::info!(files = n, "media files brought back from the trash at open"),
+            Err(err) => tracing::warn!("cannot bring media files back from the trash: {err}"),
+        }
     }
 
     /// Opens another connection to the database in `data_dir`, which

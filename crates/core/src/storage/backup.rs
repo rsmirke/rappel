@@ -78,7 +78,7 @@ pub(crate) fn parse_backup_name(name: &str) -> Option<(&str, u32)> {
 
 /// File names in `dir` that are backups, oldest first. A missing directory
 /// has no backups.
-fn backup_names(dir: &Path) -> Result<Vec<String>> {
+pub(crate) fn backup_names(dir: &Path) -> Result<Vec<String>> {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),

@@ -223,11 +223,20 @@ fn installed(
     set_aside: Option<PathBuf>,
 ) -> Result<Restored> {
     match store {
-        Ok(store) => Ok(Restored {
-            store,
-            replaced,
-            set_aside,
-        }),
+        Ok(mut store) => {
+            // Card sides too: the open brought back what the database has
+            // rows for (ADR 0057).
+            match store.recover_trashed_media_at(now_ms()) {
+                Ok(0) => {}
+                Ok(n) => tracing::info!(files = n, "media files the restore uses brought back"),
+                Err(err) => tracing::warn!("cannot bring media back from the trash: {err}"),
+            }
+            Ok(Restored {
+                store,
+                replaced,
+                set_aside,
+            })
+        }
         Err(Error::DamagedSetting { key, .. }) => Err(Error::InstalledWithDamagedSetting {
             key,
             replaced,

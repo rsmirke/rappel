@@ -12,7 +12,7 @@ use rappel_core::domain::{
     Card, CardState, Deck, DeckSummary, Grade, ReviewEvent, SettingKey, Settings, Tag, TaggedCard,
 };
 use rappel_core::interchange::{ExportSummary, ImportPlan, ImportReport};
-use rappel_core::media::MediaRef;
+use rappel_core::media::{CleanedUp, MediaRef, TrashTidied, UnusedMedia};
 use rappel_core::scheduling::StudyInput;
 use rappel_core::stats::{CardInfo, DayGrid, Stats};
 use rappel_core::storage::{
@@ -244,6 +244,36 @@ impl AppState {
                 Accept::Any => store.add_media(reader),
             })
             .map_err(AddMediaError::Store)
+    }
+
+    /// The media files no card uses in `data_dir`, and their size (see
+    /// [`Store::unused_media`], ADR 0057). Blocking (every card is read);
+    /// on its own connection like [`Self::export_on_worker`].
+    pub fn unused_media_on_worker(data_dir: &Path) -> rappel_core::Result<UnusedMedia> {
+        Store::open_concurrent(data_dir)?.unused_media()
+    }
+
+    /// Moves the media files no card uses in `data_dir` to the trash (see
+    /// [`Store::clean_up_media`]). Blocking; on its own connection like
+    /// [`Self::export_on_worker`].
+    pub fn clean_up_media_on_worker(data_dir: &Path) -> rappel_core::Result<CleanedUp> {
+        Store::open_concurrent(data_dir)?.clean_up_media()
+    }
+
+    /// Puts back what `cleaned` moved, as far as it can (see
+    /// [`Store::undo_clean_up`]). Blocking; on its own connection.
+    pub fn undo_clean_up_on_worker(
+        data_dir: &Path,
+        cleaned: &CleanedUp,
+    ) -> rappel_core::Result<usize> {
+        Store::open_concurrent(data_dir)?.undo_clean_up(cleaned)
+    }
+
+    /// At startup: brings back the trash's files the database uses and
+    /// purges the old ones nothing uses (see [`Store::tidy_media_trash`]).
+    /// Blocking (it may read every backup); on its own connection.
+    pub fn tidy_media_trash_on_worker(data_dir: &Path) -> rappel_core::Result<TrashTidied> {
+        Store::open_concurrent(data_dir)?.tidy_media_trash()
     }
 
     /// The media folder, where card images and audio are read from (it may not
