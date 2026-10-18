@@ -18,11 +18,12 @@ Adw.AlertDialog choose_dialog {
   };
 }
 
-// Asks for the name of a tag to put on cards. The name is checked as it is
-// typed, with the store's own rule.
-Adw.AlertDialog tag_name_dialog {
-  heading: _("Add Tag");
-  body: _("Cards that already have the tag keep it.");
+// Asks for tags to put on cards, in the card editor's tag entry: pills,
+// suggestions of the tags there are, the same keys (ADR 0051). The body is
+// set in dialogs/browser_dialogs.rs; Add is enabled once there is a tag to
+// add, and the entry shows its own errors under it.
+Adw.AlertDialog add_tags_dialog {
+  heading: _("Add Tags");
   close-response: "cancel";
   default-response: "confirm";
 
@@ -31,32 +32,5 @@ Adw.AlertDialog tag_name_dialog {
     confirm: _("_Add") suggested,
   ]
 
-  extra-child: Gtk.Box {
-    orientation: vertical;
-    spacing: 6;
-
-    Gtk.ListBox {
-      selection-mode: none;
-
-      styles [
-        "boxed-list",
-      ]
-
-      Adw.EntryRow tag_entry {
-        title: _("Tag");
-        activates-default: true;
-      }
-    }
-
-    Gtk.Label error_label {
-      visible: false;
-      wrap: true;
-      xalign: 0;
-
-      styles [
-        "error",
-        "caption",
-      ]
-    }
-  };
+  extra-child: $RappelTagEntry add_tags_entry {};
 }

@@ -34,7 +34,7 @@ const CHECKS: &[(&str, fn())] = &[
     ("backup_row.blp", template::<BackupRow>),
     ("browser_dialogs.blp", || {
         loads("choose_dialog", browser_dialogs::choose_layout().err());
-        loads("tag_name_dialog", browser_dialogs::tag_name_layout().err());
+        loads("add_tags_dialog", browser_dialogs::add_tags_layout().err());
     }),
     ("browser_page.blp", template::<BrowserPage>),
     ("card_editor.blp", template::<card_editor::CardEditor>),

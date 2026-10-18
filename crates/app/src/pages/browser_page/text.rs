@@ -337,6 +337,15 @@ pub fn move_body(n: usize) -> String {
     format!("Choose the deck to move {} to.", count_text(n))
 }
 
+/// The body of the Add Tags dialog: what it does, and how a tag is ended
+/// (the card editor's Tags group says the same).
+pub fn add_tags_body(n: usize) -> String {
+    format!(
+        "Choose the tags to put on {}. Press Enter or type a comma after each one.",
+        count_text(n)
+    )
+}
+
 /// The body of the Remove Tag dialog.
 pub fn remove_tag_body(n: usize) -> String {
     format!("Choose the tag to take off {}.", count_text(n))
@@ -356,8 +365,32 @@ pub fn moved_text(n: usize, deck: &str) -> String {
     format!("{} moved to {}", cards(n), one_line(deck))
 }
 
-pub fn tag_added_text(n: usize, tag: &str) -> String {
-    format!("Tag “{}” added to {}", one_line(tag), cards(n))
+/// The toast after Add Tags put `tags` (those that went on at least one
+/// card) on `n` cards, leaving out `full` cards that would have had more
+/// than `limit` tags.
+pub fn tags_added_text(tags: &[String], n: usize, full: usize, limit: usize) -> String {
+    let added = match tags {
+        [tag] => format!("Tag “{}” added to {}", one_line(tag), cards(n)),
+        _ => format!("{} added to {}", count(tags.len(), "tag", "tags"), cards(n)),
+    };
+    if full == 0 {
+        added
+    } else {
+        format!(
+            "{added}; {} left out, as a card can have at most {} tags",
+            cards(full),
+            group_digits(limit)
+        )
+    }
+}
+
+/// The notice when Add Tags changed no card because each would have had
+/// more than `limit` tags.
+pub fn no_room_text(limit: usize) -> String {
+    format!(
+        "No tags added; a card can have at most {} tags",
+        group_digits(limit)
+    )
 }
 
 pub fn tag_removed_text(n: usize, tag: &str) -> String {
@@ -635,6 +668,10 @@ mod tests {
         assert_eq!(move_body(3), "Choose the deck to move 3 cards to.");
         assert_eq!(remove_tag_body(1), "Choose the tag to take off 1 card.");
         assert_eq!(
+            add_tags_body(3),
+            "Choose the tags to put on 3 cards. Press Enter or type a comma after each one."
+        );
+        assert_eq!(
             suspend_labels(SuspendChoice::Unsuspend),
             ("Unsuspend", "Unsuspend selected cards")
         );
@@ -644,7 +681,28 @@ mod tests {
     fn toasts_count_and_name() {
         assert_eq!(moved_text(3, "Maths"), "3 cards moved to Maths");
         assert_eq!(moved_text(1, "a\n b"), "1 card moved to a b");
-        assert_eq!(tag_added_text(2, "hard"), "Tag “hard” added to 2 cards");
+        assert_eq!(
+            tags_added_text(&["hard".to_owned()], 2, 0, 100),
+            "Tag “hard” added to 2 cards"
+        );
+        assert_eq!(
+            tags_added_text(&["a\nb".to_owned()], 1, 0, 100),
+            "Tag “a b” added to 1 card"
+        );
+        let two = ["hard".to_owned(), "exam".to_owned()];
+        assert_eq!(tags_added_text(&two, 3, 0, 100), "2 tags added to 3 cards");
+        assert_eq!(
+            tags_added_text(&two, 3, 1, 100),
+            "2 tags added to 3 cards; 1 card left out, as a card can have at most 100 tags"
+        );
+        assert_eq!(
+            tags_added_text(&two, 1_000, 2_000, 1_000),
+            "2 tags added to 1,000 cards; 2,000 cards left out, as a card can have at most 1,000 tags"
+        );
+        assert_eq!(
+            no_room_text(100),
+            "No tags added; a card can have at most 100 tags"
+        );
         assert_eq!(
             tag_removed_text(1, "hard"),
             "Tag “hard” removed from 1 card"

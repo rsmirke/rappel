@@ -190,6 +190,14 @@ impl TagEntry {
         self.imp().on_changed.replace(Some(Callback::new(f)));
     }
 
+    /// Whether Enter in the empty text, with no suggestion showing,
+    /// activates the default widget of the window or dialog (the Add Tags
+    /// dialog's Add); the keys that make pills take Enter first
+    /// (`keys::key_action`).
+    pub fn set_activates_default(&self, activates: bool) {
+        self.text().set_activates_default(activates);
+    }
+
     /// Every tag there is, for the suggestions.
     pub fn set_all_tags(&self, all: Vec<Tag>) {
         self.imp().all_tags.replace(all);
