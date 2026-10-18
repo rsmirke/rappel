@@ -147,13 +147,30 @@ fn values_larger_than_the_length_limit_are_measured_not_read() {
 #[test]
 fn virtual_tables_and_generated_columns_are_refused() {
     let env = Env::new();
-    let mut b = one_basic();
-    b.sql("CREATE VIRTUAL TABLE search USING fts5(x); INSERT INTO search VALUES ('a');");
-    let problem = refused(&env, &b.build(Container::Legacy));
-    assert_eq!(
-        problem,
-        AnkiProblem::Damaged("the collection cannot be read: it has a virtual table".to_owned())
-    );
+    for text in [
+        "CREATE VIRTUAL TABLE search USING fts5(x)",
+        // SQLite stores its own spelling, but a file may hold any: this one
+        // hides the keyword from a reading of words.
+        "CREATE/**/VIRTUAL/**/TABLE search USING fts5(x)",
+    ] {
+        let mut b = one_basic();
+        // Refused by the first look at the schema, before anything could
+        // connect the module (a later guard says "virtual or shadow").
+        b.sql(&format!(
+            "CREATE VIRTUAL TABLE search USING fts5(x); INSERT INTO search VALUES ('a');
+             PRAGMA writable_schema = ON;
+             UPDATE sqlite_schema SET sql = '{text}' WHERE name = 'search';
+             PRAGMA writable_schema = OFF;"
+        ));
+        let problem = refused(&env, &b.build(Container::Legacy));
+        assert_eq!(
+            problem,
+            AnkiProblem::Damaged(
+                "the collection cannot be read: it has a virtual table".to_owned()
+            ),
+            "{text}"
+        );
+    }
     let mut b = one_basic();
     b.sql("ALTER TABLE notes ADD COLUMN g AS (printf('%.*c', 999999999, 'x'));");
     let problem = refused(&env, &b.build(Container::Legacy));
@@ -172,7 +189,10 @@ fn virtual_tables_and_generated_columns_are_refused() {
 #[test]
 fn template_work_is_bounded_on_a_large_field() {
     within(Duration::from_secs(30), "template work", || {
-        let field = "<b>y</b> {{c1::z}} ".repeat(400_000); // about 7.6 MiB
+        // No cloze in it: nothing but the work budget stops a filter that
+        // reads the whole field at each of its nodes (each output is
+        // empty, so the output cap never does).
+        let field = "y ".repeat(3_800_000); // about 7.2 MiB
         let mut b = Builder::new();
         let templates = [
             // Each under the 256 KiB a template may have.
@@ -180,7 +200,6 @@ fn template_work_is_bounded_on_a_large_field() {
             "{{^F}}x{{/F}}{{#Tags}}t{{/Tags}}".repeat(6_000),
             "{{cloze-only:F}}".repeat(15_000),
             "{{type:F}}".repeat(20_000),
-            "{{text:F}}".repeat(20_000),
         ];
         for (i, qfmt) in templates.iter().enumerate() {
             let id = 50 + i64::try_from(i).unwrap();
@@ -203,11 +222,11 @@ fn template_work_is_bounded_on_a_large_field() {
             .plan_anki_bytes(&b.build(Container::Legacy), &limits, PLAN_NOW)
             .unwrap();
         let s = plan.summary();
-        // The sections only write "x": imported. The others read the field
-        // once per node: cut by the work budget (or, `type:` on the
-        // question, an empty front).
+        // The sections only write "x": imported. `cloze-only` reads the
+        // field at each node: cut by the work budget. `type:` on the
+        // question writes nothing: an empty front.
         assert_eq!(s.cards, 2, "{s:#?}");
-        assert_eq!(count(&s.skipped, Skip::TooLong), 2, "{s:#?}");
+        assert_eq!(count(&s.skipped, Skip::TooLong), 1, "{s:#?}");
         assert_eq!(count(&s.skipped, Skip::EmptyFront), 1, "{s:#?}");
     });
 }
@@ -225,14 +244,24 @@ fn cancel_is_seen_between_any_two_cards() {
     }
     let bytes = b.build(Container::Legacy);
     let env = Env::new();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (flag, count) = (Arc::clone(&cancel), Arc::clone(&seen));
+    // Cancelled once the fifth card is done: the sixth is never read.
+    super::super::import::AFTER_CARD.with_borrow_mut(|hook| {
+        *hook = Some(Box::new(move || {
+            if count.fetch_add(1, Ordering::Relaxed) + 1 == 5 {
+                flag.store(true, Ordering::Relaxed);
+            }
+        }));
+    });
     let source = crate::interchange::source::Source::Bytes(Arc::from(&bytes[..]));
-    let cancel = AtomicBool::new(false);
-    // Cancelled before the cards are read: the first card sees it.
-    cancel.store(true, Ordering::Relaxed);
     let result = env
         .store
         .plan_anki_source(source, &AnkiLimits::DEFAULT, &cancel, PLAN_NOW);
-    assert!(matches!(result, Err(Error::ImportCancelled)));
+    super::super::import::AFTER_CARD.with_borrow_mut(|hook| *hook = None);
+    assert!(matches!(result, Err(Error::ImportCancelled)), "{result:?}");
+    assert_eq!(seen.load(Ordering::Relaxed), 5);
     env.assert_no_temp();
 }
 

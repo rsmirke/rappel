@@ -178,6 +178,32 @@ answer(math_card, [3])
 col.sched.suspend_cards([math_card])
 col.sched.bury_cards([html.card_ids()[0]])
 
+# Filtered decks, as Anki logs them: a review card answered before it is
+# due in a filtered deck that reschedules (type 3 with an ease factor, kept
+# as a review), and a new card answered in one that does not (a preview:
+# type 3 with factor 0, left out). Both go home afterwards.
+early = col.decks.new_filtered("Early")
+deck = col.decks.get(early)
+deck["terms"] = [["cid:%d" % front_card, 10, 0]]
+deck["resched"] = True
+col.decks.save(deck)
+col.sched.rebuild_filtered_deck(early)
+answer(front_card, [3])
+col.sched.empty_filtered_deck(early)
+preview = col.decks.new_filtered("Preview")
+deck = col.decks.get(preview)
+capital = col.find_cards('"Front:Capital of Italy?"')[0]
+deck["terms"] = [["cid:%d" % capital, 10, 0]]
+deck["resched"] = False
+col.decks.save(deck)
+col.sched.rebuild_filtered_deck(preview)
+answer(capital, [3])
+col.sched.empty_filtered_deck(preview)
+for removed in (early, preview):
+    col.decks.remove([removed])
+kinds = col.db.all("select type, factor from revlog where type = 3")
+assert sorted(kinds) == [[3, 0], [3, 2500]], kinds
+
 # Spread the log over the past days: one entry every 20 hours, in the order
 # they were made (the scheduler ran within a second).
 rows = col.db.all("select id from revlog order by id")

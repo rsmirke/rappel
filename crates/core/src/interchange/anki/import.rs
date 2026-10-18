@@ -37,7 +37,7 @@ use crate::storage::{
 };
 use crate::time::now_ms;
 
-/// The most tags a card keeps from its note.
+// The most tags a card keeps from its note.
 use crate::domain::MAX_TAGS_PER_CARD as MAX_TAGS;
 /// The longest time a review may have taken: an hour (Anki caps answers
 /// at a minute by default; longer ones are a clock or a lunch break).
@@ -464,7 +464,9 @@ impl<'c> Run<'c> {
             // budget), so this is the longest wait for a cancel.
             check_cancel(cancel)?;
             let revs = take_revs(card.id).map_err(Error::AnkiRefused)?;
-            walk.card(&card, &revs)
+            walk.card(&card, &revs)?;
+            after_card();
+            Ok(())
         });
         match walked {
             Ok(()) => {}
@@ -784,6 +786,23 @@ thread_local! {
     /// tests can cancel there.
     pub(super) static BEFORE_COMMIT: std::cell::RefCell<Option<Box<dyn FnMut()>>> =
         const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Runs after each card of a walk, so tests can cancel in the middle.
+    pub(super) static AFTER_CARD: std::cell::RefCell<Option<Box<dyn FnMut()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// After each card of a walk (a test hook; nothing otherwise).
+fn after_card() {
+    #[cfg(test)]
+    AFTER_CARD.with_borrow_mut(|hook| {
+        if let Some(hook) = hook {
+            hook();
+        }
+    });
 }
 
 /// Before an apply commits (a test hook; nothing otherwise).

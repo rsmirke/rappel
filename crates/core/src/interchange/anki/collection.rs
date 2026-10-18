@@ -202,6 +202,10 @@ impl Collection {
         .map_err(sql)?;
 
         check_schema(&conn)?;
+        // The integrity check does not evaluate the file's CHECK
+        // expressions either.
+        conn.pragma_update(None, "ignore_check_constraints", true)
+            .map_err(sql)?;
         let check: String = conn
             .query_row("PRAGMA quick_check(1)", [], |r| r.get(0))
             .map_err(|_| AnkiProblem::Damaged("the collection is not a database".to_owned()))?;
@@ -736,7 +740,7 @@ impl Budget {
 fn check_schema(conn: &Connection) -> Result<(), AnkiProblem> {
     let not_db = |_| AnkiProblem::Damaged("the collection is not a database".to_owned());
     let mut stmt = conn
-        .prepare("SELECT type, name, sql FROM sqlite_schema")
+        .prepare("SELECT type, name, sql, rootpage FROM sqlite_schema")
         .map_err(not_db)?;
     let mut rows = stmt.query([]).map_err(not_db)?;
     let mut tables = Vec::new();
@@ -747,10 +751,16 @@ fn check_schema(conn: &Connection) -> Result<(), AnkiProblem> {
             .take(3)
             .map(str::to_ascii_lowercase)
             .collect();
-        if words.get(1).is_some_and(|w| w == "virtual") {
+        let is_table = text_of(row.get_ref(0).map_err(sql)?).as_deref() == Some("table");
+        // A virtual table always has root page 0, whatever its text says
+        // (`CREATE/**/VIRTUAL TABLE` hides it from the words above); this
+        // is decided before anything (`table_list` included) can touch
+        // it and connect its module.
+        let root = int_of(row.get_ref(3).map_err(sql)?);
+        if words.get(1).is_some_and(|w| w == "virtual") || (is_table && root == Some(0)) {
             return Err(damaged("it has a virtual table"));
         }
-        if text_of(row.get_ref(0).map_err(sql)?).as_deref() == Some("table") {
+        if is_table {
             tables.push(text_of(row.get_ref(1).map_err(sql)?).unwrap_or_default());
             if tables.len() > 1_000 {
                 return Err(damaged("it has too many tables"));
@@ -765,8 +775,10 @@ fn check_schema(conn: &Connection) -> Result<(), AnkiProblem> {
         .query_map([], |r| Ok(text_of(r.get_ref(0)?)))
         .map_err(sql)?;
     for kind in kinds {
+        // Not reached by a virtual table (refused above, before
+        // `table_list` could connect its module); a second guard.
         if matches!(kind.map_err(sql)?.as_deref(), Some("virtual" | "shadow")) {
-            return Err(damaged("it has a virtual table"));
+            return Err(damaged("it has a virtual or shadow table"));
         }
     }
     for table in tables {

@@ -90,9 +90,10 @@ fn the_plan_counts_what_is_imported_and_what_is_not() {
         // Default, Lang, Lang › Français › Verbes, Science, Science › Geo.
         assert_eq!((s.new_decks, s.existing_decks), (5, 0), "{name}");
         assert_eq!(s.suspended, 1, "{name}");
-        // 8 + 3 (the reversed note's front) + 1 (its back) + 2 + 1 (the
+        // 8 + 4 (the reversed note's front, the last answered early in a
+        // filtered deck that reschedules) + 1 (its back) + 2 + 1 (the
         // cloze) + 1 (the math card).
-        assert_eq!(s.reviews, 16, "{name}");
+        assert_eq!(s.reviews, 17, "{name}");
         assert_eq!((s.new_media, s.present_media), (3, 0), "{name}");
         // geo::europe, 日本語, über, marked, leech.
         assert_eq!(s.tags, 5, "{name}");
@@ -112,6 +113,8 @@ fn the_plan_counts_what_is_imported_and_what_is_not() {
         assert_eq!(examples(k, Skip::UnsupportedMedia), ["pic.svg"]);
         // "Set due date"; "Forget" is a reset.
         assert_eq!(count(k, Skip::ManualEntry), 1);
+        // A preview in a filtered deck that does not reschedule.
+        assert_eq!(count(k, Skip::FilteredReview), 1);
         // Anki leaves unused files out of a deck package, not out of a
         // collection package.
         let unused = usize::from(name == "current.colpkg");
@@ -120,7 +123,7 @@ fn the_plan_counts_what_is_imported_and_what_is_not() {
         let mut sorted = reasons.clone();
         sorted.sort();
         assert_eq!(reasons, sorted, "in report order");
-        assert_eq!(k.len(), 6 + unused, "{name}: {k:?}");
+        assert_eq!(k.len(), 7 + unused, "{name}: {k:?}");
     }
 }
 
@@ -295,8 +298,12 @@ fn the_history_is_kept_and_the_schedule_rebuilt_from_it() {
     // The rescheduled card keeps its one review, not the manual entry.
     let back = card_id(&env, "cat");
     assert_eq!(log(&env, &back).len(), 1);
-    // New cards have no history.
+    // New cards have no history (a preview in a filtered deck that does
+    // not reschedule is left out).
     assert_eq!(log(&env, &card_id(&env, "Capital of Italy?")).len(), 0);
+    // A review answered early in a filtered deck that reschedules is a
+    // review (Anki logs it as type 3 with an ease factor).
+    assert_eq!(log(&env, &card_id(&env, "chat")).len(), 4);
     // The cache is what a replay of the whole log gives.
     let before = crate::test_support::schedule_table(&env.store);
     let scheduler = crate::storage::scheduler_in(&env.store.conn).unwrap();

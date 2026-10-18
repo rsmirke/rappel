@@ -455,7 +455,7 @@ impl<'de> Visitor<'de> for ListSeed<'_> {
     fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
         let (mut fields, mut templates) = (Vec::new(), Vec::new());
         let bounds = self.model.bounds;
-        while let Some(item) = seq.next_element_seed(ItemSeed(bounds))? {
+        while let Some(item) = seq.next_element_seed(ItemSeed(bounds, self.template))? {
             let n = fields.len() + templates.len();
             let total = self.model.total.get() + 1;
             if n == bounds.items || total > bounds.items_total {
@@ -481,9 +481,9 @@ impl<'de> Visitor<'de> for ListSeed<'_> {
     }
 }
 
-/// One field or template (both read; the caller keeps one).
+/// One field, or with `.1` one template: only the one asked for is kept.
 #[derive(Clone, Copy)]
-struct ItemSeed(Bounds);
+struct ItemSeed(Bounds, bool);
 
 impl<'de> DeserializeSeed<'de> for ItemSeed {
     type Value = (RawField, RawTemplate);
@@ -524,11 +524,16 @@ impl<'de> Visitor<'de> for ItemSeed {
                 }
             }
         }
-        let field = RawField {
-            name: t.name.clone(),
-            ord: t.ord,
-        };
-        Ok((field, t))
+        // Each name is kept once: in the field, or in the template.
+        if self.1 {
+            Ok((Self::other().0, t))
+        } else {
+            let field = RawField {
+                name: t.name,
+                ord: t.ord,
+            };
+            Ok((field, Self::other().1))
+        }
     }
 
     fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {

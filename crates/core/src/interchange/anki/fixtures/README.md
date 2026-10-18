@@ -19,7 +19,8 @@ a link, a local and a remote image, `[sound:]`, inline and display MathJax, `$` 
 `<pre>` and code); nested decks, the Default deck and a filtered deck holding cards of another
 deck; hierarchical, `leech`, `marked` and Unicode tags; media (PNG, JPEG, MP3, an SVG, an unused
 file and a missing one); and a review history made with Anki's own scheduler (learning, review,
-relearning, "Set due date", "Forget"), a suspended card, a buried card and new cards.
+relearning, "Set due date", "Forget", a review answered early in a filtered deck that reschedules
+and a preview in one that does not), a suspended card, a buried card and new cards.
 
 `anki2.apkg` is `legacy.apkg` with its `collection.anki21` stored as `collection.anki2` and no
 `meta`, which is how Anki 2.0 wrote packages. That is faithful: both names hold a schema 11
