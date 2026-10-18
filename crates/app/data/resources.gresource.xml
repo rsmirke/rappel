@@ -4,6 +4,7 @@
     <!-- Compiled from data/*.blp by build.rs into $OUT_DIR/ui. -->
     <file preprocess="xml-stripblanks">window.ui</file>
     <file preprocess="xml-stripblanks">recovery_page.ui</file>
+    <file preprocess="xml-stripblanks">setting_page.ui</file>
     <file preprocess="xml-stripblanks">backup_row.ui</file>
     <file preprocess="xml-stripblanks">restore_dialog.ui</file>
     <file preprocess="xml-stripblanks">start_fresh_dialog.ui</file>

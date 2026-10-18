@@ -24,6 +24,9 @@ libc.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+# Only to write a damaged settings value in tests, as a hand edit would:
+# the app itself never reaches SQL (ADR 0052).
+rusqlite.workspace = true
 tempfile.workspace = true
 
 [lints]

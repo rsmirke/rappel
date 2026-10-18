@@ -25,6 +25,29 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
+    /// The tags at least one live card has (not deleted, in a deck that is
+    /// not deleted; suspended cards count), ordered by name key: what the
+    /// tag suggestions and the tag filter offer. Tags are never deleted
+    /// (ADR 0029), so one no card uses any more, such as a typo taken off
+    /// again, stays in [`Self::tags`] but not here (ADR 0052).
+    ///
+    /// # Errors
+    /// SQLite errors.
+    pub fn used_tags(&self) -> Result<Vec<Tag>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT t.id, t.name FROM tags t
+             WHERE EXISTS (
+                 SELECT 1 FROM card_tags ct
+                 JOIN cards c ON c.id = ct.card_id
+                 JOIN decks d ON d.id = c.deck_id
+                 WHERE ct.tag_id = t.id AND c.deleted_at IS NULL AND d.deleted_at IS NULL
+             )
+             ORDER BY t.name_key, t.id",
+        )?;
+        let rows = stmt.query_map([], tag_from_row)?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     /// The tags of live card `card_id`, ordered by name key.
     ///
     /// # Errors

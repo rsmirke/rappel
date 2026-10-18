@@ -7,7 +7,7 @@ App name: **Rappel**. App ID: `io.github.rsmirke.Rappel`. Licence: **GPL-3.0-or-
 - Crates: `rappel-core` (`crates/core`, library) and `rappel` (`crates/app`, GTK binary).
 - Data directory: `~/.local/share/rappel/`. Debug builds use `~/.local/share/rappel-dev/` so development never touches real data. Both can be overridden with the `RAPPEL_DATA_DIR` environment variable.
 
-v0 is released as 0.1.0: decks, plain-text cards, review with Fail/Pass, FSRS, SQLite. Phase 1 of the roadmap (§4), text only and ending in 0.2.0, is **in beta** (0.2.0-beta.1). Done so far: export / import (§4.1), Markdown rendering on the review page, math rendered with RaTeX (§4.2, ADR 0021), editing the card on screen during review (part of §4.5), the Markdown editor with live preview (§4.4), the settings with their Preferences dialog (§4.8, ADR 0027; the rest of the polish is still to come), undo and reset in the review log with their UI (ADR 0028, 0030; Ctrl+Z on the review page, Reset Progress in the card menu), tags (ADR 0029, 0031: the field in the editor and the tags on the deck page), export format version 2 (§4.1), the statistics and card information in core (§4.7, ADR 0032), and their pages (ADR 0033: Statistics from the main menu and each deck's ⋮ menu, Card Information from each card's ⋮ menu and the review header), the search index, suspension and bulk writes in core (ADR 0035), the All Cards page (ADR 0036), suspend and delete during review (ADR 0037), and the missing features: the keyboard shortcuts dialog, the About dialog and the remembered window size and deck (ADR 0039), the UI overhaul (ADR 0040–0046), the second clean-up (ADR 0047, 0048), time bounds robust under load (ADR 0049), hardening round 2 (ADR 0050) and Add Tags with suggestions (ADR 0051). The product vision below is set by ADR 0034, the roadmap in phases (§4, §5) by ADR 0038.
+v0 is released as 0.1.0: decks, plain-text cards, review with Fail/Pass, FSRS, SQLite. Phase 1 of the roadmap (§4), text only and ending in 0.2.0, is **in beta** (0.2.0-beta.1). Done so far: export / import (§4.1), Markdown rendering on the review page, math rendered with RaTeX (§4.2, ADR 0021), editing the card on screen during review (part of §4.5), the Markdown editor with live preview (§4.4), the settings with their Preferences dialog (§4.8, ADR 0027; the rest of the polish is still to come), undo and reset in the review log with their UI (ADR 0028, 0030; Ctrl+Z on the review page, Reset Progress in the card menu), tags (ADR 0029, 0031: the field in the editor and the tags on the deck page), export format version 2 (§4.1), the statistics and card information in core (§4.7, ADR 0032), and their pages (ADR 0033: Statistics from the main menu and each deck's ⋮ menu, Card Information from each card's ⋮ menu and the review header), the search index, suspension and bulk writes in core (ADR 0035), the All Cards page (ADR 0036), suspend and delete during review (ADR 0037), and the missing features: the keyboard shortcuts dialog, the About dialog and the remembered window size and deck (ADR 0039), the UI overhaul (ADR 0040–0046), the second clean-up (ADR 0047, 0048), time bounds robust under load (ADR 0049), hardening round 2 (ADR 0050) and Add Tags with suggestions (ADR 0051). Phase 2: the phase 1 questions are done (ADR 0052: Reset This Setting for a damaged setting, a restore keeps a waiting restore copy, suggestions offer only tags in use). The product vision below is set by ADR 0034, the roadmap in phases (§4, §5) by ADR 0038.
 
 ---
 
@@ -103,6 +103,8 @@ settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
 -- desired_retention (0.80–0.97, default 0.90), max_new_per_day (0–9999, default 20),
 -- max_reviews_per_day (0–9999, default 200), day_start_hour (0–23, default 4).
 -- A key never written has its default. Limits are per deck (ADR 0027).
+-- A stored value outside its range stops the open, naming the key; the app offers
+-- "Reset This Setting", which backs up and then removes that row (ADR 0052).
 
 media(hash TEXT PRIMARY KEY, mime TEXT NOT NULL, bytes INTEGER NOT NULL, created_at INTEGER NOT NULL);
 
@@ -115,6 +117,7 @@ Storage rules:
 - `PRAGMA journal_mode=WAL`, `foreign_keys=ON`, `PRAGMA integrity_check` at startup (log and toast if it fails).
 - **Backups:** before any migration, and once per day at startup, copy the DB with the SQLite online backup API to `<data dir>/backups/rappel-YYYYMMDD-HHMMSS.sqlite3`. Keep a backup if it is from the last 24 hours, or the newest of its UTC day for each of the last 14 days, or the newest one overall, or the one just made or just restored (ADR 0026); a backup dated in the future (a clock that ran ahead) is kept if it is the newest of its UTC day, for the 14 latest such days, and finishing an interrupted restore prunes nothing (ADR 0050).
 - DB and backup files are created with mode `0600`, directories `0700`.
+- A restore never replaces a copy an interrupted restore left waiting: it is kept as `rappel.sqlite3.restore.set-aside-YYYYMMDD-HHMMSS` (ADR 0052). Nothing in the data folder is ever deleted by a restore.
 
 ---
 
@@ -167,7 +170,7 @@ The work is done in three phases, each ending in a release (ADR 0038, amending t
 ### 4.4 Editor
 - `GtkSourceView` 5 with Markdown highlighting, monospace, line wrapping.
 - Live preview beside the editor when the window is wide; on a narrow one an Edit / Preview toggle shows one or the other (ADR 0043). It uses the same renderer as review.
-- Tags field: the tags as removable pills with an entry after them for adding; a comma or Enter turns the typed name into a pill. Suggestions from the existing tags while typing (ignoring case and accents). *Done (ADR 0029, 0031, 0043). A tag name has no comma. Ctrl+Shift+Enter keeps the tags for the next card.*
+- Tags field: the tags as removable pills with an entry after them for adding; a comma or Enter turns the typed name into a pill. Suggestions from the tags at least one live card has while typing (ignoring case and accents; ADR 0052). *Done (ADR 0029, 0031, 0043). A tag name has no comma. Ctrl+Shift+Enter keeps the tags for the next card.*
 - Ctrl+Enter saves, Ctrl+Shift+Enter saves and starts a new card in the same deck.
 
 ### 4.5 Review

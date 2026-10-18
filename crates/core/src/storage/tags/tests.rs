@@ -320,3 +320,52 @@ fn the_same_tag_named_twice_is_one_tag() {
         .unwrap();
     assert_eq!(names(&added.tags), ["Y"]);
 }
+
+/// The suggestions and the tag filter offer only the tags a live card has
+/// (ADR 0052): a deleted card or deck, or a tag taken off, hides one; a
+/// suspended card keeps it; an undo brings it back.
+#[test]
+fn used_tags_are_those_a_live_card_has() {
+    let (mut store, a, b) = store_with_cards();
+    let other = store.create_deck_at("Physics", T0).unwrap().id;
+    let c = store.add_card_at(&other, "c", "", T0).unwrap().id;
+    let x = store.add_tag_at(&a, "x", T0).unwrap();
+    store.add_tag_at(&b, "suspended", T0).unwrap();
+    store.add_tag_at(&c, "physics", T0).unwrap();
+    let typo = store.add_tag_at(&a, "algebar", T0).unwrap();
+    store.set_suspended(std::slice::from_ref(&b), true).unwrap();
+    assert_eq!(
+        names(&store.used_tags().unwrap()),
+        ["algebar", "physics", "suspended", "x"]
+    );
+
+    // A typo taken off: still a tag, no longer offered.
+    assert!(store.remove_tag(&a, &typo.id).unwrap());
+    assert_eq!(names(&store.tags().unwrap()).len(), 4);
+    assert_eq!(
+        names(&store.used_tags().unwrap()),
+        ["physics", "suspended", "x"]
+    );
+
+    // A deleted deck hides its cards' tags; undeleting it brings them back.
+    store.delete_deck_at(&other, T0 + 1).unwrap();
+    assert_eq!(names(&store.used_tags().unwrap()), ["suspended", "x"]);
+    store.undelete_deck(&other).unwrap();
+    assert_eq!(
+        names(&store.used_tags().unwrap()),
+        ["physics", "suspended", "x"]
+    );
+
+    // A deleted card, likewise.
+    store.delete_card_at(&a, T0 + 2).unwrap();
+    assert_eq!(names(&store.used_tags().unwrap()), ["physics", "suspended"]);
+    store.undelete_card(&a).unwrap();
+    assert!(names(&store.used_tags().unwrap()).contains(&"x"));
+
+    // A removal from All Cards and its Undo.
+    let ids = vec![a.clone()];
+    let removed = store.remove_tag_from_cards(&ids, &x.id).unwrap();
+    assert!(!names(&store.used_tags().unwrap()).contains(&"x"));
+    store.restore_tag_on_cards(&removed, &x.id).unwrap();
+    assert!(names(&store.used_tags().unwrap()).contains(&"x"));
+}

@@ -1,26 +1,29 @@
 //! Reading and writing the global settings (ADR 0027).
 
 use std::collections::HashMap;
+use std::path::Path;
 
-use rusqlite::{Connection, TransactionBehavior, params};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
-use super::Store;
-use super::schedule::{invalid, write_schedule_cache};
-use crate::domain::Settings;
-use crate::error::Result;
+use super::migrations::{MIGRATIONS, Migration};
+use super::schedule::{shown_value, write_schedule_cache};
+use super::{BACKUP_DIR_NAME, DB_FILE_NAME, Protect, Store, create_backup};
+use crate::domain::{DEFAULT_DESIRED_RETENTION, SettingKey, Settings};
+use crate::error::{Error, Result};
 use crate::scheduling::Scheduler;
+use crate::time::now_ms;
 
-const RETENTION: &str = "desired_retention";
-const MAX_NEW: &str = "max_new_per_day";
-const MAX_REVIEWS: &str = "max_reviews_per_day";
-const DAY_START: &str = "day_start_hour";
+const RETENTION: &str = SettingKey::DesiredRetention.as_str();
+const MAX_NEW: &str = SettingKey::MaxNewPerDay.as_str();
+const MAX_REVIEWS: &str = SettingKey::MaxReviewsPerDay.as_str();
+const DAY_START: &str = SettingKey::DayStartHour.as_str();
 
 impl Store {
     /// The settings; a key never written has its default.
     ///
     /// # Errors
-    /// SQLite errors, or [`Error::InvalidColumn`](crate::Error::InvalidColumn)
-    /// for a stored value that is not valid for its key.
+    /// SQLite errors, or [`Error::DamagedSetting`] for a stored value that
+    /// is not valid for its key.
     pub fn settings(&self) -> Result<Settings> {
         settings_in(&self.conn)
     }
@@ -121,6 +124,10 @@ pub(crate) struct StoredSettings {
 
 /// The stored settings on `conn`, each value checked; none before the
 /// settings table exists.
+///
+/// # Errors
+/// [`Error::DamagedSetting`] for the first key, in [`SettingKey::ALL`]
+/// order, whose stored value is not valid; SQLite errors.
 pub(crate) fn stored_settings(conn: &Connection) -> Result<StoredSettings> {
     let mut settings = StoredSettings::default();
     if !table_exists(conn)? {
@@ -132,40 +139,183 @@ pub(crate) fn stored_settings(conn: &Connection) -> Result<StoredSettings> {
         let (key, value) = row?;
         stored.insert(key, value);
     }
-    let bad = |key: &str, value: &str| invalid("settings.value", &format!("{key} = {value:?}"));
-    if let Some(v) = stored.get(RETENTION) {
-        settings.desired_retention = Some(
-            v.parse()
-                .ok()
-                .and_then(|n| Settings::check_retention(n).ok())
-                .ok_or_else(|| bad(RETENTION, v))?,
-        );
-    }
-    if let Some(v) = stored.get(MAX_NEW) {
-        settings.max_new_per_day = Some(
-            v.parse()
-                .ok()
-                .and_then(|n| Settings::check_max_new(n).ok())
-                .ok_or_else(|| bad(MAX_NEW, v))?,
-        );
-    }
-    if let Some(v) = stored.get(MAX_REVIEWS) {
-        settings.max_reviews_per_day = Some(
-            v.parse()
-                .ok()
-                .and_then(|n| Settings::check_max_reviews(n).ok())
-                .ok_or_else(|| bad(MAX_REVIEWS, v))?,
-        );
-    }
-    if let Some(v) = stored.get(DAY_START) {
-        settings.day_start_hour = Some(
-            v.parse()
-                .ok()
-                .and_then(|n| Settings::check_day_start_hour(n).ok())
-                .ok_or_else(|| bad(DAY_START, v))?,
-        );
+    for key in SettingKey::ALL {
+        let Some(value) = stored.get(key.as_str()) else {
+            continue;
+        };
+        let damaged = || damaged(key, value);
+        match key {
+            SettingKey::DesiredRetention => {
+                settings.desired_retention = Some(parse_retention(value).ok_or_else(damaged)?);
+            }
+            SettingKey::MaxNewPerDay => {
+                settings.max_new_per_day = Some(parse_max_new(value).ok_or_else(damaged)?);
+            }
+            SettingKey::MaxReviewsPerDay => {
+                settings.max_reviews_per_day = Some(parse_max_reviews(value).ok_or_else(damaged)?);
+            }
+            SettingKey::DayStartHour => {
+                settings.day_start_hour = Some(parse_day_start(value).ok_or_else(damaged)?);
+            }
+        }
     }
     Ok(settings)
+}
+
+/// [`Error::DamagedSetting`] for `value` stored under `key`, its text cut.
+fn damaged(key: SettingKey, value: &str) -> Error {
+    Error::DamagedSetting {
+        key,
+        value: shown_value(&format!("{value:?}")),
+    }
+}
+
+fn parse_retention(value: &str) -> Option<f32> {
+    value
+        .parse()
+        .ok()
+        .and_then(|n| Settings::check_retention(n).ok())
+}
+
+fn parse_max_new(value: &str) -> Option<u32> {
+    value
+        .parse()
+        .ok()
+        .and_then(|n| Settings::check_max_new(n).ok())
+}
+
+fn parse_max_reviews(value: &str) -> Option<u32> {
+    value
+        .parse()
+        .ok()
+        .and_then(|n| Settings::check_max_reviews(n).ok())
+}
+
+fn parse_day_start(value: &str) -> Option<u8> {
+    value
+        .parse()
+        .ok()
+        .and_then(|n| Settings::check_day_start_hour(n).ok())
+}
+
+/// Whether `value` is a valid stored value for `key`.
+fn is_valid(key: SettingKey, value: &str) -> bool {
+    match key {
+        SettingKey::DesiredRetention => parse_retention(value).is_some(),
+        SettingKey::MaxNewPerDay => parse_max_new(value).is_some(),
+        SettingKey::MaxReviewsPerDay => parse_max_reviews(value).is_some(),
+        SettingKey::DayStartHour => parse_day_start(value).is_some(),
+    }
+}
+
+/// Whether the value stored under `key` on `conn` is damaged (stored and
+/// not valid). A key never written is not.
+fn is_damaged(conn: &Connection, key: SettingKey) -> Result<bool> {
+    let value: Option<String> = conn
+        .query_row(
+            "SELECT value FROM settings WHERE key = ?1",
+            [key.as_str()],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(value.is_some_and(|v| !is_valid(key, &v)))
+}
+
+/// What [`reset_setting`] did.
+#[derive(Debug)]
+pub struct SettingReset {
+    /// Whether the setting was damaged and its row removed (after a
+    /// backup). `false` if another process fixed it meanwhile.
+    pub was_reset: bool,
+    /// What the settings are like now.
+    pub then: AfterReset,
+}
+
+/// The database after [`reset_setting`].
+#[derive(Debug)]
+pub enum AfterReset {
+    /// No stored setting is damaged: the open store.
+    Opened(Store),
+    /// This other setting is damaged too, so the database was not opened.
+    Damaged(SettingKey),
+}
+
+/// Opens the database in `data_dir` whose stored setting `key` is damaged
+/// ([`Error::DamagedSetting`] from [`Store::open`]), puts that setting's
+/// default back, and returns what it did and the open store, or the next
+/// damaged setting (ADR 0052).
+///
+/// The database is opened as [`Store::open`] opens it (checks, daily
+/// backup, migrations), except that the settings are not checked first.
+/// Then, only if the value stored under `key` is still damaged:
+/// 1. a backup is made with the online backup API, as before a migration;
+///    if it fails, nothing is changed and its error is returned;
+/// 2. in one transaction, that one row is removed, so the default applies,
+///    and for the desired retention the whole schedule cache is rebuilt
+///    with the default retention, as [`Store::set_desired_retention`] does.
+///
+/// No other setting, card or log entry is touched. A `key` whose value is
+/// valid (or not stored) is left alone, and no backup is made for it.
+///
+/// # Errors
+/// The errors of [`Store::open`] (but [`Error::DamagedSetting`]: another
+/// damaged key is [`AfterReset::Damaged`]), backup errors, scheduler and
+/// SQLite errors. A failure before the commit changes no setting.
+pub fn reset_setting(data_dir: &Path, key: SettingKey) -> Result<SettingReset> {
+    reset_setting_with(
+        &data_dir.join(DB_FILE_NAME),
+        &data_dir.join(BACKUP_DIR_NAME),
+        key,
+        now_ms(),
+        MIGRATIONS,
+    )
+}
+
+/// [`reset_setting`] with every input explicit, for tests.
+pub(super) fn reset_setting_with(
+    db_path: &Path,
+    backup_dir: &Path,
+    key: SettingKey,
+    now_ms: i64,
+    migrations: &[Migration],
+) -> Result<SettingReset> {
+    let mut store =
+        Store::open_unchecked(db_path, backup_dir, now_ms, migrations, Protect::Nothing)?;
+    let was_reset = if is_damaged(&store.conn, key)? {
+        let path = create_backup(&store.conn, backup_dir, now_ms)?;
+        tracing::info!(path = %path.display(), %key, "database backed up before resetting a setting");
+        remove_damaged(&mut store.conn, key)?
+    } else {
+        false
+    };
+    let then = match store.checked() {
+        Ok(store) => AfterReset::Opened(store),
+        Err(Error::DamagedSetting { key: next, .. }) => AfterReset::Damaged(next),
+        Err(err) => return Err(err),
+    };
+    Ok(SettingReset { was_reset, then })
+}
+
+/// Removes the row of damaged setting `key` in one transaction, rebuilding
+/// the schedule cache with the default retention when `key` is the desired
+/// retention. Nothing is written if the value is no longer damaged.
+/// Returns whether the row was removed.
+fn remove_damaged(conn: &mut Connection, key: SettingKey) -> Result<bool> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    // Checked again inside the write: another process may have fixed it.
+    if !is_damaged(&tx, key)? {
+        return Ok(false);
+    }
+    tx.execute("DELETE FROM settings WHERE key = ?1", [key.as_str()])?;
+    if key == SettingKey::DesiredRetention {
+        // The default, not `scheduler_in`: another stored setting may be
+        // damaged too, and the retention just removed is the default now.
+        let cards = write_schedule_cache(&tx, &Scheduler::new(DEFAULT_DESIRED_RETENTION)?)?;
+        tracing::info!(cards, "schedule cache rebuilt with the default retention");
+    }
+    tx.commit()?;
+    tracing::info!(%key, "damaged setting reset to its default");
+    Ok(true)
 }
 
 /// Makes the settings table hold exactly `settings`, inside the caller's

@@ -5,16 +5,16 @@ use std::path::{Path, PathBuf};
 use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::{gio, glib};
-use rappel_core::domain::Card;
+use rappel_core::domain::{Card, SettingKey};
 use rappel_core::storage::Restored;
 
 use crate::dialogs::card_editor::CardEditor;
 use crate::pages::{BrowserPage, DeckPage, DecksPage, Recovered};
-use crate::startup::{Problem, data_folder_line, too_new_text};
+use crate::startup::{Problem, data_folder_line, setting_reset_text, too_new_text};
 use crate::state::AppState;
 use crate::transfer;
 use crate::ui::nav;
-use crate::ui::toast::{persistent_toast, warning_message};
+use crate::ui::toast::{info_toast, persistent_toast, warning_message};
 use crate::window_state;
 
 /// The two jobs of the primary menu.
@@ -34,7 +34,7 @@ mod imp {
     use gtk::glib;
     use gtk::prelude::*;
 
-    use crate::pages::{DeckPage, DecksPage, RecoveryPage};
+    use crate::pages::{DeckPage, DecksPage, RecoveryPage, SettingPage};
     use crate::state::AppState;
 
     #[derive(Debug, Default, gtk::CompositeTemplate)]
@@ -50,6 +50,8 @@ mod imp {
         pub decks_page: TemplateChild<DecksPage>,
         #[template_child]
         pub recovery_page: TemplateChild<RecoveryPage>,
+        #[template_child]
+        pub setting_page: TemplateChild<SettingPage>,
         #[template_child]
         pub too_new_page: TemplateChild<adw::StatusPage>,
         #[template_child]
@@ -75,6 +77,7 @@ mod imp {
             // The template uses these types, so they must be registered first.
             DecksPage::ensure_type();
             RecoveryPage::ensure_type();
+            SettingPage::ensure_type();
             klass.bind_template();
             // Enabled once the deck list is shown.
             klass.install_action("win.new-deck", None, |window, _, _| {
@@ -205,6 +208,16 @@ impl RappelWindow {
         // Checked before keeping the state, so a failure leaves the window
         // without one (and a later retry could still call this).
         if let Err(err) = state.list_decks(rappel_core::time::now_ms()) {
+            if let rappel_core::Error::DamagedSetting { key, .. } = err {
+                // Damaged after the open checked it (another process): the
+                // same page as at startup. The state is not kept, so the
+                // reset opens the database on its own.
+                self.show_problem(Problem::DamagedSetting {
+                    key,
+                    data_dir: state.data_dir().to_path_buf(),
+                });
+                return;
+            }
             self.decks_unreadable(&err, state.data_dir());
             return;
         }
@@ -445,6 +458,24 @@ impl RappelWindow {
                         data_dir: dir.clone(),
                     })
                 ));
+                imp.recovery_page.set_on_damaged_setting(glib::clone!(
+                    #[weak(rename_to = window)]
+                    self,
+                    #[strong]
+                    data_dir,
+                    move |key, how, replaced, set_aside| {
+                        window.show_problem(Problem::DamagedSetting {
+                            key,
+                            data_dir: data_dir.clone(),
+                        });
+                        // The files were moved all the same: say where.
+                        window.add_toast(persistent_toast(&recovered_message(
+                            how,
+                            replaced.as_deref(),
+                            set_aside.as_deref(),
+                        )));
+                    }
+                ));
                 imp.recovery_page.show(
                     reason,
                     data_dir,
@@ -455,6 +486,23 @@ impl RappelWindow {
                     ),
                 );
                 imp.stack.set_visible_child_name("recovery");
+            }
+            Problem::DamagedSetting { key, data_dir } => {
+                imp.setting_page.show(
+                    key,
+                    data_dir,
+                    glib::clone!(
+                        #[weak(rename_to = window)]
+                        self,
+                        move |dir, store, key, was_reset| {
+                            window.setting_reset(dir, store, key, was_reset);
+                        }
+                    ),
+                );
+                imp.stack.set_visible_child_name("setting");
+                // After the page is the visible one: its only action takes
+                // the keyboard, as Start Fresh does on the recovery page.
+                imp.setting_page.focus_action();
             }
             Problem::TooNew {
                 found,
@@ -486,6 +534,19 @@ impl RappelWindow {
         }
     }
 
+    /// After the setting page reset the damaged setting: the main page, and
+    /// a toast that says what was reset to what.
+    fn setting_reset(
+        &self,
+        data_dir: PathBuf,
+        store: rappel_core::storage::Store,
+        key: SettingKey,
+        was_reset: bool,
+    ) {
+        self.show_main(AppState::new(data_dir, store));
+        self.add_toast(info_toast(&setting_reset_text(key, was_reset)));
+    }
+
     fn restored(&self, data_dir: PathBuf, restored: Restored, how: Recovered) {
         let message = recovered_message(
             how,
@@ -498,8 +559,9 @@ impl RappelWindow {
 }
 
 /// The toast after the recovery page got a database: what happened, where
-/// the previous database was kept, and where an unusable restore copy was
-/// (`set_aside`, ADR 0050, row 35).
+/// the previous database was kept, and where the copy an interrupted restore
+/// had left waiting was kept (`set_aside`): Start Fresh moves one that could
+/// not be used (ADR 0050, row 35), a restore sets any aside (ADR 0052).
 fn recovered_message(how: Recovered, replaced: Option<&Path>, set_aside: Option<&Path>) -> String {
     let done = match how {
         Recovered::Backup => "Backup restored",
@@ -514,7 +576,7 @@ fn recovered_message(how: Recovered, replaced: Option<&Path>, set_aside: Option<
         None => done.to_owned(),
     };
     if let Some(path) = set_aside {
-        message.push_str(". The restore copy that could not be used was kept as ");
+        message.push_str(". The copy an earlier restore left waiting was kept as ");
         message.push_str(&path.display().to_string());
     }
     message
@@ -627,9 +689,47 @@ mod tests {
         assert_eq!(
             recovered_message(Recovered::Fresh, Some(kept), Some(copy)),
             "Started with an empty database. The previous database was kept as \
-             /data/rappel.sqlite3.replaced-20261015-120000. The restore copy that could not be \
-             used was kept as /data/rappel.sqlite3.restore.refused-20261015-120000"
+             /data/rappel.sqlite3.replaced-20261015-120000. The copy an earlier restore left \
+             waiting was kept as /data/rappel.sqlite3.restore.refused-20261015-120000"
         );
+        let aside = Path::new("/data/rappel.sqlite3.restore.set-aside-20261015-120000");
+        assert_eq!(
+            recovered_message(Recovered::Backup, Some(kept), Some(aside)),
+            "Backup restored. The previous database was kept as \
+             /data/rappel.sqlite3.replaced-20261015-120000. The copy an earlier restore left \
+             waiting was kept as /data/rappel.sqlite3.restore.set-aside-20261015-120000"
+        );
+    }
+
+    /// A damaged stored setting at startup shows "A Setting Is Damaged" with
+    /// Reset This Setting focused; the reset shows the main page (ADR 0052).
+    #[test]
+    fn a_damaged_setting_at_startup_can_be_reset_from_its_page() {
+        crate::testing::with_widgets(|| {
+            let tmp = tempfile::tempdir().expect("a temporary directory");
+            let data = crate::pages::damaged_setting_folder(
+                &tmp,
+                &[rappel_core::domain::SettingKey::DesiredRetention],
+            );
+            let err = AppState::open(data.clone()).expect_err("the open is refused");
+            let problem = crate::startup::open_problem(&err, &data);
+            let window: RappelWindow = glib::Object::new();
+            window.show_problem(problem);
+            let imp = window.imp();
+            assert_eq!(imp.stack.visible_child_name().as_deref(), Some("setting"));
+            let focus = focus_of(&window);
+            let button = focus
+                .downcast::<gtk::Button>()
+                .expect("a button has the focus");
+            assert_eq!(button.label().as_deref(), Some("_Reset This Setting"));
+
+            glib::MainContext::default().block_on(imp.setting_page.reset());
+
+            assert_eq!(imp.stack.visible_child_name().as_deref(), Some("main"));
+            let settings = imp.state.get().expect("a database is open").settings();
+            assert!(settings.is_ok());
+            window.destroy();
+        });
     }
 
     /// Finish Restore on a waiting copy from a newer Rappel shows the "too

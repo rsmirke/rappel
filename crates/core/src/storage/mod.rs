@@ -34,6 +34,7 @@ pub use restore::{Restored, finish_restore, is_unusable_copy, restore_backup, st
 pub(crate) use schedule::rebuild_cards;
 pub(crate) use search::index_card_in;
 pub use search::{BrowseQuery, BrowseRow, CardStatus, MAX_QUERY_BYTES, StateFilter};
+pub use settings::{AfterReset, SettingReset, reset_setting};
 pub(crate) use settings::{StoredSettings, replace_settings, scheduler_in, stored_settings};
 pub use stats::Scope;
 
@@ -95,12 +96,16 @@ impl Store {
     ///    warning. Old backups are pruned by the rule in ADR 0026, never
     ///    deleting the one just made.
     /// 5. Pending migrations run, one transaction each.
+    /// 6. The stored settings are read and checked, so a damaged value stops
+    ///    the open here, naming its key, and not later by chance in the
+    ///    first read that needs it (ADR 0052). [`reset_setting`] puts its
+    ///    default back.
     ///
     /// # Errors
     /// [`Error::IntegrityCheckFailed`], [`Error::UnsupportedVersion`],
     /// [`Error::NotARappelDatabase`], [`Error::OrphanedSidecar`], [`Error::InterruptedRestore`],
-    /// [`Error::Migration`], [`Error::ForeignKeyViolation`], backup errors,
-    /// and IO or SQLite errors.
+    /// [`Error::Migration`], [`Error::ForeignKeyViolation`],
+    /// [`Error::DamagedSetting`], backup errors, and IO or SQLite errors.
     pub fn open(data_dir: &Path) -> Result<Self> {
         Self::open_with(
             &data_dir.join(DB_FILE_NAME),
@@ -124,6 +129,27 @@ impl Store {
     /// restore passes the backup it installed (#8), finishing an
     /// interrupted restore keeps them all (#50).
     fn open_protecting(
+        db_path: &Path,
+        backup_dir: &Path,
+        now_ms: i64,
+        migrations: &[Migration],
+        protect: Protect<'_>,
+    ) -> Result<Self> {
+        Self::open_unchecked(db_path, backup_dir, now_ms, migrations, protect)?.checked()
+    }
+
+    /// The store, once its stored settings are checked: step 6 of
+    /// [`Store::open`]. It runs after the migrations, so it reads the
+    /// current schema; no migration from 0006, which made the settings
+    /// table, on reads the settings (`settings::tests`).
+    fn checked(self) -> Result<Self> {
+        stored_settings(&self.conn)?;
+        Ok(self)
+    }
+
+    /// Steps 0 to 5 of [`Store::open`], without the settings check: for
+    /// [`reset_setting`], which opens a database whose setting is damaged.
+    fn open_unchecked(
         db_path: &Path,
         backup_dir: &Path,
         now_ms: i64,

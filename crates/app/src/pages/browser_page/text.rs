@@ -2,6 +2,7 @@
 //! row captions and labels, counts, toast texts, which empty state to show
 //! and what it says, and what Escape, Space and typing in the list do. Pure, so it is unit-tested (SPEC §4.6, ADR 0036).
 
+use rappel_core::domain::{Tag, name_key};
 use rappel_core::storage::{BrowseQuery, CardStatus, StateFilter};
 
 use crate::ui::text::{count, group_digits, isolate, one_line};
@@ -312,6 +313,23 @@ pub fn filter_choice(selected: u32, len: usize) -> Option<usize> {
     (index < len).then_some(index)
 }
 
+/// The tag filter's tags: the tags in use (`used`, in name-key order), and
+/// the one chosen in the filter (`kept`) where it is no longer in use, at
+/// its place in that order, so a choice never vanishes under the user. A
+/// tag no live card has is otherwise left out: filtering by it would only
+/// ever give no cards (ADR 0052).
+pub fn filter_tags(used: Vec<Tag>, kept: Option<Tag>) -> Vec<Tag> {
+    let mut tags = used;
+    if let Some(kept) = kept
+        && !tags.iter().any(|t| t.id == kept.id)
+    {
+        let key = name_key(&kept.name);
+        let at = tags.partition_point(|t| (name_key(&t.name), &t.id) < (key.clone(), &kept.id));
+        tags.insert(at, kept);
+    }
+    tags
+}
+
 /// The state drop-down's entries: Any State, New, Learning, Due, Suspended.
 pub fn state_filter(selected: u32) -> Option<StateFilter> {
     match selected {
@@ -449,6 +467,28 @@ pub fn partial_undo_text(done: usize, total: usize) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn tag(id: &str, name: &str) -> Tag {
+        Tag {
+            id: id.to_owned(),
+            name: name.to_owned(),
+        }
+    }
+
+    #[test]
+    fn the_tag_filter_keeps_a_chosen_tag_no_card_has_any_more() {
+        let used = vec![tag("1", "algebra"), tag("3", "Geometry")];
+        assert_eq!(filter_tags(used.clone(), None), used);
+        // Still in use: listed once.
+        assert_eq!(filter_tags(used.clone(), Some(tag("1", "algebra"))), used);
+        // No longer in use: kept, in name-key order (case ignored).
+        let kept = filter_tags(used.clone(), Some(tag("2", "Calculus")));
+        let names: Vec<&str> = kept.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["algebra", "Calculus", "Geometry"]);
+        let last = filter_tags(used, Some(tag("4", "zeta")));
+        assert_eq!(last.last().map(|t| t.id.as_str()), Some("4"));
+        assert_eq!(filter_tags(Vec::new(), Some(tag("9", "x"))).len(), 1);
+    }
 
     const NOW: i64 = 1_000_000_000_000;
     const DAY: i64 = crate::ui::time::DAY_MS;

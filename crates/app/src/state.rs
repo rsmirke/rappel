@@ -9,7 +9,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use rappel_core::domain::{
-    Card, CardState, Deck, DeckSummary, Grade, ReviewEvent, Settings, Tag, TaggedCard,
+    Card, CardState, Deck, DeckSummary, Grade, ReviewEvent, SettingKey, Settings, Tag, TaggedCard,
 };
 use rappel_core::interchange::{ExportSummary, ImportPlan, ImportReport};
 use rappel_core::scheduling::StudyInput;
@@ -101,6 +101,17 @@ impl AppState {
     /// on a worker thread.
     pub fn start_fresh_unopened(data_dir: &Path) -> rappel_core::Result<Restored> {
         storage::start_fresh(data_dir, None)
+    }
+
+    /// Puts the default back for the damaged stored setting `key` in
+    /// `data_dir`, after a backup, and opens the database (see
+    /// [`storage::reset_setting`], ADR 0052). Blocking; runs on a worker
+    /// thread, before any database is open.
+    pub fn reset_setting_unopened(
+        data_dir: &Path,
+        key: SettingKey,
+    ) -> rappel_core::Result<storage::SettingReset> {
+        storage::reset_setting(data_dir, key)
     }
 
     /// Exports the database in `data_dir` to `path` (see
@@ -223,7 +234,14 @@ impl AppState {
             .edit_card_with_tags(id, front, back, tag_names)
     }
 
+    /// The tags a live card has, for the suggestions and the tag filter
+    /// (see [`Store::used_tags`], ADR 0052).
+    pub fn used_tags(&self) -> rappel_core::Result<Vec<Tag>> {
+        self.0.store.borrow().used_tags()
+    }
+
     /// Every tag, unused ones too (see [`Store::tags`]).
+    #[cfg(test)]
     pub fn tags(&self) -> rappel_core::Result<Vec<Tag>> {
         self.0.store.borrow().tags()
     }

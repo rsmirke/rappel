@@ -142,6 +142,35 @@ pub enum Error {
         value: String,
     },
 
+    /// A value stored in the `settings` table is not valid for its key (a
+    /// damaged or hand-edited database). Every read of the settings refuses
+    /// it, and so does [`Store::open`](crate::storage::Store::open), so
+    /// nothing runs with it; [`crate::storage::reset_setting`] puts the
+    /// default back after a backup (ADR 0052).
+    #[error("the stored setting {key} cannot be read: {value}")]
+    DamagedSetting {
+        /// The damaged setting, one of the known keys.
+        key: crate::domain::SettingKey,
+        /// The start of the stored text, at most 64 characters and "…",
+        /// for the log only.
+        value: String,
+    },
+
+    /// A restore or Finish Restore installed its copy, and the copy has a
+    /// damaged stored setting, so it was not opened: the files were moved
+    /// all the same, and this says where, as
+    /// [`Restored`](crate::storage::Restored) would. The setting is reset
+    /// with [`crate::storage::reset_setting`] (ADR 0052).
+    #[error("the database was installed, but its stored setting {key} cannot be read")]
+    InstalledWithDamagedSetting {
+        /// The damaged setting.
+        key: crate::domain::SettingKey,
+        /// Where the previous database was moved, if anywhere.
+        replaced: Option<std::path::PathBuf>,
+        /// Where a waiting restore copy was kept, if anywhere.
+        set_aside: Option<std::path::PathBuf>,
+    },
+
     /// FSRS could not compute a memory state (non-finite input state).
     #[error("scheduler error: {0}")]
     Fsrs(#[from] fsrs::FSRSError),

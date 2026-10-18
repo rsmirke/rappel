@@ -21,7 +21,9 @@ use adw::prelude::*;
 use gtk::{gio, glib};
 
 use crate::dialogs::{browser_dialogs, card_editor, card_info, deck_name_dialog, preferences};
-use crate::pages::{BrowserPage, DeckPage, DecksPage, RecoveryPage, ReviewPage, StatsPage};
+use crate::pages::{
+    BrowserPage, DeckPage, DecksPage, RecoveryPage, ReviewPage, SettingPage, StatsPage,
+};
 use crate::ui::dialog;
 use crate::widgets::{
     BackupRow, CardRow, DeckRow, HistoryRow, TagEntry, TagPills, TagSuggestions,
@@ -103,6 +105,7 @@ const CHECKS: &[(&str, Load)] = &[
         }),
     ),
     ("review_page.blp", Load::Template(template::<ReviewPage>)),
+    ("setting_page.blp", Load::Template(template::<SettingPage>)),
     (
         "shortcuts-dialog.blp",
         Load::Plain(|| {
