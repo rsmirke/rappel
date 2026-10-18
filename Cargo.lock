@@ -1190,7 +1190,7 @@ dependencies = [
 
 [[package]]
 name = "rappel"
-version = "0.2.0-alpha.3"
+version = "0.2.0-beta.1"
 dependencies = [
  "gtk4",
  "libadwaita",
@@ -1210,7 +1210,7 @@ dependencies = [
 
 [[package]]
 name = "rappel-core"
-version = "0.2.0-alpha.3"
+version = "0.2.0-beta.1"
 dependencies = [
  "fsrs",
  "getrandom",
