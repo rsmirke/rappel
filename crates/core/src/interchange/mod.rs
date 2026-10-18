@@ -16,6 +16,7 @@
 //! (ADR 0053). The file is untrusted: anything unexpected refuses the
 //! whole import.
 
+mod anki;
 mod archive;
 mod engine;
 mod export;
@@ -30,6 +31,10 @@ mod validate;
 use std::fmt;
 use std::path::PathBuf;
 
+pub use anki::{
+    ANKI_EXTENSIONS, AnkiFormat, AnkiPlan, AnkiProblem, AnkiReport, AnkiSummary, FileKind, Skip,
+    Skipped, file_kind,
+};
 pub(crate) use format::FORMAT_VERSION;
 
 /// File name extension of an export, without the dot.

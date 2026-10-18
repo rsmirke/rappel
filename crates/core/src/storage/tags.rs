@@ -167,7 +167,7 @@ impl Store {
 
 /// The tag named `name` (already checked and trimmed): the one with its name
 /// key if there is one, else a new tag.
-pub(super) fn find_or_create_tag(
+pub(crate) fn find_or_create_tag(
     conn: &Connection,
     ids: &mut IdGen,
     name: &str,

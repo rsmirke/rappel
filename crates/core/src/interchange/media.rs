@@ -122,7 +122,7 @@ pub(super) fn check_entries<R: Read + Seek>(
     let mut entries = archive.media_entries().peekable();
     let entry_media = |role: Role| match role {
         Role::Media(media) => Some(media),
-        Role::Json | Role::MediaDir => None,
+        Role::Json | Role::MediaDir | Role::Anki(_) => None,
     };
     for (index, note) in list.notes.iter().enumerate() {
         let no_file = || invalid("media", index, "hash", FieldProblem::NoMediaFile);

@@ -38,6 +38,7 @@ pub use search::{BrowseQuery, BrowseRow, CardStatus, MAX_QUERY_BYTES, StateFilte
 pub use settings::{AfterReset, SettingReset, reset_setting};
 pub(crate) use settings::{StoredSettings, replace_settings, scheduler_in, stored_settings};
 pub use stats::Scope;
+pub(crate) use tags::find_or_create_tag;
 
 /// File name of the database inside the data directory.
 pub(crate) const DB_FILE_NAME: &str = "rappel.sqlite3";
@@ -58,7 +59,7 @@ const FILE_MODE: u32 = 0o600;
 pub struct Store {
     pub(crate) conn: Connection,
     /// Issues the ids of new decks, cards and review events.
-    ids: IdGen,
+    pub(crate) ids: IdGen,
     /// Where backups go; `None` only for in-memory test stores, which
     /// cannot be backed up (an import then refuses to run).
     pub(crate) backup_dir: Option<PathBuf>,
@@ -425,7 +426,11 @@ fn back_up(
 /// SQLite errors, or [`Error::InvalidColumn`] if that id is not a UUID
 /// (the schema's `CHECK` only enforces length and case). The write is then
 /// refused rather than risk an id that sorts out of order.
-fn observe_max_id(conn: &Connection, ids: &mut IdGen, column: &'static str) -> Result<()> {
+pub(crate) fn observe_max_id(
+    conn: &Connection,
+    ids: &mut IdGen,
+    column: &'static str,
+) -> Result<()> {
     let (table, id) = column.split_once('.').unwrap_or((column, "id"));
     let max: Option<String> =
         conn.query_row(&format!("SELECT max({id}) FROM {table}"), [], |r| r.get(0))?;
