@@ -387,9 +387,8 @@ proptest! {
 
 /// Deep nesting inside `media`, whose items are typed records (ADR 0054;
 /// before, they were free JSON values parsed recursively): refused as
-/// JSON at any depth, on a small stack, without overflowing it. Nesting
-/// far past `serde_json`'s recursion limit is refused by the depth limit
-/// of the reader under it.
+/// JSON at any depth, on a small stack, without overflowing it. A control
+/// checks that the deeper texts are past `serde_json`'s own recursion limit.
 #[test]
 fn deeply_nested_json_is_refused() {
     let text = String::from_utf8(read_cards_json(&base().0, &Limits::DEFAULT).unwrap()).unwrap();
@@ -403,6 +402,15 @@ fn deeply_nested_json_is_refused() {
             matches!(problem, ImportProblem::Json(_)),
             "{depth}: {problem}"
         );
+        if depth > 128 {
+            // The control: this text is too deep for serde_json itself, so
+            // the case is the depth, not something else.
+            let control = serde_json::from_str::<Value>(&nested).unwrap_err();
+            assert!(
+                control.to_string().contains("recursion limit exceeded"),
+                "{depth}: {control}"
+            );
+        }
     }
 }
 

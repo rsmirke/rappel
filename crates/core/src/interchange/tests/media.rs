@@ -556,3 +556,46 @@ fn a_media_file_is_read_through_its_cap() {
         }
     );
 }
+
+/// The app exports and imports on a worker thread, on a second connection
+/// (`Store::open_concurrent`): media go out and come in that way too.
+#[test]
+fn media_export_and_import_through_a_second_connection() {
+    let (env, png, wav) = media_env();
+    let path = env.tmp.path().join("worker.rappel");
+    let summary = env.concurrent().export_to(&path).unwrap();
+    assert_eq!((summary.media, summary.missing_media), (2, 0));
+
+    let target = Env::new();
+    let mut worker = target.concurrent();
+    let plan = worker.plan_import(&path).unwrap();
+    assert_eq!(plan.summary().media.new, 2);
+    assert_eq!(worker.apply_import(&plan).unwrap().media, 2);
+    // The first connection sees the rows, and the files are in the folder.
+    assert_eq!(media_rows(&target), media_rows(&env));
+    assert_eq!(folder(&target), folder(&env));
+    for media in [png, wav] {
+        assert!(target.store.media_path(&media).unwrap().is_file());
+    }
+}
+
+/// A row the schema should never let in (a damaged database) cannot name a
+/// file: it is counted as missing, and the export stays importable.
+#[test]
+fn a_media_row_rappel_cannot_name_counts_as_missing() {
+    let (env, _, _) = media_env();
+    env.store
+        .conn
+        .pragma_update(None, "ignore_check_constraints", true)
+        .unwrap();
+    env.store
+        .conn
+        .execute(
+            "INSERT INTO media (hash, mime, bytes, created_at) VALUES ('NOT A HASH', 'image/svg+xml', 3, 0)",
+            [],
+        )
+        .unwrap();
+    let (bytes, summary) = env.store.export_bytes_at(T_EXPORT).unwrap();
+    assert_eq!((summary.media, summary.missing_media), (2, 1));
+    Env::new().import(&bytes).unwrap();
+}

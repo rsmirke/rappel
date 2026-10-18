@@ -61,8 +61,8 @@ impl Store {
         let mut files = Vec::with_capacity(rows.len());
         let mut missing_media = 0;
         for (record, media) in rows {
-            match self.media_file(&media, &record) {
-                Some(path) => {
+            match media.and_then(|m| self.media_file(&m, &record).map(|path| (m, path))) {
+                Some((media, path)) => {
                     document.media.push(record);
                     files.push((media, path));
                 }
@@ -147,7 +147,7 @@ fn copy_media(path: &Path, media: &MediaRef, out: &mut impl Write) -> Result<()>
 /// tables agree, each table sorted by id (`card_tags` by card, then tag),
 /// and the media rows ([`media_rows`]). The document's `media` is empty:
 /// the caller adds the files it finds.
-fn read_document(conn: &Connection, now: i64) -> Result<(Document, Vec<(MediaRecord, MediaRef)>)> {
+fn read_document(conn: &Connection, now: i64) -> Result<(Document, Vec<MediaRow>)> {
     let tx = conn.unchecked_transaction()?;
     let decks = tx
         .prepare("SELECT id, name, created_at, updated_at, deleted_at FROM decks ORDER BY id")?
@@ -240,9 +240,14 @@ fn read_document(conn: &Connection, now: i64) -> Result<(Document, Vec<(MediaRec
     ))
 }
 
-/// The media rows, sorted by hash, each with its file; a row whose hash or
-/// type the schema let through but Rappel cannot name is left out.
-fn media_rows(conn: &Connection) -> Result<Vec<(MediaRecord, MediaRef)>> {
+/// A media row and the file it names, if Rappel can name one.
+type MediaRow = (MediaRecord, Option<MediaRef>);
+
+/// The media rows, sorted by hash, each with its file: `None` for a row
+/// whose hash or type Rappel cannot name (the schema's CHECKs keep them
+/// out, but a damaged database may have one), which the export counts as
+/// missing.
+fn media_rows(conn: &Connection) -> Result<Vec<MediaRow>> {
     let rows = conn
         .prepare("SELECT hash, mime, bytes, created_at FROM media ORDER BY hash")?
         .query_map([], |r| {
@@ -256,10 +261,11 @@ fn media_rows(conn: &Connection) -> Result<Vec<(MediaRecord, MediaRef)>> {
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows
         .into_iter()
-        .filter_map(|record| {
-            let hash = parse_hex(record.hash.as_bytes())?;
-            let kind = MediaKind::from_mime(&record.mime)?;
-            Some((record, MediaRef::new(hash, kind)))
+        .map(|record| {
+            let media = parse_hex(record.hash.as_bytes())
+                .zip(MediaKind::from_mime(&record.mime))
+                .map(|(hash, kind)| MediaRef::new(hash, kind));
+            (record, media)
         })
         .collect())
 }

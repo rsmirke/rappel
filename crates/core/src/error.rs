@@ -414,11 +414,11 @@ pub enum Error {
     /// A file offered as an image or an audio file is not one Rappel
     /// keeps (ADR 0054). Nothing was recorded.
     #[error("cannot add this file: {0}")]
-    MediaRefused(#[source] crate::media::MediaProblem),
+    MediaRefused(crate::media::MediaProblem),
 
     /// Reading a file being added as media failed. Nothing was recorded.
     #[error("cannot read the media file: {0}")]
-    MediaRead(#[source] io::Error),
+    MediaRead(io::Error),
 
     /// This store has no data directory (an in-memory store), so it has
     /// no media folder.

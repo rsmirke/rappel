@@ -332,11 +332,13 @@ fn a_failing_reader_leaves_nothing() {
     assert_eq!(names(&media_dir(&tmp)), Vec::<String>::new());
 }
 
-/// A file already under the name with the same size is the same content
-/// (same hash) and is never replaced; one of another size is damaged and
-/// is kept under a second name while the good copy takes the name.
+/// A file already under the name with the same content is kept as it is
+/// (the same file); one with other content, of the same size or not, is
+/// damaged: it is kept under a second name and the good copy takes the
+/// name.
 #[test]
 fn an_existing_file_is_never_overwritten() {
+    use std::os::unix::fs::MetadataExt;
     let (tmp, store) = store();
     let bytes = png_bytes(3);
     let hash: [u8; 32] = Sha256::digest(&bytes).into();
@@ -345,22 +347,128 @@ fn an_existing_file_is_never_overwritten() {
     fs::create_dir_all(&dir).unwrap();
     let path = dir.join(media.file_name());
 
-    // The same size: kept as it is.
-    let same_size = vec![b'x'; bytes.len()];
-    fs::write(&path, &same_size).unwrap();
+    // The same content: the very same file is kept.
+    fs::write(&path, &bytes).unwrap();
+    let inode = fs::metadata(&path).unwrap().ino();
     assert_eq!(store.add_media_bytes(&bytes).unwrap(), media);
-    assert_eq!(fs::read(&path).unwrap(), same_size);
+    assert_eq!(fs::metadata(&path).unwrap().ino(), inode);
     assert_eq!(names(&dir), [media.file_name()]);
 
-    // Another size: set aside, then replaced by the good copy.
-    fs::remove_file(&path).unwrap();
-    fs::write(&path, b"short").unwrap();
-    assert_eq!(store.add_media_bytes(&bytes).unwrap(), media);
-    assert_eq!(fs::read(&path).unwrap(), bytes);
-    let all = names(&dir);
-    assert_eq!(all.len(), 2, "{all:?}");
-    let aside = all.iter().find(|n| n.contains(".damaged-")).unwrap();
-    assert_eq!(fs::read(dir.join(aside)).unwrap(), b"short");
+    // Other content of another size, then of the same size: each set
+    // aside, and the good copy takes the name.
+    let mut same_size = bytes.clone();
+    let last = same_size.len() - 1;
+    same_size[last] ^= 0xff;
+    for damaged in [b"short".to_vec(), same_size] {
+        fs::remove_file(&path).unwrap();
+        fs::write(&path, &damaged).unwrap();
+        assert_eq!(store.add_media_bytes(&bytes).unwrap(), media);
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        let kept: Vec<Vec<u8>> = names(&dir)
+            .iter()
+            .filter(|n| n.contains(".damaged-"))
+            .map(|n| fs::read(dir.join(n)).unwrap())
+            .collect();
+        assert!(kept.contains(&damaged), "{kept:?}");
+    }
+    assert_eq!(names(&dir).len(), 3);
+}
+
+/// A file system without hard links: `link` always fails as unsupported.
+struct NoLinks;
+
+impl store::Namer for NoLinks {
+    fn link(&self, _: &Path, _: &Path) -> io::Result<()> {
+        Err(io::ErrorKind::Unsupported.into())
+    }
+
+    fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
+        fs::rename(from, to)
+    }
+}
+
+/// `NoLinks`, whose renames fail too: nothing can be named.
+struct Stuck;
+
+impl store::Namer for Stuck {
+    fn link(&self, _: &Path, _: &Path) -> io::Result<()> {
+        Err(io::ErrorKind::PermissionDenied.into())
+    }
+
+    fn rename(&self, _: &Path, _: &Path) -> io::Result<()> {
+        Err(io::Error::other("read-only"))
+    }
+}
+
+/// A complete temporary file holding `bytes` in `dir`, and what it is.
+fn temp_file(dir: &Path, bytes: &[u8]) -> (std::path::PathBuf, Ingested) {
+    let temp = dir.join(".incoming-test");
+    fs::write(&temp, bytes).unwrap();
+    let got = Ingested {
+        media: MediaRef::new(Sha256::digest(bytes).into(), MediaKind::Png),
+        bytes: bytes.len() as u64,
+    };
+    (temp, got)
+}
+
+/// Without hard links: a free name is taken by a rename; a name with the
+/// same content is left alone; a damaged file is copied to its second
+/// name before the good copy takes the name; and if that is not possible
+/// either, nothing is replaced and nothing lost.
+#[test]
+fn without_hard_links_nothing_is_overwritten_or_lost() {
+    let scratch = tempfile::tempdir().unwrap();
+    let dir = scratch.path();
+    let bytes = png_bytes(8);
+    let name = |got: &Ingested| dir.join(got.media.file_name());
+
+    // A free name.
+    let (temp, got) = temp_file(dir, &bytes);
+    store::give_name(&NoLinks, &temp, &name(&got), &got).unwrap();
+    assert_eq!(fs::read(name(&got)).unwrap(), bytes);
+    assert!(!temp.exists());
+
+    // The same content already there: kept, the temporary file untouched.
+    let (temp, got) = temp_file(dir, &bytes);
+    store::give_name(&NoLinks, &temp, &name(&got), &got).unwrap();
+    assert!(temp.exists());
+    fs::remove_file(&temp).unwrap();
+
+    // Damaged, same size: copied aside (no link), then replaced.
+    let mut damaged = bytes.clone();
+    damaged[9] ^= 1;
+    fs::write(name(&got), &damaged).unwrap();
+    let (temp, got) = temp_file(dir, &bytes);
+    store::give_name(&NoLinks, &temp, &name(&got), &got).unwrap();
+    assert_eq!(fs::read(name(&got)).unwrap(), bytes);
+    let aside: Vec<String> = names(dir)
+        .into_iter()
+        .filter(|n| n.contains(".damaged-"))
+        .collect();
+    assert_eq!(aside.len(), 1);
+    assert_eq!(fs::read(dir.join(&aside[0])).unwrap(), damaged);
+    let mode = fs::metadata(dir.join(&aside[0]))
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o600);
+
+    // Nothing works: an error, the damaged file still under its name, its
+    // copy aside, the good copy still in the temporary file.
+    let mut other = bytes.clone();
+    other[10] ^= 1;
+    fs::write(name(&got), &other).unwrap();
+    let (temp, got) = temp_file(dir, &bytes);
+    assert!(store::give_name(&Stuck, &temp, &name(&got), &got).is_err());
+    assert_eq!(fs::read(name(&got)).unwrap(), other);
+    assert_eq!(fs::read(&temp).unwrap(), bytes);
+    let copies = names(dir)
+        .iter()
+        .filter(|n| n.contains(".damaged-"))
+        .map(|n| fs::read(dir.join(n)).unwrap())
+        .filter(|b| *b == other)
+        .count();
+    assert_eq!(copies, 1);
 }
 
 #[test]

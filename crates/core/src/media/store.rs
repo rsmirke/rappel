@@ -4,8 +4,9 @@
 //! A file is streamed into a new temporary file in the folder, hashed as
 //! it goes and capped by its kind's limit, synced, then given its final
 //! name by a hard link, which never replaces a file: if the name exists,
-//! that file has the same content (same hash) and is kept. Nothing here
-//! deletes a media file. The temporary name is removed once the file has
+//! that file is hashed and kept if it has the same content; otherwise it is
+//! damaged, kept under a second name, and the good copy takes the name.
+//! Nothing here deletes a media file. The temporary name is removed once the file has
 //! its name, or after a failure; a crash can leave one behind, named
 //! `.incoming-…`, which is never a media name (slice 5 cleans up).
 
@@ -113,11 +114,9 @@ pub(crate) enum Sync {
 }
 
 /// Streams `reader` into the media folder `dir` (created with mode `0700`
-/// if needed) under its hash and kind, and returns them. Never replaces a
-/// file of that name with other content: one already there with the same
-/// size is kept (the same hash, so the same bytes); one of another size is
-/// damaged, so it is first given a second name, `<name>.damaged-…`, and
-/// the new file takes the name.
+/// if needed) under its hash and kind, and returns them. A file already
+/// under that name is kept if it has that content, and set aside if not
+/// ([`give_name`]).
 pub(crate) fn ingest(dir: &Path, reader: &mut impl Read, sync: Sync) -> Result<Ingested> {
     ensure_data_dir(dir)?;
     let (temp, mut file) = create_temp(dir)?;
@@ -134,7 +133,7 @@ pub(crate) fn ingest(dir: &Path, reader: &mut impl Read, sync: Sync) -> Result<I
         file.sync_all().map_err(io_err(&temp))?;
         drop(file);
         let target = dir.join(got.media.file_name());
-        give_name(&temp, &target, got.bytes)?;
+        give_name(&Disk, &temp, &target, &got)?;
         if sync == Sync::Folder {
             sync_folder(dir)?;
         }
@@ -234,32 +233,57 @@ fn read_full(reader: &mut impl Read, buf: &mut [u8]) -> io::Result<usize> {
     Ok(filled)
 }
 
-/// Gives the complete file `temp` the name `target`, never replacing a
-/// file with the same content. A hard link fails if the name exists; where
-/// the file system refuses hard links, a rename after checking that the
-/// name is free (the folder is the app's own).
-fn give_name(temp: &Path, target: &Path, bytes: u64) -> Result<()> {
+/// The file-system calls that name a media file, so tests can make them
+/// fail as some file systems do (no hard links).
+pub(super) trait Namer {
+    /// A second name for `from` at `to`; fails if `to` exists.
+    fn link(&self, from: &Path, to: &Path) -> io::Result<()>;
+    /// `from` renamed to `to` (replacing it).
+    fn rename(&self, from: &Path, to: &Path) -> io::Result<()>;
+}
+
+/// The real file system.
+pub(super) struct Disk;
+
+impl Namer for Disk {
+    fn link(&self, from: &Path, to: &Path) -> io::Result<()> {
+        fs::hard_link(from, to)
+    }
+
+    fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
+        fs::rename(from, to)
+    }
+}
+
+/// Gives the complete file `temp` (whose content is `expected`) the name
+/// `target`, never replacing a file with the same content and never losing
+/// one. A hard link fails if the name exists; where the file system
+/// refuses hard links, a rename after checking that the name is free (the
+/// folder is the app's own). A regular file already under the name is
+/// hashed: the same content is kept; other content is damaged, so it is
+/// first kept under a second name (`<name>.damaged-<random>`, by a link or
+/// else a copy to a new file), and only then does the good copy take the
+/// name.
+pub(super) fn give_name(
+    namer: &impl Namer,
+    temp: &Path,
+    target: &Path,
+    expected: &Ingested,
+) -> Result<()> {
     let io_err = |path: &Path| {
         let path = path.to_path_buf();
         move |source| Error::Io { path, source }
     };
-    match fs::hard_link(temp, target) {
+    match namer.link(temp, target) {
         Ok(()) => return Ok(()),
         Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {}
-        Err(err)
-            if matches!(
-                err.kind(),
-                io::ErrorKind::Unsupported | io::ErrorKind::PermissionDenied
-            ) =>
-        {
-            match fs::symlink_metadata(target) {
-                Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                    return fs::rename(temp, target).map_err(io_err(target));
-                }
-                Err(e) => return Err(io_err(target)(e)),
-                Ok(_) => {}
+        Err(err) if no_links(&err) => match fs::symlink_metadata(target) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                return namer.rename(temp, target).map_err(io_err(target));
             }
-        }
+            Err(e) => return Err(io_err(target)(e)),
+            Ok(_) => {}
+        },
         Err(err) => return Err(io_err(target)(err)),
     }
     let meta = fs::symlink_metadata(target).map_err(io_err(target))?;
@@ -270,22 +294,58 @@ fn give_name(temp: &Path, target: &Path, bytes: u64) -> Result<()> {
             "something that is not a media file has this name",
         )));
     }
-    if meta.len() == bytes {
-        // The same hash: the same content. Keep it.
+    if meta.len() == expected.bytes && has_content(target, expected).map_err(io_err(target))? {
         return Ok(());
     }
-    // Damaged (its size cannot be that of this hash's content): kept under
-    // a second name, and the good copy takes the name.
+    // Damaged: kept under a second name, then the good copy takes the name.
     let mut random = [0; 8];
     getrandom::fill(&mut random).map_err(|err| Error::Random(Box::new(err)))?;
     let mut aside = target.as_os_str().to_owned();
     aside.push(format!(".damaged-{}", hex(&random)));
     let aside = PathBuf::from(aside);
-    fs::hard_link(target, &aside)
-        .or_else(|_| fs::copy(target, &aside).map(|_| ()))
-        .map_err(io_err(&aside))?;
-    tracing::warn!("a damaged media file was set aside");
-    fs::rename(temp, target).map_err(io_err(target))
+    match namer.link(target, &aside) {
+        Ok(()) => {}
+        Err(err) if no_links(&err) => copy_to_new(target, &aside).map_err(io_err(&aside))?,
+        Err(err) => return Err(io_err(&aside)(err)),
+    }
+    tracing::warn!(
+        kept_as = %aside.file_name().unwrap_or_default().to_string_lossy(),
+        "a damaged media file was set aside"
+    );
+    namer.rename(temp, target).map_err(io_err(target))
+}
+
+/// Whether a link failed because the file system has no hard links.
+fn no_links(err: &io::Error) -> bool {
+    matches!(
+        err.kind(),
+        io::ErrorKind::Unsupported | io::ErrorKind::PermissionDenied
+    )
+}
+
+/// Whether the file at `path` has exactly the content `expected` (its
+/// hash and kind), read once, at most its size plus one byte.
+fn has_content(path: &Path, expected: &Ingested) -> io::Result<bool> {
+    let file = File::open(path)?;
+    let mut capped = file.take(expected.bytes.saturating_add(1));
+    match copy_capped(&mut capped, &mut io::sink()) {
+        Ok(found) => Ok(found == *expected),
+        Err(CopyFailure::Refused(_)) => Ok(false),
+        Err(CopyFailure::Read(err) | CopyFailure::Write(err)) => Err(err),
+    }
+}
+
+/// Copies `from` to `to`, a new file (mode `0600`, never an existing one),
+/// synced.
+fn copy_to_new(from: &Path, to: &Path) -> io::Result<()> {
+    let mut source = File::open(from)?;
+    let mut out = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(FILE_MODE)
+        .open(to)?;
+    io::copy(&mut source, &mut out)?;
+    out.sync_all()
 }
 
 /// Syncs the folder `dir`, so the names made in it are on disk.
