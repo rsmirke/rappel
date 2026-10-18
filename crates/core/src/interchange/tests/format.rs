@@ -129,7 +129,9 @@ fn export_to_writes_a_private_file_that_plan_import_reads() {
             decks: 2,
             cards: 4,
             tags: 3,
-            review_events: 8
+            review_events: 8,
+            media: 0,
+            missing_media: 0,
         }
     );
     let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;

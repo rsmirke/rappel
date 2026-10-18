@@ -61,6 +61,10 @@ pub struct Store {
     /// Where backups go; `None` only for in-memory test stores, which
     /// cannot be backed up (an import then refuses to run).
     pub(crate) backup_dir: Option<PathBuf>,
+    /// The media folder (`<data dir>/media`, made when the first file is
+    /// added); `None` only for in-memory test stores, which then cannot
+    /// add or import media (ADR 0054).
+    pub(crate) media_dir: Option<PathBuf>,
     /// Problems [`Store::open`] met that did not stop it, for the UI.
     open_warnings: Vec<OpenWarning>,
 }
@@ -181,6 +185,7 @@ impl Store {
         let mut store = Self::from_connection(conn);
         store.open_warnings = warnings;
         store.backup_dir = Some(backup_dir.to_path_buf());
+        store.media_dir = media_dir_of(db_path);
         Ok(store)
     }
 
@@ -228,6 +233,7 @@ impl Store {
         apply_write_settings(&conn)?;
         let mut store = Self::from_connection(conn);
         store.backup_dir = Some(backup_dir.to_path_buf());
+        store.media_dir = media_dir_of(db_path);
         Ok(store)
     }
 
@@ -237,6 +243,7 @@ impl Store {
             conn,
             ids: IdGen::new(),
             backup_dir: None,
+            media_dir: None,
             open_warnings: Vec::new(),
         }
     }
@@ -267,6 +274,14 @@ impl Store {
             .pragma_query_value(None, "user_version", |r| r.get(0))?;
         Ok(v)
     }
+}
+
+/// The media folder beside the database at `db_path` (in the data
+/// directory).
+fn media_dir_of(db_path: &Path) -> Option<PathBuf> {
+    db_path
+        .parent()
+        .map(|dir| dir.join(crate::media::MEDIA_DIR_NAME))
 }
 
 /// Opens the connection with its connection-only settings; none of them

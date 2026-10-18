@@ -17,7 +17,8 @@ use serde::de::{self, DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor
 
 use super::archive::{Archive, EntryReader};
 use super::format::{
-    CardRecord, CardTagRecord, DeckRecord, EventRecord, Header, SettingsRecord, TagRecord,
+    CardRecord, CardTagRecord, DeckRecord, EventRecord, Header, MediaRecord, SettingsRecord,
+    TagRecord,
 };
 use super::{ImportProblem, Limits};
 
@@ -88,8 +89,8 @@ pub(super) trait Sink {
     fn exported_at(&mut self, at: i64);
     /// `settings` (not with [`Focus::Table`]).
     fn settings(&mut self, settings: SettingsRecord);
-    /// An item of `media` (not with [`Focus::Table`]).
-    fn media_item(&mut self);
+    /// A record of `media` (not with [`Focus::Table`]).
+    fn media(&mut self, index: usize, media: MediaRecord);
     /// A list begins, with [`Focus::All`] or its [`Focus::Table`].
     fn table_starts(&mut self, table: Table) -> Result<(), Stopped>;
     fn deck(&mut self, index: usize, deck: DeckRecord) -> Result<(), Stopped>;
@@ -372,9 +373,8 @@ impl<'de, S: Sink, R: Row> Visitor<'de> for List<'_, S, R> {
     }
 }
 
-/// `media`: any JSON values, each skipped as parsing it into a
-/// `serde_json::Value` would read it (strings checked, nesting stopped at
-/// `serde_json`'s recursion limit), and counted.
+/// `media`: each record parsed with its serde type (unknown fields
+/// denied) and handed over.
 struct MediaSeed<'s, S> {
     sink: &'s mut S,
 }
@@ -391,74 +391,16 @@ impl<'de, S: Sink> Visitor<'de> for MediaSeed<'_, S> {
     type Value = ();
 
     fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("a list of media")
+        f.write_str("the list media")
     }
 
     fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<(), A::Error> {
-        while seq.next_element::<Skip>()?.is_some() {
-            self.sink.media_item();
+        let mut index = 0;
+        while let Some(record) = seq.next_element::<MediaRecord>()? {
+            self.sink.media(index, record);
+            index += 1;
         }
         Ok(())
-    }
-}
-
-/// Any JSON value, read and dropped. Unlike [`IgnoredAny`], it goes
-/// through `deserialize_any`, so it is read as a `serde_json::Value` is:
-/// strings are checked for UTF-8 and nesting counts against the
-/// recursion limit.
-struct Skip;
-
-impl<'de> Deserialize<'de> for Skip {
-    fn deserialize<D: de::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        deserializer.deserialize_any(SkipVisitor)
-    }
-}
-
-struct SkipVisitor;
-
-impl<'de> Visitor<'de> for SkipVisitor {
-    type Value = Skip;
-
-    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("any value")
-    }
-
-    fn visit_bool<E>(self, _: bool) -> Result<Skip, E> {
-        Ok(Skip)
-    }
-
-    fn visit_i64<E>(self, _: i64) -> Result<Skip, E> {
-        Ok(Skip)
-    }
-
-    fn visit_u64<E>(self, _: u64) -> Result<Skip, E> {
-        Ok(Skip)
-    }
-
-    fn visit_f64<E>(self, _: f64) -> Result<Skip, E> {
-        Ok(Skip)
-    }
-
-    fn visit_str<E>(self, _: &str) -> Result<Skip, E> {
-        Ok(Skip)
-    }
-
-    fn visit_unit<E>(self) -> Result<Skip, E> {
-        Ok(Skip)
-    }
-
-    fn visit_none<E>(self) -> Result<Skip, E> {
-        Ok(Skip)
-    }
-
-    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Skip, A::Error> {
-        while seq.next_element::<Skip>()?.is_some() {}
-        Ok(Skip)
-    }
-
-    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Skip, A::Error> {
-        while map.next_entry::<Skip, Skip>()?.is_some() {}
-        Ok(Skip)
     }
 }
 

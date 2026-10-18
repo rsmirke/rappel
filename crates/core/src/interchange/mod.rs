@@ -1,10 +1,11 @@
 //! Export and import of the whole database as a `.rappel` file (SPEC §4.1,
 //! ADR 0017).
 //!
-//! A `.rappel` file is a zip archive with exactly two entries: `cards.json`
-//! (decks, cards, tags, the review log with its resets and undos, deleted
-//! rows included, and the settings) and an empty `media/` directory. The
-//! same database exported at the same time always gives the same bytes.
+//! A `.rappel` file is a zip archive holding `cards.json` (decks, cards,
+//! tags, the review log with its resets and undos, deleted rows included,
+//! the settings and the list of media files), the `media/` directory and
+//! one entry `media/<sha256>.<ext>` per media file (ADR 0054). The same
+//! database exported at the same time always gives the same bytes.
 //!
 //! Import is two steps. [`Store::plan_import`](crate::storage::Store::plan_import)
 //! reads and checks the file and compares it with the database without
@@ -20,6 +21,7 @@ mod engine;
 mod export;
 mod format;
 mod import;
+mod media;
 mod notes;
 mod source;
 mod stream;
@@ -52,6 +54,13 @@ pub struct ExportSummary {
     pub tags: usize,
     /// Log entries written (reviews, resets and undos).
     pub review_events: usize,
+    /// Media files written.
+    pub media: usize,
+    /// Media files the database lists but that are missing from the media
+    /// folder or damaged (not the size, kind or hash recorded): left out of
+    /// the export, with their rows, so the file stays importable. Cards
+    /// that show them show them as missing, as before the export.
+    pub missing_media: usize,
 }
 
 /// How the rows of one table in a file compare with the database.
@@ -61,7 +70,8 @@ pub struct TableCounts {
     pub new: usize,
     /// Rows already in the database with the same content: identical, or
     /// deleted in the file but live in the database (an import never
-    /// deletes).
+    /// deletes). A media file is present when the database has its hash
+    /// with the same type and size, whenever it was added.
     pub present: usize,
     /// Deleted rows of the database that are live in the file with
     /// otherwise the same content: they would be brought back. For cards,
@@ -102,6 +112,9 @@ pub enum Conflict {
     /// another id but the same name is not a conflict: it is mapped onto
     /// the database's tag, ADR 0029.)
     TagDiffers(String),
+    /// The database has a media file with this hash (64 hex digits) but
+    /// another type or size, which a damaged database could have.
+    MediaDiffers(String),
     /// An undo in the file cancels an entry that another undo in the
     /// database already cancels (ADR 0028).
     AlreadyUndone {
@@ -137,6 +150,9 @@ impl fmt::Display for Conflict {
                 "deck {deck_id} has the same name as deck {existing_id} in the database"
             ),
             Self::TagDiffers(id) => write!(f, "tag {id} differs from the one in the database"),
+            Self::MediaDiffers(hash) => {
+                write!(f, "media file {hash} differs from the one in the database")
+            }
             Self::AlreadyUndone {
                 event_id,
                 existing_id,
@@ -162,10 +178,12 @@ pub struct ImportSummary {
     pub card_tags: TableCounts,
     /// Log entries (reviews, resets and undos).
     pub review_events: TableCounts,
+    /// Media files.
+    pub media: TableCounts,
     /// What happens to the file's settings.
     pub settings: SettingsImport,
-    /// Every conflict, in file order (decks, cards, tags, events, then
-    /// deck names). Any conflict refuses the whole import.
+    /// Every conflict, in file order (decks, cards, tags, events, media,
+    /// then deck names). Any conflict refuses the whole import.
     pub conflicts: Vec<Conflict>,
 }
 
@@ -179,6 +197,7 @@ impl ImportSummary {
             && self.tags.new == 0
             && self.card_tags.new == 0
             && self.review_events.new == 0
+            && self.media.new == 0
             && self.decks.revived == 0
             && self.cards.revived == 0
             && self.settings != SettingsImport::Applied
@@ -251,6 +270,8 @@ pub struct ImportReport {
     pub card_tags: usize,
     /// Log entries added.
     pub review_events: usize,
+    /// Media files added.
+    pub media: usize,
     /// Whether the file's settings replaced the database's.
     pub settings_applied: bool,
     /// Deleted decks brought back.
@@ -287,8 +308,10 @@ pub enum ImportProblem {
         /// The limit.
         limit: u64,
     },
-    /// The archive has an entry other than `cards.json` and `media/`, or
-    /// one of them twice. The name is shown escaped and shortened.
+    /// The archive has an entry other than `cards.json`, `media/` and
+    /// `media/<sha256>.<ext>` (64 lowercase hex digits, a known
+    /// extension), one of them twice, or a media file the list of media
+    /// does not have. The name is shown escaped and shortened.
     #[error("unexpected entry {0} in the archive")]
     UnexpectedEntry(String),
     /// A required entry is missing.
@@ -298,7 +321,8 @@ pub enum ImportProblem {
     /// or Deflate, or of the wrong kind (a file where a directory belongs).
     #[error("archive entry {0} is not stored in a supported way")]
     UnsupportedEntry(&'static str),
-    /// `cards.json` is larger than allowed once decompressed.
+    /// `cards.json` or a media file is larger than allowed once
+    /// decompressed.
     #[error("{entry} is larger than {limit} bytes")]
     EntryTooLarge {
         /// The entry.
@@ -327,7 +351,8 @@ pub enum ImportProblem {
     /// A field of one row is invalid.
     #[error("{table}[{index}].{field}: {reason}")]
     InvalidField {
-        /// `decks`, `cards`, `tags`, `card_tags` or `review_events`.
+        /// `decks`, `cards`, `tags`, `card_tags`, `review_events` or
+        /// `media`.
         table: &'static str,
         /// The row's position in its list, from 0.
         index: usize,
@@ -345,9 +370,6 @@ pub enum ImportProblem {
         /// What is wrong with it.
         reason: FieldProblem,
     },
-    /// `media` is not empty; this version cannot import media.
-    #[error("the file has media, which this version of Rappel cannot import")]
-    UnsupportedMedia,
 }
 
 /// What is wrong with one field, for [`ImportProblem::InvalidField`].
@@ -421,6 +443,29 @@ pub enum FieldProblem {
     /// Outside the setting's range.
     #[error("out of range")]
     OutOfRange,
+    /// Not a SHA-256 as 64 lowercase hex digits.
+    #[error("not a SHA-256 in lowercase hex")]
+    NotHash,
+    /// Not the MIME type of a kind of media Rappel keeps.
+    #[error("not a supported media type")]
+    UnknownMediaType,
+    /// Larger than the media file's kind allows.
+    #[error("larger than allowed")]
+    TooLarge,
+    /// The archive's `media/` folder has no file for this record.
+    #[error("has no file in the archive")]
+    NoMediaFile,
+    /// Not the size of the record's file in the archive.
+    #[error("is not the size of its file")]
+    SizeDiffers,
+    /// The record's file in the archive has other content (another
+    /// SHA-256).
+    #[error("its file has other content")]
+    MediaFileDiffers,
+    /// The record's file in the archive is not of this type (its first
+    /// bytes say otherwise).
+    #[error("its file is not of this type")]
+    NotOfItsType,
 }
 
 /// Size limits for reading a file (ADR 0053). The defaults are generous;
@@ -436,10 +481,9 @@ pub(crate) struct Limits {
     pub central_directory: u64,
     /// `cards.json`, decompressed. Bounds the notes an import keeps.
     pub json: u64,
-    /// One image in `media/`, decompressed (SPEC §4.3; read by the media
-    /// import, phase 2, slice 2).
+    /// One image in `media/`, decompressed (SPEC §4.3).
     pub image: u64,
-    /// One audio file in `media/`, decompressed (SPEC §4.9; idem).
+    /// One audio file in `media/`, decompressed (SPEC §4.9).
     pub audio: u64,
     /// One card side.
     pub card_text: usize,
@@ -458,12 +502,21 @@ impl Limits {
         // fit with room to spare.
         central_directory: 16 << 20,
         json: 256 << 20,
-        image: 10_000_000,
-        audio: 20_000_000,
+        image: crate::media::IMAGE_MAX_BYTES,
+        audio: crate::media::AUDIO_MAX_BYTES,
         card_text: crate::domain::MAX_CARD_SIDE_BYTES,
         deck_name: crate::domain::MAX_DECK_NAME_BYTES,
         tag_name: crate::domain::MAX_TAG_NAME_BYTES,
     };
+
+    /// The largest file of `kind` an import reads.
+    pub(crate) fn media(&self, kind: crate::media::MediaKind) -> u64 {
+        if kind.is_image() {
+            self.image
+        } else {
+            self.audio
+        }
+    }
 }
 
 #[cfg(test)]

@@ -10,6 +10,8 @@
 mod parse;
 mod plain;
 
+use crate::media::MediaRef;
+
 pub use parse::parse;
 #[cfg(test)]
 use plain::PREVIEW_CHARS;
@@ -105,6 +107,13 @@ pub enum Inline {
         alt: String,
         target: ImageTarget,
     },
+    /// A link to an audio file of the media store,
+    /// `[label](media:<sha256>.<ext>)` with an audio kind (SPEC §4.9, ADR
+    /// 0054): played only when the user asks, never fetched.
+    Audio {
+        content: Vec<Inline>,
+        media: MediaRef,
+    },
     /// A hard line break.
     LineBreak,
 }
@@ -112,19 +121,95 @@ pub enum Inline {
 /// Where an image points.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ImageTarget {
-    /// `media:<name>`: a file of the app's media store, by name
-    /// (`<sha256>.<ext>`). Not checked here: the media store does that.
-    Media(String),
-    /// Anything else (a remote URL, a path). Never fetched or opened: it
-    /// is shown as text (SPEC §4.3).
+    /// `media:<sha256>.<ext>` naming an image of the app's media store
+    /// (ADR 0054): a checked hash and an image kind, never a path.
+    Media(MediaRef),
+    /// Anything else (a remote URL, a path, a `media:` URL with a bad
+    /// hash, an unknown extension or an audio kind). Never fetched or
+    /// opened: it is shown as text (SPEC §4.3).
     Other(String),
 }
 
 impl ImageTarget {
     fn from_url(url: &str) -> Self {
-        match url.strip_prefix("media:") {
-            Some(name) => Self::Media(name.to_owned()),
-            None => Self::Other(url.to_owned()),
+        match MediaRef::parse(url) {
+            Some(media) if media.kind().is_image() => Self::Media(media),
+            _ => Self::Other(url.to_owned()),
+        }
+    }
+}
+
+/// The media files `md` refers to, each once, in the order they first
+/// appear: every image or link target that is a valid `media:` reference
+/// ([`MediaRef::parse`]), whatever its kind, including one that is shown
+/// as text (an audio file as an image target), so a file a card names
+/// counts as used. Parsing is bounded as [`parse`] is.
+#[must_use]
+pub fn media_refs(md: &str) -> Vec<MediaRef> {
+    let mut refs = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut add = |media: MediaRef| {
+        if seen.insert(media) {
+            refs.push(media);
+        }
+    };
+    walk_blocks(&parse(md).blocks, &mut |inline| match inline {
+        Inline::Image {
+            target: ImageTarget::Media(media),
+            ..
+        }
+        | Inline::Audio { media, .. } => add(*media),
+        Inline::Image {
+            target: ImageTarget::Other(url),
+            ..
+        }
+        | Inline::Link { url, .. } => {
+            if let Some(media) = MediaRef::parse(url) {
+                add(media);
+            }
+        }
+        _ => {}
+    });
+    refs
+}
+
+/// Calls `f` on every inline of `blocks`, depth first. The tree nests at
+/// most [`MAX_DEPTH`] levels (plus two), so the recursion is bounded.
+fn walk_blocks(blocks: &[Block], f: &mut impl FnMut(&Inline)) {
+    for block in blocks {
+        match block {
+            Block::Paragraph(inlines)
+            | Block::Heading {
+                content: inlines, ..
+            } => {
+                walk_inlines(inlines, f);
+            }
+            Block::List { items, .. } => {
+                for item in items {
+                    walk_blocks(item, f);
+                }
+            }
+            Block::BlockQuote(blocks) => walk_blocks(blocks, f),
+            Block::Table { header, rows, .. } => {
+                for cell in header.iter().chain(rows.iter().flatten()) {
+                    walk_inlines(cell, f);
+                }
+            }
+            Block::CodeBlock { .. } | Block::Rule | Block::DisplayMath(_) => {}
+        }
+    }
+}
+
+fn walk_inlines(inlines: &[Inline], f: &mut impl FnMut(&Inline)) {
+    for inline in inlines {
+        f(inline);
+        match inline {
+            Inline::Emphasis(inner)
+            | Inline::Strong(inner)
+            | Inline::Strikethrough(inner)
+            | Inline::Link { content: inner, .. }
+            | Inline::Audio { content: inner, .. } => walk_inlines(inner, f),
+            _ => {}
         }
     }
 }

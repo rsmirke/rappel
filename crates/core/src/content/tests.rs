@@ -44,7 +44,8 @@ fn inlines_depth(inlines: &[Inline]) -> usize {
             Inline::Emphasis(inner)
             | Inline::Strong(inner)
             | Inline::Strikethrough(inner)
-            | Inline::Link { content: inner, .. } => 1 + inlines_depth(inner),
+            | Inline::Link { content: inner, .. }
+            | Inline::Audio { content: inner, .. } => 1 + inlines_depth(inner),
             _ => 0,
         })
         .max()
@@ -199,22 +200,142 @@ fn links_keep_text_and_url() {
     );
 }
 
+/// 64 hex digits for media references in tests.
+const HASH: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+fn media(ext: &str) -> MediaRef {
+    MediaRef::parse(&format!("media:{HASH}.{ext}")).unwrap()
+}
+
 #[test]
 fn images_are_media_references_or_other() {
+    let md = format!(
+        "![a *cat*](media:{HASH}.png) ![remote](https://x.org/i.png) ![bad](media:ab12.png) \
+         ![upper](media:{}.png) ![sound](media:{HASH}.mp3) ![svg](media:{HASH}.svg)",
+        HASH.to_uppercase()
+    );
+    let image = |alt: &str, target| Inline::Image {
+        alt: alt.to_owned(),
+        target,
+    };
     assert_eq!(
-        blocks("![a *cat*](media:ab12.png) ![remote](https://x.org/i.png)"),
+        blocks(&md),
         [para(vec![
-            Inline::Image {
-                alt: "a cat".to_owned(),
-                target: ImageTarget::Media("ab12.png".to_owned()),
+            image("a cat", ImageTarget::Media(media("png"))),
+            text(" "),
+            image(
+                "remote",
+                ImageTarget::Other("https://x.org/i.png".to_owned())
+            ),
+            text(" "),
+            image("bad", ImageTarget::Other("media:ab12.png".to_owned())),
+            text(" "),
+            image(
+                "upper",
+                ImageTarget::Other(format!("media:{}.png", HASH.to_uppercase()))
+            ),
+            text(" "),
+            // An audio file is not an image: shown as text.
+            image("sound", ImageTarget::Other(format!("media:{HASH}.mp3"))),
+            text(" "),
+            image("svg", ImageTarget::Other(format!("media:{HASH}.svg"))),
+        ])]
+    );
+}
+
+#[test]
+fn links_to_audio_files_are_audio() {
+    let md = format!(
+        "[play *me*](media:{HASH}.ogg) [](media:{HASH}.wav) [pic](media:{HASH}.png) \
+         [web](https://x.org/a.mp3) [path](file:///tmp/a.mp3)"
+    );
+    assert_eq!(
+        blocks(&md),
+        [para(vec![
+            Inline::Audio {
+                content: vec![text("play "), Inline::Emphasis(vec![text("me")])],
+                media: media("ogg"),
             },
             text(" "),
-            Inline::Image {
-                alt: "remote".to_owned(),
-                target: ImageTarget::Other("https://x.org/i.png".to_owned()),
+            Inline::Audio {
+                content: vec![],
+                media: media("wav"),
+            },
+            text(" "),
+            // A link to an image stays a link (its URL shown, never opened).
+            Inline::Link {
+                content: vec![text("pic")],
+                url: format!("media:{HASH}.png"),
+            },
+            text(" "),
+            Inline::Link {
+                content: vec![text("web")],
+                url: "https://x.org/a.mp3".to_owned(),
+            },
+            text(" "),
+            Inline::Link {
+                content: vec![text("path")],
+                url: "file:///tmp/a.mp3".to_owned(),
             },
         ])]
     );
+    assert_eq!(plain_text(&parse(&md)), "play me  pic web path");
+}
+
+#[test]
+fn media_refs_lists_each_file_once_in_order() {
+    let other = "f".repeat(64);
+    let md = format!(
+        "![a](media:{HASH}.png)\n\n> - [x](media:{other}.mp3) ![b](media:{HASH}.png)\n\n\
+         | ![c](media:{other}.jpg) |\n|--|\n| [](media:{HASH}.png) |\n\n\
+         ![sound as image](media:{HASH}.wav) [image as link](media:{other}.gif) \
+         ![no](https://x.org/a.png) `![code](media:{HASH}.webp)` ![bad](media:{HASH}.PNG)"
+    );
+    let at = |hash: &str, ext: &str| MediaRef::parse(&format!("media:{hash}.{ext}")).unwrap();
+    assert_eq!(
+        media_refs(&md),
+        [
+            at(HASH, "png"),
+            at(&other, "mp3"),
+            at(&other, "jpg"),
+            at(HASH, "wav"),
+            at(&other, "gif"),
+        ]
+    );
+    assert_eq!(media_refs(""), []);
+    assert_eq!(media_refs("media:abc ![x](media:)"), []);
+}
+
+/// Hostile sides: references by the thousand, nested deep, or almost
+/// right; listed within a time bound on a small stack.
+#[test]
+fn media_refs_is_cheap_on_hostile_sides() {
+    let one = format!("![a](media:{HASH}.png)");
+    let many = (0..20_000).fold(String::new(), |mut md, i| {
+        use std::fmt::Write as _;
+        let _ = write!(md, "![](media:{i:064x}.png) ");
+        md
+    });
+    let nested = format!("{}{one}", "> ".repeat(10_000));
+    let shallow = format!("{}{one}", "> ".repeat(8));
+    let near = format!("![](media:{HASH}.pn) ").repeat(20_000);
+    let links = format!("[{}](media:{HASH}.ogg)", "[".repeat(50_000));
+    let refs = crate::test_support::within(
+        std::time::Duration::from_secs(20),
+        "hostile media references",
+        move || {
+            [
+                media_refs(&many).len(),
+                media_refs(&nested).len(),
+                media_refs(&shallow).len(),
+                media_refs(&near).len(),
+                media_refs(&links).len(),
+            ]
+        },
+    );
+    // Past the nesting cap an image is flattened into text, as it is
+    // shown: not a reference (ADR 0019, 0054).
+    assert_eq!(refs, [20_000, 0, 1, 0, 1]);
 }
 
 #[test]

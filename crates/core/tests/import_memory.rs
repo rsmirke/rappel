@@ -10,7 +10,9 @@
 //! read, so its memory grows with the number of rows, the most per byte
 //! with the smallest rows. Each kind of small row is measured at two
 //! sizes, and the line through them is extrapolated to the limit (256 MiB
-//! of JSON), where the budget is 200 MiB. An archive that declares more
+//! of JSON), where the budget is 200 MiB. Media add what the entry limit
+//! fixes (a note per file), measured with the most files an archive can
+//! hold beside the growing JSON (ADR 0054). An archive that declares more
 //! than the limits is refused from its end record, and costs nothing.
 
 #![cfg(target_os = "linux")]
@@ -59,6 +61,45 @@ mod measure {
         Decks,
         /// Cards with long fronts: few, large strings.
         LongCards,
+        /// Review events, and this many media files (each a small PNG,
+        /// with its record): what grows with media is fixed by the entry
+        /// limit (ADR 0054).
+        Media(u32),
+    }
+
+    /// The most media files an archive can hold: the entry limit (100,000)
+    /// less `cards.json` and `media/`. Planned at that count; applied with
+    /// `APPLIED_MEDIA_FILES`, since the apply syncs every file it writes,
+    /// which takes minutes for 100,000 files on a disk (the apply keeps no
+    /// more per file than the plan, which is measured at the limit).
+    const MEDIA_FILES: u32 = 99_998;
+    const APPLIED_MEDIA_FILES: u32 = 5_000;
+
+    /// Media file `n`: a PNG signature and `n`, so each differs.
+    fn media_file(n: u32) -> Vec<u8> {
+        let mut out = b"\x89PNG\r\n\x1a\n".to_vec();
+        out.extend_from_slice(&n.to_be_bytes());
+        out
+    }
+
+    /// `count` media files, sorted by name (by hash).
+    fn media_files(count: u32) -> Vec<(String, Vec<u8>)> {
+        use sha2::{Digest, Sha256};
+        let mut files: Vec<(String, Vec<u8>)> = (0..count)
+            .map(|n| {
+                let bytes = media_file(n);
+                let hash = Sha256::digest(&bytes)
+                    .iter()
+                    .fold(String::new(), |mut hex, b| {
+                        use std::fmt::Write as _;
+                        let _ = write!(hex, "{b:02x}");
+                        hex
+                    });
+                (hash, bytes)
+            })
+            .collect();
+        files.sort();
+        files
     }
 
     /// How many tags a `Fill::CardTags` file has.
@@ -99,6 +140,11 @@ mod measure {
             case("decks, stored", Fill::Decks, true),
             case("review events, deflated", Fill::Reviews, false),
             case("long cards, deflated", Fill::LongCards, false),
+            case(
+                "99,998 media files and review events",
+                Fill::Media(MEDIA_FILES),
+                true,
+            ),
             // Applying writes every row: smaller files, to keep it quick.
             Case {
                 what: "resets and undos, planned and applied",
@@ -110,6 +156,13 @@ mod measure {
             Case {
                 what: "tags, planned and applied",
                 fill: Fill::Tags,
+                stored: true,
+                apply: true,
+                sizes: [JSON_LIMIT / 64, JSON_LIMIT / 32],
+            },
+            Case {
+                what: "5,000 media files and review events, planned and applied",
+                fill: Fill::Media(APPLIED_MEDIA_FILES),
                 stored: true,
                 apply: true,
                 sizes: [JSON_LIMIT / 64, JSON_LIMIT / 32],
@@ -246,11 +299,49 @@ mod measure {
         }
         json.write_all(br#"],"review_events":["#)?;
         write_events(&mut json, json_bytes, fill, cards)?;
-        json.write_all(br#"],"settings":{},"media":[]}"#)?;
+        json.write_all(br#"],"settings":{},"media":["#)?;
+        let files = if let Fill::Media(count) = fill {
+            media_files(count)
+        } else {
+            Vec::new()
+        };
+        write_media_records(&mut json, &files)?;
+        json.write_all(b"]}")?;
         let len = json.1;
-        zip.add_directory("media/", SimpleFileOptions::DEFAULT)?;
+        add_media_entries(&mut zip, &files)?;
         zip.finish()?.flush()?;
         Ok(len)
+    }
+
+    /// The `media/` directory and an entry per file, stored.
+    fn add_media_entries<W: Write + io::Seek>(
+        zip: &mut ZipWriter<W>,
+        files: &[(String, Vec<u8>)],
+    ) -> zip::result::ZipResult<()> {
+        zip.add_directory("media/", SimpleFileOptions::DEFAULT)?;
+        let stored = SimpleFileOptions::DEFAULT.compression_method(CompressionMethod::Stored);
+        for (hash, bytes) in files {
+            zip.start_file(format!("media/{hash}.png"), stored)?;
+            zip.write_all(bytes)?;
+        }
+        Ok(())
+    }
+
+    /// The `media` records of `files` (sorted by hash).
+    fn write_media_records<W: Write>(
+        json: &mut Counting<'_, W>,
+        files: &[(String, Vec<u8>)],
+    ) -> io::Result<()> {
+        const T: i64 = 1_792_067_696_789;
+        for (i, (hash, bytes)) in files.iter().enumerate() {
+            let comma = if i == 0 { "" } else { "," };
+            write!(
+                json,
+                r#"{comma}{{"hash":"{hash}","mime":"image/png","bytes":{},"created_at":{T}}}"#,
+                bytes.len()
+            )?;
+        }
+        Ok(())
     }
 
     /// The log of a test file: reviews, or resets and the undos that
@@ -264,7 +355,7 @@ mod measure {
         const T: i64 = 1_792_067_696_789;
         let first_event = 3_000_000_000;
         match fill {
-            Fill::Reviews | Fill::LongCards => {
+            Fill::Reviews | Fill::LongCards | Fill::Media(_) => {
                 fill_until(json, json_bytes, |json, n, comma| {
                     let card = id(1 + n % cards);
                     let at = T + i64::try_from(n).map_err(io::Error::other)?;
@@ -324,15 +415,23 @@ mod measure {
             let err = result.expect_err("the archive is refused");
             assert!(err.to_string().contains("cannot import"), "{err}");
             if name == "hundred-thousand-entries" {
-                // Read through its zip64 end record, up to the names.
-                assert!(err.to_string().contains("unexpected entry"), "{err}");
+                // Read through its zip64 end record, up to the first media
+                // entry, which is empty.
+                assert!(err.to_string().contains("a media file is empty"), "{err}");
             }
             println!("PEAK {peak} 0");
             return;
         }
         let (index, size) = spec.split_once(':').unwrap();
         let case = cases()[index.parse::<usize>().unwrap()];
-        let json = write_export(&path, size.parse().unwrap(), case.fill, case.stored).unwrap();
+        let json = if matches!(case.fill, Fill::Media(_)) {
+            // Writing 100,000 entries leaves memory with the allocator (the
+            // zip writer's list of them) that the import would reuse
+            // unseen: written by a process of its own.
+            write_elsewhere(spec, &path)
+        } else {
+            write_export(&path, size.parse().unwrap(), case.fill, case.stored).unwrap()
+        };
         if case.fill == Fill::DuplicateTags {
             let (result, peak) = peak_of(|| store.plan_import(&path)).unwrap();
             let err = result.expect_err("repeated names are refused");
@@ -352,6 +451,9 @@ mod measure {
             summary.decks.new >= 1 && summary.conflicts.is_empty(),
             "{summary:?}"
         );
+        if let Fill::Media(count) = case.fill {
+            assert_eq!(summary.media.new, count as usize);
+        }
         println!("PEAK {peak} {json}");
     }
 
@@ -359,7 +461,7 @@ mod measure {
     /// record declares, and measured as they are: a billion entries
     /// declared; a list of entries declared nearly 4 GiB long; a file over
     /// 2 GiB; 100,000 entries (a zip64 end record, read up to the first
-    /// name Rappel does not write); central records with 64 KiB comments
+    /// media entry, which is empty); central records with 64 KiB comments
     /// behind a directory size that lies; 400 end records after a damaged
     /// directory; a zip64 end record with a million entries behind a
     /// classic one that names nothing; and `cards.json` nested 16 million
@@ -543,6 +645,33 @@ mod measure {
         fs::write(path, bytes).unwrap();
     }
 
+    /// What a writing child reads: `<case spec>|<path>`.
+    const WRITE: &str = "RAPPEL_MEMORY_WRITE";
+
+    /// Writes the file of the case `spec` to `path` in a process of its own
+    /// (this test binary again); the JSON's length.
+    fn write_elsewhere(spec: &str, path: &Path) -> u64 {
+        let exe = std::env::current_exe().expect("the test binary has a path");
+        let output = Command::new(exe)
+            .args([
+                "--exact",
+                "measure::an_import_stays_within_the_memory_budget",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(WRITE, format!("{spec}|{}", path.display()))
+            .env_remove(CASE)
+            .output()
+            .expect("the test binary runs again");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(output.status.success(), "writing {spec}: {stdout}");
+        stdout
+            .lines()
+            .find_map(|l| l.split_once("WROTE ").map(|(_, n)| n))
+            .and_then(|n| n.split_whitespace().next()?.parse().ok())
+            .unwrap_or_else(|| panic!("writing {spec} printed no size:\n{stdout}"))
+    }
+
     /// Runs this test binary again for `spec`; the peak and the JSON size.
     fn spawn(spec: String) -> std::process::Child {
         let exe = std::env::current_exe().expect("the test binary has a path");
@@ -579,6 +708,21 @@ mod measure {
 
     #[test]
     fn an_import_stays_within_the_memory_budget() {
+        if let Some(job) = std::env::var_os(WRITE) {
+            let job = job.to_string_lossy();
+            let (spec, path) = job.split_once('|').unwrap();
+            let (index, size) = spec.split_once(':').unwrap();
+            let case = cases()[index.parse::<usize>().unwrap()];
+            let json = write_export(
+                Path::new(path),
+                size.parse().unwrap(),
+                case.fill,
+                case.stored,
+            )
+            .unwrap();
+            println!("WROTE {json}");
+            return;
+        }
         if let Some(spec) = std::env::var_os(CASE) {
             measure(&spec.to_string_lossy());
             return;

@@ -120,6 +120,13 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         rebuild_schedule: false,
         backfill: Some(backfill_search_index),
     },
+    Migration {
+        version: 11,
+        name: "media",
+        sql: include_str!("0011_media.sql"),
+        rebuild_schedule: false,
+        backfill: None,
+    },
 ];
 
 /// Migration 0010: the search index of every card, deleted ones included.
@@ -255,6 +262,7 @@ mod tests {
             (8, 5_300_822_826_126_250_477),
             (9, 1_539_123_956_118_822_870),
             (10, 15_621_161_985_399_297_379),
+            (11, 8_376_656_448_889_747_473),
         ];
         assert_eq!(
             MIGRATIONS.len(),

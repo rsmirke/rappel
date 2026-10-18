@@ -1,60 +1,153 @@
 //! Exporting the whole database to a `.rappel` file.
 
 use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+use std::io::{self, BufWriter, Seek, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
 
 use super::ExportSummary;
-use super::archive::write_archive;
+use super::archive::ArchiveWriter;
 use super::format::{
-    CardRecord, CardTagRecord, DeckRecord, Document, EventRecord, FORMAT_VERSION, SettingsRecord,
-    TagRecord,
+    CardRecord, CardTagRecord, DeckRecord, Document, EventRecord, FORMAT_VERSION, MediaRecord,
+    SettingsRecord, TagRecord,
 };
 use crate::error::{Error, Result};
+use crate::media::{CopyFailure, MediaKind, MediaRef, copy_capped, parse_hex};
 use crate::storage::{Store, stored_settings};
 use crate::time::now_ms;
 
 impl Store {
     /// Writes every deck, card, tag, card tag and log entry, deleted ones
-    /// included, and the stored settings, to the `.rappel` file `path`,
-    /// replacing it if it exists.
+    /// included, the stored settings and every media file, to the
+    /// `.rappel` file `path`, replacing it if it exists.
     ///
     /// The file is written next to `path` with mode `0600`, synced, and
-    /// only then renamed, so `path` is never a partial export. The same
-    /// database exported at the same time gives the same bytes (ADR 0017).
+    /// only then renamed, so `path` is never a partial export. Media files
+    /// are streamed from the media folder, never held in memory. A media
+    /// file that is missing or damaged is left out with its record and
+    /// counted in [`ExportSummary::missing_media`]. The same database
+    /// exported at the same time gives the same bytes (ADR 0017, 0054).
     ///
     /// # Errors
     /// SQLite and IO errors, or [`Error::ExportFailed`]. On error `path`
     /// is left as it was.
     pub fn export_to(&self, path: &Path) -> Result<ExportSummary> {
-        let (bytes, summary) = self.export_bytes_at(now_ms())?;
-        write_file_atomically(path, &bytes)?;
-        Ok(summary)
+        write_file_atomically(path, |file| {
+            let mut out = BufWriter::with_capacity(64 << 10, file);
+            let summary = self.write_export(&mut out, now_ms())?;
+            out.flush().map_err(|source| Error::Io {
+                path: path.to_path_buf(),
+                source,
+            })?;
+            Ok(summary)
+        })
     }
 
     /// The archive bytes of an export made at `now` (UTC milliseconds).
+    #[cfg(test)]
     pub(crate) fn export_bytes_at(&self, now: i64) -> Result<(Vec<u8>, ExportSummary)> {
-        let document = read_document(&self.conn, now)?;
+        let mut out = io::Cursor::new(Vec::new());
+        let summary = self.write_export(&mut out, now)?;
+        Ok((out.into_inner(), summary))
+    }
+
+    /// Writes the export made at `now` to `out`.
+    fn write_export<W: Write + Seek>(&self, out: W, now: i64) -> Result<ExportSummary> {
+        let (mut document, rows) = read_document(&self.conn, now)?;
+        // Only the files that are there and whole go in, with their
+        // records, so the export stays importable.
+        let mut files = Vec::with_capacity(rows.len());
+        let mut missing_media = 0;
+        for (record, media) in rows {
+            match media.and_then(|m| self.media_file(&m, &record).map(|path| (m, path))) {
+                Some((media, path)) => {
+                    document.media.push(record);
+                    files.push((media, path));
+                }
+                None => missing_media += 1,
+            }
+        }
+        if missing_media > 0 {
+            tracing::warn!(
+                missing_media,
+                "media files missing or damaged, left out of the export"
+            );
+        }
         let summary = ExportSummary {
             decks: document.decks.len(),
             cards: document.cards.len(),
             tags: document.tags.len(),
             review_events: document.review_events.len(),
+            media: files.len(),
+            missing_media,
         };
         let mut json =
             serde_json::to_vec_pretty(&document).map_err(|e| Error::ExportFailed(Box::new(e)))?;
         json.push(b'\n');
-        let bytes = write_archive(&json).map_err(|e| Error::ExportFailed(Box::new(e)))?;
-        Ok((bytes, summary))
+        drop(document);
+        let failed = |e: zip::result::ZipError| Error::ExportFailed(Box::new(e));
+        let mut archive = ArchiveWriter::new(out, &json).map_err(failed)?;
+        drop(json);
+        for (media, path) in &files {
+            let entry = archive.start_media(&media.file_name()).map_err(failed)?;
+            copy_media(path, media, entry)?;
+        }
+        archive.finish().map_err(failed)?;
+        Ok(summary)
+    }
+
+    /// The path of `media`'s file if it is a regular file whose size, kind
+    /// and SHA-256 are those recorded (read once to check); else `None`,
+    /// and it is left out of the export.
+    fn media_file(&self, media: &MediaRef, record: &MediaRecord) -> Option<PathBuf> {
+        let path = self.media_path(media)?;
+        let mut file = open_regular(&path).ok()?;
+        let copied = copy_capped(&mut file, &mut io::sink()).ok()?;
+        let whole =
+            copied.media == *media && i64::try_from(copied.bytes).ok() == Some(record.bytes);
+        whole.then_some(path)
+    }
+}
+
+/// Opens `path` for reading if it is a regular file, never through a
+/// symbolic link (the media folder holds only Rappel's own files).
+fn open_regular(path: &Path) -> io::Result<File> {
+    let meta = fs::symlink_metadata(path)?;
+    if !meta.is_file() {
+        return Err(io::Error::other("not a regular file"));
+    }
+    let file = File::open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::other("not a regular file"));
+    }
+    Ok(file)
+}
+
+/// Streams the media file at `path` into the archive entry `out`, hashing
+/// it again: a file that changed since it was checked fails the export
+/// (the entry is written already, so it cannot be left out any more).
+fn copy_media(path: &Path, media: &MediaRef, out: &mut impl Write) -> Result<()> {
+    let io_err = |source| Error::Io {
+        path: path.to_path_buf(),
+        source,
+    };
+    let mut file = open_regular(path).map_err(io_err)?;
+    match copy_capped(&mut file, out) {
+        Ok(copied) if copied.media == *media => Ok(()),
+        Ok(_) | Err(CopyFailure::Refused(_)) => Err(Error::ExportFailed(
+            "a media file changed while it was exported".into(),
+        )),
+        Err(CopyFailure::Read(source) | CopyFailure::Write(source)) => Err(io_err(source)),
     }
 }
 
 /// Every row and the stored settings, read in one transaction so the
-/// tables agree, each table sorted by id (`card_tags` by card, then tag).
-fn read_document(conn: &Connection, now: i64) -> Result<Document> {
+/// tables agree, each table sorted by id (`card_tags` by card, then tag),
+/// and the media rows ([`media_rows`]). The document's `media` is empty:
+/// the caller adds the files it finds.
+fn read_document(conn: &Connection, now: i64) -> Result<(Document, Vec<MediaRow>)> {
     let tx = conn.unchecked_transaction()?;
     let decks = tx
         .prepare("SELECT id, name, created_at, updated_at, deleted_at FROM decks ORDER BY id")?
@@ -121,6 +214,7 @@ fn read_document(conn: &Connection, now: i64) -> Result<Document> {
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
+    let media = media_rows(&tx)?;
     let stored = stored_settings(&tx)?;
     let settings = SettingsRecord {
         desired_retention: stored.desired_retention,
@@ -130,23 +224,56 @@ fn read_document(conn: &Connection, now: i64) -> Result<Document> {
     };
     // Read only: ending the transaction cannot lose anything.
     tx.finish()?;
-    Ok(Document {
-        format_version: FORMAT_VERSION,
-        exported_at: now,
-        decks,
-        cards,
-        tags,
-        card_tags,
-        review_events,
-        settings,
-        media: Vec::new(),
-    })
+    Ok((
+        Document {
+            format_version: FORMAT_VERSION,
+            exported_at: now,
+            decks,
+            cards,
+            tags,
+            card_tags,
+            review_events,
+            settings,
+            media: Vec::new(),
+        },
+        media,
+    ))
 }
 
-/// Writes `bytes` to `<path>.partial` (mode `0600`), syncs it, renames it
-/// to `path` and syncs the directory. The partial file is removed on
+/// A media row and the file it names, if Rappel can name one.
+type MediaRow = (MediaRecord, Option<MediaRef>);
+
+/// The media rows, sorted by hash, each with its file: `None` for a row
+/// whose hash or type Rappel cannot name (the schema's CHECKs keep them
+/// out, but a damaged database may have one), which the export counts as
+/// missing.
+fn media_rows(conn: &Connection) -> Result<Vec<MediaRow>> {
+    let rows = conn
+        .prepare("SELECT hash, mime, bytes, created_at FROM media ORDER BY hash")?
+        .query_map([], |r| {
+            Ok(MediaRecord {
+                hash: r.get(0)?,
+                mime: r.get(1)?,
+                bytes: r.get(2)?,
+                created_at: r.get(3)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows
+        .into_iter()
+        .map(|record| {
+            let media = parse_hex(record.hash.as_bytes())
+                .zip(MediaKind::from_mime(&record.mime))
+                .map(|(hash, kind)| MediaRef::new(hash, kind));
+            (record, media)
+        })
+        .collect())
+}
+
+/// Writes `<path>.partial` (mode `0600`) with `write`, syncs it, renames
+/// it to `path` and syncs the directory. The partial file is removed on
 /// error.
-fn write_file_atomically(path: &Path, bytes: &[u8]) -> Result<()> {
+fn write_file_atomically<T>(path: &Path, write: impl FnOnce(&mut File) -> Result<T>) -> Result<T> {
     let io_err = |p: &Path| {
         let path = p.to_path_buf();
         move |source| Error::Io { path, source }
@@ -167,7 +294,7 @@ fn write_file_atomically(path: &Path, bytes: &[u8]) -> Result<()> {
             .mode(0o600)
             .open(&partial)
             .map_err(io_err(&partial))?;
-        file.write_all(bytes).map_err(io_err(&partial))?;
+        let value = write(&mut file)?;
         file.sync_all().map_err(io_err(&partial))?;
         fs::rename(&partial, path).map_err(io_err(path))?;
         if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
@@ -175,7 +302,7 @@ fn write_file_atomically(path: &Path, bytes: &[u8]) -> Result<()> {
                 .and_then(|d| d.sync_all())
                 .map_err(io_err(dir))?;
         }
-        Ok(())
+        Ok(value)
     })();
     if result.is_err() {
         // Best effort: the error being returned matters more.

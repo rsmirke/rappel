@@ -285,6 +285,7 @@ mod format;
 mod fuzz;
 mod large;
 mod log_and_tags;
+mod media;
 mod oracle;
 mod property;
 mod refused;

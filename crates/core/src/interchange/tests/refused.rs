@@ -477,8 +477,15 @@ fn values_are_checked() {
             },
         ),
         (
-            |d| d["media"] = json!([{"hash": "x"}]),
-            ImportProblem::UnsupportedMedia,
+            |d| {
+                d["media"] = json!([{
+                    "hash": "f".repeat(64),
+                    "mime": "image/png",
+                    "bytes": 3,
+                    "created_at": 0
+                }]);
+            },
+            field("media", 0, "hash", FieldProblem::NoMediaFile),
         ),
     ];
     for (i, (mutate, expected)) in cases.into_iter().enumerate() {

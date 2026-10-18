@@ -42,12 +42,21 @@ pub(super) fn export_file_name(year: i32, month: i32, day: i32) -> String {
     format!("rappel-{year:04}-{month:02}-{day:02}.{FILE_EXTENSION}")
 }
 
-pub(super) fn exported_text(path: &Path) -> String {
+/// The export's toast: the file's name, and how many media files could
+/// not go in (missing from the media folder or damaged, ADR 0054).
+pub(super) fn exported_text(path: &Path, missing_media: usize) -> String {
     let name = path.file_name().map_or_else(
         || path.display().to_string(),
         |n| n.to_string_lossy().into_owned(),
     );
-    format!("Exported to “{name}”")
+    match missing_media {
+        0 => format!("Exported to “{name}”"),
+        1 => format!("Exported to “{name}”, without 1 media file that is missing or damaged"),
+        n => format!(
+            "Exported to “{name}”, without {} that are missing or damaged",
+            count(n, "media file", "media files")
+        ),
+    }
 }
 
 /// The toast for a refused file. A file from an early test version says
@@ -100,11 +109,18 @@ pub(super) fn imported_text(report: &ImportReport) -> String {
         (None, Some(revived)) => format!("Brought back {revived}"),
         (None, None) => {
             let tags = report.tags + report.card_tags > 0;
-            match (tags, report.settings_applied) {
-                (true, true) => "Imported tags and settings".to_owned(),
-                (true, false) => "Imported tags".to_owned(),
-                (false, true) => "Imported settings".to_owned(),
-                (false, false) => "Nothing was imported: everything was already here".to_owned(),
+            let parts: Vec<&str> = [
+                (tags, "tags"),
+                (report.media > 0, "media files"),
+                (report.settings_applied, "settings"),
+            ]
+            .into_iter()
+            .filter_map(|(on, part)| on.then_some(part))
+            .collect();
+            match parts.as_slice() {
+                [] => "Nothing was imported: everything was already here".to_owned(),
+                [one] => format!("Imported {one}"),
+                [rest @ .., last] => format!("Imported {} and {last}", rest.join(", ")),
             }
         }
     }
@@ -159,6 +175,12 @@ pub(super) fn plan_view(summary: &ImportSummary) -> PlanView {
         sentences.push(format!(
             "This puts {} on cards.",
             count(summary.card_tags.new, "tag", "tags")
+        ));
+    }
+    if summary.media.new > 0 {
+        sentences.push(format!(
+            "This adds {}.",
+            count(summary.media.new, "media file", "media files")
         ));
     }
     if let Some(revived) = revived {
@@ -232,6 +254,7 @@ pub(super) fn conflicts_text(
                     }
                 },
                 Conflict::TagDiffers(_) => "A tag has another name in the file".to_owned(),
+                Conflict::MediaDiffers(_) => "A media file is different in the file".to_owned(),
                 Conflict::AlreadyUndone { .. } => {
                     "The file undoes a review or reset that is already undone here".to_owned()
                 }
@@ -290,10 +313,34 @@ mod tests {
 
     #[test]
     fn the_export_toast_names_only_the_file() {
+        let path = Path::new("/home/me/Documents/rappel-2026-10-16.rappel");
         assert_eq!(
-            exported_text(Path::new("/home/me/Documents/rappel-2026-10-16.rappel")),
+            exported_text(path, 0),
             "Exported to “rappel-2026-10-16.rappel”"
         );
+        assert_eq!(
+            exported_text(path, 1),
+            "Exported to “rappel-2026-10-16.rappel”, without 1 media file that is missing or damaged"
+        );
+        assert_eq!(
+            exported_text(path, 1_200),
+            "Exported to “rappel-2026-10-16.rappel”, without 1,200 media files that are missing or damaged"
+        );
+    }
+
+    #[test]
+    fn new_media_files_are_counted() {
+        let mut s = summary(counts(0, 1), counts(0, 1), counts(0, 0));
+        s.media = counts(2, 1);
+        let view = plan_view(&s);
+        assert!(view.can_import);
+        assert!(
+            view.body.starts_with("This adds 2 media files. "),
+            "{}",
+            view.body
+        );
+        s.media = counts(0, 3);
+        assert!(!plan_view(&s).can_import);
     }
 
     #[test]
@@ -456,6 +503,7 @@ mod tests {
             tags: 0,
             card_tags: 0,
             review_events: 0,
+            media: 0,
             settings_applied: false,
             revived_decks: 0,
             revived_cards: 0,
@@ -501,6 +549,16 @@ mod tests {
             ..settings
         };
         assert_eq!(imported_text(&both), "Imported tags and settings");
+        let media = ImportReport {
+            media: 3,
+            ..report.clone()
+        };
+        assert_eq!(imported_text(&media), "Imported media files");
+        let all = ImportReport { media: 3, ..both };
+        assert_eq!(
+            imported_text(&all),
+            "Imported tags, media files and settings"
+        );
     }
 
     #[test]

@@ -8,6 +8,7 @@ pub mod domain;
 mod error;
 mod id;
 pub mod interchange;
+pub mod media;
 pub mod scheduling;
 pub mod stats;
 pub mod storage;

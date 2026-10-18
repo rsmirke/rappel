@@ -13,9 +13,11 @@ use rusqlite::{Connection, OptionalExtension, Statement, params};
 use sha2::{Digest, Sha256};
 
 use super::format::{
-    CardRecord, CardTagRecord, DeckRecord, EventRecord, FORMAT_VERSION, SettingsRecord, TagRecord,
+    CardRecord, CardTagRecord, DeckRecord, EventRecord, FORMAT_VERSION, MediaRecord,
+    SettingsRecord, TagRecord,
 };
 use super::import::{Outcome, compare};
+use super::media::MediaList;
 use super::notes::{Candidates, EventNote, Locate, Notes, UndoNote, name_digest, target_key};
 use super::stream::{Sink, Stopped, Table};
 use super::validate::{
@@ -65,6 +67,8 @@ pub(super) struct Found {
     pub(super) settings: SettingsRecord,
     /// Applying: the cards that got log entries, to rebuild.
     pub(super) reviewed: Vec<String>,
+    /// The media records, each marked new or not.
+    pub(super) media: MediaList,
 }
 
 /// The queries that compare a row with the database.
@@ -78,6 +82,7 @@ struct Reads<'c> {
     card_tag: Statement<'c>,
     event: Statement<'c>,
     undone_by: Statement<'c>,
+    media: Statement<'c>,
 }
 
 /// The writes of an apply.
@@ -100,6 +105,7 @@ mod code {
     pub(super) const CARD_TAG: u8 = 4;
     pub(super) const EVENT: u8 = 5;
     pub(super) const SETTINGS: u8 = 6;
+    pub(super) const MEDIA: u8 = 7;
     pub(super) const NEW: u8 = 0;
     pub(super) const PRESENT: u8 = 1;
     pub(super) const REVIVED: u8 = 2;
@@ -145,7 +151,7 @@ pub(super) struct Engine<'c> {
     reviewed: Vec<bool>,
     exported_at: Option<i64>,
     settings: Option<SettingsRecord>,
-    has_media: bool,
+    media: MediaList,
     /// Taken before anything is written.
     has_decks: bool,
     stored: StoredSettings,
@@ -161,12 +167,14 @@ impl std::fmt::Debug for Engine<'_> {
 
 impl<'c> Engine<'c> {
     /// An engine on `conn`; `write` to apply. `exact` to read one list at
-    /// a time and report problems.
+    /// a time and report problems. `media_entries` is how many media
+    /// entries the archive has: no more media records are kept.
     pub(super) fn new(
         conn: &'c Connection,
         limits: Limits,
         write: bool,
         exact: bool,
+        media_entries: usize,
     ) -> crate::Result<Self> {
         let reads = Reads {
             deck: conn.prepare(
@@ -191,6 +199,7 @@ impl<'c> Engine<'c> {
                  FROM review_events WHERE id = ?1",
             )?,
             undone_by: conn.prepare("SELECT id FROM review_events WHERE undoes = ?1")?,
+            media: conn.prepare("SELECT mime, bytes FROM media WHERE hash = ?1")?,
         };
         let writes = if write {
             Some(Writes {
@@ -243,7 +252,7 @@ impl<'c> Engine<'c> {
             reviewed: Vec::new(),
             exported_at: None,
             settings: None,
-            has_media: false,
+            media: MediaList::new(media_entries),
             has_decks,
             stored: stored_settings(conn)?,
         })
@@ -268,10 +277,15 @@ impl<'c> Engine<'c> {
 
     /// Takes `exported_at`, `settings` and `media` from an engine that read
     /// them, for one that reads only the lists.
-    pub(super) fn adopt_top_level(&mut self, other: &Self) {
+    pub(super) fn adopt_top_level(&mut self, other: &mut Self) {
         self.exported_at = other.exported_at;
         self.settings = other.settings;
-        self.has_media = other.has_media;
+        self.media = std::mem::take(&mut other.media);
+    }
+
+    /// The media records read.
+    pub(super) fn media(&self) -> &MediaList {
+        &self.media
     }
 
     /// Why the last read stopped, if the engine stopped it.
@@ -314,9 +328,49 @@ impl<'c> Engine<'c> {
         }
     }
 
-    /// `exported_at` and `media`, which come before every list.
+    /// `exported_at` and each media record on its own, which come before
+    /// every list.
     pub(super) fn check_top_level(&self) -> Result<(), ImportProblem> {
-        check_top_level(self.exported_at.unwrap_or(-1), self.has_media)
+        check_top_level(self.exported_at.unwrap_or(-1))?;
+        self.media.problem().map_or(Ok(()), Err)
+    }
+
+    /// Each media record against the database, by hash: new, present (the
+    /// same type and size), or a conflict. After every list, before
+    /// [`Self::finish`]; the files are written by the apply after the
+    /// decisions are confirmed (`super::media::store_new_media`).
+    pub(super) fn classify_media(&mut self) -> Result<(), Stop> {
+        let mut media = std::mem::take(&mut self.media);
+        let result = (|| {
+            for (index, note) in media.notes_mut().iter_mut().enumerate() {
+                let stored: Option<(String, i64)> = self
+                    .reads
+                    .media
+                    .query_row([note.media.hex()], |r| Ok((r.get(0)?, r.get(1)?)))
+                    .optional()?;
+                match stored {
+                    None => {
+                        note.new = true;
+                        self.summary.media.new += 1;
+                        record(&mut self.digest, code::MEDIA, index, code::NEW, &[]);
+                    }
+                    Some((mime, bytes))
+                        if mime == note.media.kind().mime()
+                            && u64::try_from(bytes).ok() == Some(note.bytes) =>
+                    {
+                        self.summary.media.present += 1;
+                        record(&mut self.digest, code::MEDIA, index, code::PRESENT, &[]);
+                    }
+                    Some(_) => {
+                        record(&mut self.digest, code::MEDIA, index, code::CONFLICT, &[]);
+                        self.conflict(Conflict::MediaDiffers(note.media.hex()))?;
+                    }
+                }
+            }
+            Ok(())
+        })();
+        self.media = media;
+        result
     }
 
     /// The settings, checked after every list.
@@ -936,6 +990,7 @@ impl<'c> Engine<'c> {
             digest: self.digest.finalize().into(),
             settings,
             reviewed,
+            media: self.media,
         }
     }
 }
@@ -970,8 +1025,8 @@ impl Sink for Engine<'_> {
         self.settings = Some(settings);
     }
 
-    fn media_item(&mut self) {
-        self.has_media = true;
+    fn media(&mut self, index: usize, media: MediaRecord) {
+        self.media.push(index, &media, &self.limits);
     }
 
     fn table_starts(&mut self, _table: Table) -> Result<(), Stopped> {

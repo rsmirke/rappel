@@ -119,6 +119,19 @@ fn push(out: &mut Markup, inlines: &[Inline], len: &mut Cursor, math: &mut Budge
                 // Never fetched: shown as the Markdown that was typed.
                 ImageTarget::Other(url) => out.text(&format!("![{alt}]({url})"), len),
             },
+            // A placeholder until the audio slice puts a play button here
+            // (SPEC §4.9); nothing is played or opened.
+            Inline::Audio { content, .. } => {
+                out.markup.push_str("<i>");
+                if content.is_empty() {
+                    out.text("[audio]", len);
+                } else {
+                    out.text("[audio: ", len);
+                    push(out, content, len, math);
+                    out.text("]", len);
+                }
+                out.markup.push_str("</i>");
+            }
             Inline::LineBreak => out.text("\n", len),
         }
     }
@@ -285,16 +298,33 @@ mod tests {
         assert_eq!(link_at(&out.links, 0), None);
     }
 
+    /// A media name for tests: 64 hex digits and an extension.
+    fn media(ext: &str) -> String {
+        format!("media:{}.{ext}", "ab".repeat(32))
+    }
+
     #[test]
     fn images_are_placeholders_or_text() {
-        assert_eq!(
-            shown(&markup("![a <cat>](media:ab.png) ![](media:c.png)").markup),
-            "[image: a <cat>] [image]"
-        );
+        let md = format!("![a <cat>]({}) ![]({})", media("png"), media("jpg"));
+        assert_eq!(shown(&markup(&md).markup), "[image: a <cat>] [image]");
         assert_eq!(
             shown(&markup("![x](https://e.org/i.png)").markup),
             "![x](https://e.org/i.png)"
         );
+        // Not a media name: shown as typed, never opened.
+        assert_eq!(
+            shown(&markup("![x](media:ab.png)").markup),
+            "![x](media:ab.png)"
+        );
+    }
+
+    #[test]
+    fn audio_links_are_placeholders() {
+        let md = format!("[a *<b>*]({}) []({})", media("ogg"), media("mp3"));
+        let out = markup(&md);
+        assert_eq!(shown(&out.markup), "[audio: a <b>] [audio]");
+        assert_eq!(out.links, []);
+        assert!(out.markup.starts_with("<i>[audio: a <i>&lt;b&gt;</i>]</i>"));
     }
 
     #[test]
