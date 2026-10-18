@@ -20,6 +20,8 @@ Steps, separated by spaces (use %20 for a space inside type:):
   key:COMBO         e.g. Tab, Return, ctrl+n, ctrl+shift+Return, F10, Escape
   type:TEXT         type characters (ASCII)
   click:X,Y         left click at window coordinates
+  resize:W,H        resize the app's window (as an on-screen keyboard does
+                    on a phone); its top-left corner stays where it is
 Without --steps: wait 6 s, then one shot <out>.png.
 Steps stop after 110 s, and the whole run is killed after 115 s
 (CLAUDE.md: under 2 minutes).
@@ -70,6 +72,19 @@ def on_signal(signum, _frame):
     raise Stop(f"signal {signum}")
 
 
+class XWindowAttributes(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_int), ("y", ctypes.c_int), ("width", ctypes.c_int), ("height", ctypes.c_int),
+                ("border_width", ctypes.c_int), ("depth", ctypes.c_int), ("visual", ctypes.c_void_p),
+                ("root", ctypes.c_ulong), ("class_", ctypes.c_int), ("bit_gravity", ctypes.c_int),
+                ("win_gravity", ctypes.c_int), ("backing_store", ctypes.c_int),
+                ("backing_planes", ctypes.c_ulong), ("backing_pixel", ctypes.c_ulong),
+                ("save_under", ctypes.c_int), ("colormap", ctypes.c_ulong),
+                ("map_installed", ctypes.c_int), ("map_state", ctypes.c_int),
+                ("all_event_masks", ctypes.c_long), ("your_event_mask", ctypes.c_long),
+                ("do_not_propagate_mask", ctypes.c_long), ("override_redirect", ctypes.c_int),
+                ("screen", ctypes.c_void_p)]
+
+
 class X:
     def __init__(self, display):
         self.x11 = ctypes.CDLL("libX11.so.6")
@@ -82,6 +97,13 @@ class X:
         self.xtst.XTestFakeMotionEvent.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_ulong]
         self.x11.XFlush.argtypes = [ctypes.c_void_p]
         self.x11.XCloseDisplay.argtypes = [ctypes.c_void_p]
+        self.x11.XDefaultRootWindow.argtypes = [ctypes.c_void_p]
+        self.x11.XDefaultRootWindow.restype = ctypes.c_ulong
+        self.x11.XQueryTree.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_void_p, ctypes.c_void_p,
+                                        ctypes.c_void_p, ctypes.c_void_p]
+        self.x11.XGetWindowAttributes.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_void_p]
+        self.x11.XResizeWindow.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_uint, ctypes.c_uint]
+        self.x11.XFree.argtypes = [ctypes.c_void_p]
         self.dpy = self.x11.XOpenDisplay(display.encode())
         if not self.dpy:
             raise Stop(f"cannot open {display}")
@@ -113,6 +135,29 @@ class X:
         for ch in text:
             name = NAMED.get(ch, ch)
             self.press(["Shift_L", name] if ch in SHIFTED else [name])
+
+    def resize(self, width, height):
+        """Resizes the largest top-level window (the app's: there is no
+        window manager, so the app's toplevel is a child of the root)."""
+        root = self.x11.XDefaultRootWindow(self.dpy)
+        root_ret, parent_ret = ctypes.c_ulong(), ctypes.c_ulong()
+        children, count = ctypes.POINTER(ctypes.c_ulong)(), ctypes.c_uint()
+        if not self.x11.XQueryTree(self.dpy, root, ctypes.byref(root_ret), ctypes.byref(parent_ret),
+                                   ctypes.byref(children), ctypes.byref(count)):
+            raise Stop("cannot list windows")
+        best, best_area = None, 0
+        attrs = XWindowAttributes()
+        for i in range(count.value):
+            if self.x11.XGetWindowAttributes(self.dpy, children[i], ctypes.byref(attrs)) \
+                    and attrs.map_state == 2 and attrs.width * attrs.height > best_area:
+                best, best_area = children[i], attrs.width * attrs.height
+        if children:
+            self.x11.XFree(children)
+        if best is None:
+            raise Stop("no window to resize")
+        self.x11.XResizeWindow(self.dpy, best, width, height)
+        self.x11.XFlush(self.dpy)
+        time.sleep(0.1)
 
     def click(self, x, y):
         self.xtst.XTestFakeMotionEvent(self.dpy, -1, x, y, 0)
@@ -248,6 +293,9 @@ def main():
                 x.combo(arg)
             elif kind == "type":
                 x.type(arg)
+            elif kind == "resize":
+                rw, rh = (int(v) for v in arg.split(","))
+                x.resize(rw, rh)
             elif kind == "click":
                 cx, cy = (int(v) for v in arg.split(","))
                 x.click(cx, cy)

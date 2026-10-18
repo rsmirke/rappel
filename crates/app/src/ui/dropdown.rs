@@ -277,6 +277,13 @@ mod tests {
                 .child(&dropdown)
                 .build();
             window.present();
+            // A popover shows only over a mapped window: under load the
+            // window can map after `present` returns (a flaky failure seen
+            // in slice 6, ADR 0058).
+            assert!(crate::testing::settle_until(
+                || dropdown.is_mapped(),
+                std::time::Duration::from_secs(5)
+            ));
             dropdown.activate();
             let popover = || descendant::<gtk::Popover>(dropdown.upcast_ref());
             assert!(crate::testing::settle_until(

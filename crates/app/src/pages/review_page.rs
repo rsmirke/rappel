@@ -73,6 +73,8 @@ mod imp {
         #[template_child]
         pub stack: TemplateChild<adw::ViewStack>,
         #[template_child]
+        pub card_scroller: TemplateChild<gtk::ScrolledWindow>,
+        #[template_child]
         pub card_area: TemplateChild<gtk::Box>,
         #[template_child]
         pub front_box: TemplateChild<gtk::Box>,
@@ -562,17 +564,7 @@ impl ReviewPage {
     /// at 360 × 294.
     fn setup_short_summary(&self) {
         let imp = self.imp();
-        let summary = imp.summary_page.downgrade();
-        breakpoint::follow(&imp.short_breakpoint, move |short| {
-            if let Some(summary) = summary.upgrade() {
-                if short {
-                    summary.add_css_class("compact");
-                } else {
-                    summary.remove_css_class("compact");
-                }
-                summary.set_icon_name((!short).then_some(SUMMARY_ICON));
-            }
-        });
+        breakpoint::compact_status_page(&imp.short_breakpoint, &imp.summary_page, SUMMARY_ICON);
     }
 
     /// Fades the back in, from its first step: `play` restarts the
@@ -604,9 +596,36 @@ impl ReviewPage {
         // Only the reveal animates; a redraw after an edit does not.
         if self.show_back(&back) {
             self.animate_reveal();
+            self.scroll_to_answer_when_laid_out();
         }
         self.set_controls(Controls::Grade);
         imp.card_area.grab_focus();
+    }
+
+    /// Once the answer is laid out (the next frame: a tick callback runs
+    /// before that frame's layout, so the second one sees it), scrolls the
+    /// card so the answer is in view if it starts too low to be seen
+    /// (`answer_scroll`). A phone with a tall front would otherwise show
+    /// the grade buttons with no answer on screen.
+    fn scroll_to_answer_when_laid_out(&self) {
+        let frames = std::cell::Cell::new(0);
+        self.add_tick_callback(move |page, _| {
+            frames.set(frames.get() + 1);
+            if frames.get() < 2 {
+                return glib::ControlFlow::Continue;
+            }
+            let imp = page.imp();
+            if imp.revealed.get()
+                && let Some(bounds) = imp.back_part.compute_bounds(&*imp.card_scroller)
+            {
+                let adjustment = imp.card_scroller.vadjustment();
+                let delta = answer_scroll(f64::from(bounds.y()), adjustment.page_size());
+                if delta != 0.0 {
+                    adjustment.set_value(adjustment.value() + delta);
+                }
+            }
+            glib::ControlFlow::Break
+        });
     }
 
     /// Shows the front `front_md`, or its start if it is too long to lay
@@ -631,8 +650,16 @@ impl ReviewPage {
     /// view (`render::Images`). The grade buttons are in the bottom bar,
     /// outside the scrolled card, so no image can push them off screen.
     fn images(&self) -> Images {
-        let folder = self.imp().state.get().and_then(AppState::media_folder);
-        Images::new(folder, self.height())
+        let imp = self.imp();
+        let folder = imp.state.get().and_then(AppState::media_folder);
+        // The card's own view, between the header and the buttons: on a
+        // phone held sideways the page is 360 px tall but the card has
+        // about 240 (ADR 0058). Before the first layout, the page's.
+        let view = match imp.card_scroller.height() {
+            0 => self.height(),
+            height => height,
+        };
+        Images::new(folder, view)
     }
 
     /// Parses the back `back_md` (or its start, as for the front) for
@@ -1132,6 +1159,26 @@ fn reveal_step(progress: f64) -> (f64, i32) {
     )]
     let margin = (REVEAL_SLIDE * (1.0 - progress)).round() as i32;
     (progress, margin)
+}
+
+/// The least of the answer that must be in view after the reveal, in
+/// pixels: a few lines of text.
+const ANSWER_SHOWN: f64 = 96.0;
+
+/// Room left above the answer when the card scrolls to it, in pixels.
+const ANSWER_MARGIN: f64 = 12.0;
+
+/// How far to scroll the card at the reveal, for an answer starting
+/// `back_top` pixels below the top of a view `page` pixels tall: none if
+/// at least [`ANSWER_SHOWN`] of it is in view already (or the view is not
+/// laid out), else so that it starts [`ANSWER_MARGIN`] below the top. The
+/// scrolled window clamps a scroll past its end.
+fn answer_scroll(back_top: f64, page: f64) -> f64 {
+    if page <= 0.0 || back_top + ANSWER_SHOWN.min(page / 2.0) <= page {
+        0.0
+    } else {
+        back_top - ANSWER_MARGIN
+    }
 }
 
 /// The summary's icon, a check mark. Keep it equal to `summary_page` in
@@ -1913,6 +1960,69 @@ mod tests {
                 "{description}"
             );
         }
+    }
+
+    /// No swipe grades or reveals (SPEC §4.8, ADR 0058): nothing on the
+    /// review page, front or back, images and audio controls included,
+    /// has a swipe, drag, pan or long-press gesture of Rappel's. GTK's own
+    /// are allowed, as they only scroll (a scrolled window's kinetic
+    /// scrolling, a scrollbar), move the window (the header's window
+    /// handle) or open Back's history menu. `AdwNavigationView`'s swipe back
+    /// is on the view around the page and only leaves it, as Back does.
+    #[test]
+    fn no_gesture_on_the_review_page_can_grade() {
+        const GTK_OWN: [&str; 4] = [
+            "GtkScrolledWindow",
+            "GtkRange",
+            "GtkWindowHandle",
+            "AdwBackButton",
+        ];
+        fn gestures(widget: &gtk::Widget, found: &mut Vec<String>) {
+            let controllers = widget.observe_controllers();
+            for i in 0..controllers.n_items() {
+                if let Some(controller) = controllers.item(i)
+                    && !GTK_OWN.contains(&widget.type_().name())
+                    && (controller.is::<gtk::GestureSwipe>()
+                        || controller.is::<gtk::GestureDrag>()
+                        || controller.is::<gtk::GestureLongPress>())
+                {
+                    found.push(format!(
+                        "{} on {}",
+                        controller.type_().name(),
+                        widget.type_().name()
+                    ));
+                }
+            }
+            let mut child = widget.first_child();
+            while let Some(c) = child {
+                gestures(&c, found);
+                child = c.next_sibling();
+            }
+        }
+        crate::testing::with_widgets(|| {
+            let image = format!("![a picture](media:{}.png)", "a".repeat(64));
+            let audio = format!("[a sound](media:{}.wav)", "b".repeat(64));
+            let (_tmp, _state, page, _ids) =
+                page_with(&[(format!("{image}\n\n{audio}"), format!("back\n\n{image}"))]);
+            page.reveal();
+            let mut found = Vec::new();
+            gestures(page.upcast_ref(), &mut found);
+            assert!(found.is_empty(), "{found:?}");
+        });
+    }
+
+    #[test]
+    fn the_answer_is_scrolled_into_view_only_when_it_starts_too_low() {
+        // Plenty of the answer in view: no scroll.
+        assert!(answer_scroll(200.0, 500.0).abs() < f64::EPSILON);
+        assert!(answer_scroll(404.0, 500.0).abs() < f64::EPSILON);
+        // Under the view's end, or too little of it shown: to its start.
+        assert!((answer_scroll(450.0, 500.0) - 438.0).abs() < f64::EPSILON);
+        assert!((answer_scroll(900.0, 240.0) - 888.0).abs() < f64::EPSILON);
+        // A short view needs only half of itself shown.
+        assert!(answer_scroll(110.0, 240.0).abs() < f64::EPSILON);
+        // Not laid out: nothing.
+        assert!(answer_scroll(900.0, 0.0).abs() < f64::EPSILON);
     }
 
     #[test]

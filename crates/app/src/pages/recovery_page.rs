@@ -127,7 +127,17 @@ glib::wrapper! {
         @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget;
 }
 
+/// The page's icon, as in `data/recovery_page.blp`, given back after a
+/// short window took it off (`ui::breakpoint::compact_status_page`).
+pub const ICON: &str = "dialog-warning-symbolic";
+
 impl RecoveryPage {
+    /// The page's status page, which the window makes compact on a short
+    /// window (ADR 0058).
+    pub fn status_page(&self) -> adw::StatusPage {
+        self.imp().status.get()
+    }
+
     /// Explains `reason`, lists the backups in `data_dir`, and calls
     /// `on_restored` once a restore or a fresh start succeeds.
     pub fn show(

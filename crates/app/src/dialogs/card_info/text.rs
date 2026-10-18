@@ -7,13 +7,42 @@ use std::time::Duration;
 use rappel_core::domain::Grade;
 use rappel_core::stats::{CardInfo, HistoryEntry};
 
-use crate::ui::text::{count, duration_text, group_digits, interval_text, percent};
+use crate::ui::text::{
+    count, duration_text, group_digits, interval_text, isolate, one_line, percent,
+};
 use crate::ui::time::relative_due;
 
 /// The most history entries the dialog lists, newest first: a card with
 /// thousands of reviews would make the dialog slow to open for rows nobody
 /// scrolls to.
 pub const MAX_HISTORY: usize = 500;
+
+/// The most tags the Tags row names before it counts the rest: a card can
+/// have thousands (ADR 0050, row 31).
+pub const MAX_TAGS: usize = 200;
+
+/// The Tags row's value: every tag, each in a bidi isolate, joined by ", ",
+/// past [`MAX_TAGS`] how many more; `None` (the row hidden) without tags.
+/// It is where a phone shows the names a row's pills cut or count in "+N",
+/// which are tooltips on a desktop (ADR 0058).
+pub fn tags_text(names: &[String]) -> Option<String> {
+    if names.is_empty() {
+        return None;
+    }
+    let mut text = names
+        .iter()
+        .take(MAX_TAGS)
+        .map(|name| isolate(&one_line(name)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let more = names.len().saturating_sub(MAX_TAGS);
+    if more > 0 {
+        text.push_str(" and ");
+        text.push_str(&group_digits(more));
+        text.push_str(" more");
+    }
+    Some(text)
+}
 
 /// A date and time, as the dialog shows one.
 pub type When<'a> = &'a dyn Fn(i64) -> String;
@@ -178,6 +207,19 @@ pub fn history(info: &CardInfo, when: When<'_>) -> History {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_tags_row_names_every_tag_up_to_its_cap() {
+        assert_eq!(tags_text(&[]), None);
+        let names = vec!["maths".to_owned(), "two\nlines".to_owned()];
+        assert_eq!(
+            tags_text(&names).as_deref(),
+            Some("\u{2068}maths\u{2069}, \u{2068}two lines\u{2069}")
+        );
+        let many: Vec<String> = (0..MAX_TAGS + 5).map(|i| format!("t{i}")).collect();
+        let text = tags_text(&many).unwrap_or_default();
+        assert!(text.ends_with("\u{2068}t199\u{2069} and 5 more"), "{text}");
+    }
 
     fn when(t: i64) -> String {
         format!("@{t}")

@@ -15,6 +15,31 @@ pub fn follow(breakpoint: &adw::Breakpoint, f: impl Fn(bool) + 'static) {
     breakpoint.connect_unapply(move |_| f(false));
 }
 
+/// Makes `status` `compact` (libadwaita's style class for a status page in
+/// a small space: less spacing) without its icon while `breakpoint`
+/// applies, and gives `icon` back after, so a short window (a phone held
+/// sideways, 640 × 360) shows the page's text and button rather than a
+/// large icon (ADR 0045, 0052, 0058). A setter can neither add a style
+/// class nor unset the icon, hence the code.
+pub fn compact_status_page(
+    breakpoint: &adw::Breakpoint,
+    status: &adw::StatusPage,
+    icon: &'static str,
+) {
+    use adw::prelude::*;
+    let status = status.downgrade();
+    follow(breakpoint, move |short| {
+        if let Some(status) = status.upgrade() {
+            if short {
+                status.add_css_class("compact");
+            } else {
+                status.remove_css_class("compact");
+            }
+            status.set_icon_name((!short).then_some(icon));
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
@@ -35,6 +60,27 @@ mod tests {
             breakpoint.emit_by_name::<()>("unapply", &[]);
             breakpoint.emit_by_name::<()>("apply", &[]);
             assert_eq!(*seen.borrow(), [true, false, true]);
+        });
+    }
+
+    #[test]
+    fn a_status_page_is_compact_without_its_icon_while_short() {
+        crate::testing::with_widgets(|| {
+            let breakpoint =
+                adw::Breakpoint::new(adw::BreakpointCondition::parse("max-height: 450sp").unwrap());
+            let status = adw::StatusPage::builder()
+                .icon_name("dialog-warning-symbolic")
+                .build();
+            compact_status_page(&breakpoint, &status, "dialog-warning-symbolic");
+            breakpoint.emit_by_name::<()>("apply", &[]);
+            assert!(status.has_css_class("compact"));
+            assert_eq!(status.icon_name(), None);
+            breakpoint.emit_by_name::<()>("unapply", &[]);
+            assert!(!status.has_css_class("compact"));
+            assert_eq!(
+                status.icon_name().as_deref(),
+                Some("dialog-warning-symbolic")
+            );
         });
     }
 }

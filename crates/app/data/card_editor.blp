@@ -278,11 +278,13 @@ template $RappelCardEditor: Adw.Dialog {
           orientation: vertical;
         }
 
-        // Not focusable itself: the rendered labels are not (see
-        // render/mod.rs); only a drawn image is, a button that opens it at
-        // full size (ADR 0055), and an audio link's play button (ADR 0056),
-        // so Tab goes from the tags to the preview's images and audio, then
-        // to the header buttons.
+        // The rendered labels are not focusable (see render/mod.rs); the
+        // preview's content is, so the keyboard can rest there and scroll
+        // it (Up, Down, Page Up, Page Down, Space, Home, End; ADR 0058),
+        // then a drawn image, a button that opens it at full size (ADR
+        // 0055), and an audio link's play button (ADR 0056). Tab goes from
+        // the tags to the preview, its images and audio, then to the
+        // header buttons.
         Gtk.ScrolledWindow preview_pane {
           hscrollbar-policy: never;
           hexpand: true;
@@ -307,10 +309,15 @@ template $RappelCardEditor: Adw.Dialog {
 
                 // Laid out like the review page's card: the front, then the
                 // back under a separator when it has something to show.
-                Gtk.Box {
+                Gtk.Box preview_content {
                   orientation: vertical;
                   spacing: 24;
+                  focusable: true;
                   accessible-role: group;
+
+                  styles [
+                    "preview-content",
+                  ]
 
                   accessibility {
                     label: _("Preview");

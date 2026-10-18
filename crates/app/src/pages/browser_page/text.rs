@@ -440,7 +440,8 @@ pub fn suspended_text(n: usize, suspended: bool) -> String {
 }
 
 pub fn reset_text(n: usize) -> String {
-    format!("Progress reset for {}", cards(n))
+    // Short, so it fits beside Undo at 360 px (ADR 0058).
+    format!("{} reset", cards(n))
 }
 
 pub fn deleted_text(n: usize) -> String {
@@ -774,7 +775,7 @@ mod tests {
         );
         assert_eq!(suspended_text(2, true), "2 cards suspended");
         assert_eq!(suspended_text(1, false), "1 card unsuspended");
-        assert_eq!(reset_text(1_000), "Progress reset for 1,000 cards");
+        assert_eq!(reset_text(1_000), "1,000 cards reset");
         assert_eq!(deleted_text(1), "1 card deleted");
         assert_eq!(
             unchanged_text(),

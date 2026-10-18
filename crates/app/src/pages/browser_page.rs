@@ -1444,7 +1444,7 @@ mod tests {
         let done = perform(&state, &ids[..2], Bulk::Reset, now)
             .unwrap()
             .unwrap();
-        assert_eq!(done.text, "Progress reset for 2 cards");
+        assert_eq!(done.text, "2 cards reset");
         state
             .record_review(&ids[0], Grade::Pass, Duration::ZERO, now)
             .unwrap();

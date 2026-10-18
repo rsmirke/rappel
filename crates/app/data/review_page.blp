@@ -91,7 +91,9 @@ template $RappelReviewPage: Adw.NavigationPage {
         Adw.ViewStackPage {
           name: "card";
 
-          child: Gtk.ScrolledWindow {
+          // Scrolled to the answer at the reveal when the answer would
+          // start below the view (a tall front on a phone; ADR 0058).
+          child: Gtk.ScrolledWindow card_scroller {
             hscrollbar-policy: never;
 
             child: Adw.Clamp {

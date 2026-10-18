@@ -1041,12 +1041,15 @@ mod tests {
                     "zero\u{200b}width",
                 ]
             );
+            // Each name is on one line (`ui::text::one_line`); the pill shows
+            // it whole, wrapping only where it is wider than the field
+            // (ADR 0058).
             for label in &labels {
                 assert!(!label.uses_markup());
-                assert!(label.is_single_line_mode());
-                assert_eq!(label.ellipsize(), gtk::pango::EllipsizeMode::End);
+                assert!(label.wraps());
+                assert_eq!(label.ellipsize(), gtk::pango::EllipsizeMode::None);
             }
-            // Saved as typed: only the pills are drawn on one line.
+            // Saved as typed: only the pills show them on one line.
             assert_eq!(entry.check().names, names);
         });
     }

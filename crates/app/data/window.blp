@@ -8,6 +8,15 @@ template $RappelWindow: Adw.ApplicationWindow {
   width-request: 360;
   height-request: 294;
 
+  // A short window (a phone held sideways, 640 × 360) makes the startup
+  // problem pages (recovery, too new, could not start) `compact` without
+  // their icons, so their text and buttons are on screen rather than a
+  // large icon (window.rs, `ui::breakpoint::compact_status_page`; ADR 0058).
+  // The setting page has its own (data/setting_page.blp).
+  Adw.Breakpoint short_breakpoint {
+    condition ("max-height: 450sp")
+  }
+
   content: Adw.ToastOverlay toast_overlay {
     // One page per startup outcome; window.rs picks the visible one. An
     // AdwViewStack, so the crossfade (after a restore) is libadwaita's

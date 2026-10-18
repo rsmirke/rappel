@@ -22,6 +22,8 @@ template $RappelStatsPage: Adw.NavigationPage {
         // The brief's empty state: icon, title, one sentence, one pill
         // button. The button goes back (`navigation.pop`, an action of
         // AdwNavigationView); its label is set in pages/stats_page.rs.
+        // A plain pill: going back is navigation, not the action the page
+        // suggests (the HIG keeps `suggested-action` for that; ADR 0058).
         child: Adw.StatusPage {
           icon-name: "document-open-recent-symbolic";
           title: _("No Statistics Yet");
@@ -34,7 +36,6 @@ template $RappelStatsPage: Adw.NavigationPage {
 
             styles [
               "pill",
-              "suggested-action",
             ]
           };
         };

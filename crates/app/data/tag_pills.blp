@@ -8,9 +8,13 @@ using Adw 1;
 // single line in a list row, where the tags past a few become one "+N"
 // pill.
 template $RappelTagPills: Gtk.Box {
+  // Natural: each pill keeps its whole name on one line while it fits the
+  // field (a removable pill's name wraps only when wider than the field;
+  // ADR 0058), rather than being shrunk to its longest word.
   Adw.WrapBox wrap_box {
     child-spacing: 6;
     line-spacing: 6;
+    wrap-policy: natural;
   }
 
   Gtk.Box line_box {

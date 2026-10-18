@@ -10,6 +10,7 @@ use rappel_core::{Error, content};
 
 use super::names::Lookup;
 use crate::ui::text::{count, decks_cards_reviews};
+use crate::ui::toast::titled;
 
 /// How many conflicts the "Cannot Import" dialog lists by name.
 pub(super) const SHOWN_CONFLICTS: usize = 5;
@@ -49,11 +50,15 @@ pub(super) fn exported_text(path: &Path, missing_media: usize) -> String {
         || path.display().to_string(),
         |n| n.to_string_lossy().into_owned(),
     );
+    // Toast titles are short (`ui::toast::toast_text`): a long text starts
+    // with a title, and the rest is behind Details.
     match missing_media {
-        0 => format!("Exported to “{name}”"),
-        1 => format!("Exported to “{name}”, without 1 media file that is missing or damaged"),
+        0 => titled("Export done", format!("Exported to “{name}”")),
+        1 => format!(
+            "Media file left out. Exported to “{name}”, without 1 media file that is missing or damaged"
+        ),
         n => format!(
-            "Exported to “{name}”, without {} that are missing or damaged",
+            "Media files left out. Exported to “{name}”, without {} that are missing or damaged",
             count(n, "media file", "media files")
         ),
     }
@@ -64,10 +69,10 @@ pub(super) fn exported_text(path: &Path, missing_media: usize) -> String {
 pub(super) fn refused_text(problem: &ImportProblem) -> String {
     match problem {
         ImportProblem::EarlyTestVersion => {
-            "This file was made by an early test version of Rappel and cannot be imported"
+            "Cannot import this file. It was made by an early test version of Rappel and cannot be imported"
                 .to_owned()
         }
-        other => format!("This file cannot be imported: {other}"),
+        other => format!("Cannot import this file: {other}"),
     }
 }
 
@@ -76,9 +81,9 @@ pub(super) fn refused_text(problem: &ImportProblem) -> String {
 pub(super) fn check_failed_text(err: &Error) -> String {
     match err {
         Error::ImportFileChanged => {
-            "The file changed while it was being checked. Import it again.".to_owned()
+            "The file changed. It changed while it was being checked; import it again.".to_owned()
         }
-        other => format!("The file could not be checked: {other}"),
+        other => format!("Cannot check the file: {other}"),
     }
 }
 
@@ -86,11 +91,11 @@ pub(super) fn check_failed_text(err: &Error) -> String {
 /// imported in every case (ADR 0018, ADR 0053).
 pub(super) fn import_failed_text(err: &Error) -> String {
     match err {
-        Error::ImportPlanStale => "Your data changed while the file was being checked. \
-             Nothing was imported; import it again."
+        Error::ImportPlanStale => "Nothing was imported. Your data changed while the file \
+             was being checked; import it again."
             .to_owned(),
         Error::ImportFileChanged => {
-            "The file changed since it was checked. Nothing was imported; import it again."
+            "Nothing was imported. The file changed since it was checked; import it again."
                 .to_owned()
         }
         other => format!("The import failed, and nothing was imported: {other}"),
@@ -101,6 +106,11 @@ pub(super) fn import_failed_text(err: &Error) -> String {
 /// (ADR 0028). Those are rare beside reviews, and the counts only tell
 /// the user roughly how much a file holds, so they are not named apart.
 pub(super) fn imported_text(report: &ImportReport) -> String {
+    titled("Import done", imported_body(report))
+}
+
+/// What an import added and brought back, in a sentence.
+fn imported_body(report: &ImportReport) -> String {
     let added = decks_cards_reviews(report.decks, report.cards, report.review_events);
     let revived = decks_cards_reviews(report.revived_decks, report.revived_cards, 0);
     match (added, revived) {
@@ -304,6 +314,15 @@ mod tests {
         }
     }
 
+    /// `text` fits a toast whole, or has a first clause short enough to be
+    /// its title (`ui::toast::toast_text`): never the generic one.
+    fn assert_has_a_title(text: &str) {
+        use crate::ui::toast::{FALLBACK_TITLE, ToastText, toast_text};
+        if let ToastText::Detailed { title, .. } = toast_text(text) {
+            assert_ne!(title, FALLBACK_TITLE, "{text}");
+        }
+    }
+
     #[test]
     fn the_export_is_named_by_the_local_date() {
         assert_eq!(export_file_name(2026, 10, 16), "rappel-2026-10-16.rappel");
@@ -315,17 +334,24 @@ mod tests {
     fn the_export_toast_names_only_the_file() {
         let path = Path::new("/home/me/Documents/rappel-2026-10-16.rappel");
         assert_eq!(
+            exported_text(Path::new("/tmp/a.rappel"), 0),
+            "Exported to “a.rappel”"
+        );
+        assert_eq!(
             exported_text(path, 0),
-            "Exported to “rappel-2026-10-16.rappel”"
+            "Export done. Exported to “rappel-2026-10-16.rappel”"
         );
         assert_eq!(
             exported_text(path, 1),
-            "Exported to “rappel-2026-10-16.rappel”, without 1 media file that is missing or damaged"
+            "Media file left out. Exported to “rappel-2026-10-16.rappel”, without 1 media file that is missing or damaged"
         );
         assert_eq!(
             exported_text(path, 1_200),
-            "Exported to “rappel-2026-10-16.rappel”, without 1,200 media files that are missing or damaged"
+            "Media files left out. Exported to “rappel-2026-10-16.rappel”, without 1,200 media files that are missing or damaged"
         );
+        for missing in [0, 1, 1_200] {
+            assert_has_a_title(&exported_text(path, missing));
+        }
     }
 
     #[test]
@@ -516,7 +542,7 @@ mod tests {
         };
         assert_eq!(
             imported_text(&report),
-            "Imported 1 deck and 2 cards, and brought back 3 cards"
+            "Import done. Imported 1 deck and 2 cards, and brought back 3 cards"
         );
         let report = ImportReport {
             decks: 0,
@@ -532,7 +558,7 @@ mod tests {
         };
         assert_eq!(
             imported_text(&report),
-            "Nothing was imported: everything was already here"
+            "Import done. Nothing was imported: everything was already here"
         );
         let tags = ImportReport {
             card_tags: 2,
@@ -557,45 +583,60 @@ mod tests {
         let all = ImportReport { media: 3, ..both };
         assert_eq!(
             imported_text(&all),
-            "Imported tags, media files and settings"
+            "Import done. Imported tags, media files and settings"
         );
+        let many = ImportReport {
+            decks: 12,
+            cards: 840,
+            review_events: 5_210,
+            ..all
+        };
+        assert_has_a_title(&imported_text(&many));
     }
 
     #[test]
     fn a_refused_file_says_why_once() {
         assert_eq!(
             refused_text(&ImportProblem::EarlyTestVersion),
-            "This file was made by an early test version of Rappel and cannot be imported"
+            "Cannot import this file. It was made by an early test version of Rappel and cannot be imported"
         );
         assert_eq!(
             refused_text(&ImportProblem::NotAFile),
-            "This file cannot be imported: it is not a regular file (a folder, a pipe or a device)"
+            "Cannot import this file: it is not a regular file (a folder, a pipe or a device)"
         );
+        assert_has_a_title(&refused_text(&ImportProblem::EarlyTestVersion));
+        assert_has_a_title(&refused_text(&ImportProblem::NotAFile));
     }
 
     #[test]
     fn a_changed_file_says_so_and_nothing_was_imported() {
         assert_eq!(
             check_failed_text(&Error::ImportFileChanged),
-            "The file changed while it was being checked. Import it again."
+            "The file changed. It changed while it was being checked; import it again."
         );
         assert_eq!(
             import_failed_text(&Error::ImportFileChanged),
-            "The file changed since it was checked. Nothing was imported; import it again."
+            "Nothing was imported. The file changed since it was checked; import it again."
         );
         assert_eq!(
             import_failed_text(&Error::ImportPlanStale),
-            "Your data changed while the file was being checked. \
-             Nothing was imported; import it again."
+            "Nothing was imported. Your data changed while the file \
+             was being checked; import it again."
         );
         assert_eq!(
             import_failed_text(&Error::NoBackupDir),
             "The import failed, and nothing was imported: \
              this database cannot be backed up, so nothing can be imported into it"
         );
-        assert!(
-            check_failed_text(&Error::NoBackupDir).starts_with("The file could not be checked: ")
-        );
+        assert!(check_failed_text(&Error::NoBackupDir).starts_with("Cannot check the file: "));
+        for err in [
+            Error::ImportFileChanged,
+            Error::NoBackupDir,
+            Error::ImportPlanStale,
+        ] {
+            assert_has_a_title(&check_failed_text(&err));
+            assert_has_a_title(&import_failed_text(&err));
+        }
     }
 
     #[test]
