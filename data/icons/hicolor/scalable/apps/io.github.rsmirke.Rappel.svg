@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Rappel's app icon: a PLACEHOLDER, to be replaced by a designed icon before
+     release (ADR 0060). Two flashcards, the front one answered. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <!-- The card behind, turned a little. -->
+  <g transform="rotate(-10 64 64)">
+    <rect x="18" y="26" width="84" height="64" rx="10" fill="#1c71d8"/>
+    <rect x="18" y="22" width="84" height="64" rx="10" fill="#62a0ea"/>
+  </g>
+  <!-- The card in front: its side, then its face. -->
+  <rect x="26" y="44" width="88" height="66" rx="10" fill="#c0bfbc"/>
+  <rect x="26" y="40" width="88" height="66" rx="10" fill="#ffffff"/>
+  <rect x="38" y="56" width="44" height="7" rx="3.5" fill="#9a9996"/>
+  <rect x="38" y="70" width="30" height="7" rx="3.5" fill="#c0bfbc"/>
+  <!-- Answered: a check mark in a green circle. -->
+  <circle cx="94" cy="84" r="14" fill="#26a269"/>
+  <circle cx="94" cy="82" r="14" fill="#33d17a"/>
+  <path d="M 87 82 L 92 87 L 101 77" fill="none" stroke="#ffffff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

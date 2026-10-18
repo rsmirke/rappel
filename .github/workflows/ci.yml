@@ -47,6 +47,8 @@ jobs:
           # Sixth line: the C library's locale sources, from which a test
           # makes a French locale with localedef to read the French
           # catalog through gettext itself (ADR 0059).
+          # Seventh line: the validators of the desktop integration drafts
+          # in data/, which the tests run (ADR 0060).
           apt-get install -y --no-install-recommends \
             libgtk-4-dev libadwaita-1-dev libgtksourceview-5-dev gir1.2-gtksource-5 \
             blueprint-compiler libglib2.0-dev-bin \
@@ -54,7 +56,8 @@ jobs:
             xvfb xauth \
             liblcms2-dev libseccomp-dev libfontconfig-dev glycin-loaders bubblewrap \
             gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
-            locales
+            locales \
+            appstream desktop-file-utils
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

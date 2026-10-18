@@ -115,9 +115,10 @@ pub fn translated(
 }
 
 /// Source files that only tests compile (`#[cfg(test)] mod …;`).
-const TEST_ONLY_FILES: [&str; 3] = [
+const TEST_ONLY_FILES: [&str; 4] = [
     "crates/app/src/testing.rs",
     "crates/app/src/ui_files.rs",
+    "crates/app/src/desktop_files.rs",
     "crates/app/src/dialogs/shortcuts.rs",
 ];
 
@@ -191,9 +192,18 @@ const NOT_TRANSLATED: &[(&str, &str, &str)] = &[
     ("crates/app/src/window_state.rs", "too large", "only logged"),
 ];
 
+/// The desktop integration drafts in `data/` (ADR 0060), which packaging
+/// will translate with the catalogs: the `.desktop` entry and the `AppStream`
+/// metainfo.
+pub const DESKTOP_DRAFTS: [&str; 2] = [
+    "data/io.github.rsmirke.Rappel.desktop.in",
+    "data/io.github.rsmirke.Rappel.metainfo.xml.in",
+];
+
 /// Every source file scanned for messages, relative to the repository,
 /// sorted: the app's Rust files (not the translation module itself, nor
-/// the files only tests compile) and its Blueprint files.
+/// the files only tests compile), its Blueprint files and the desktop
+/// integration drafts ([`DESKTOP_DRAFTS`]).
 fn sources() -> Vec<String> {
     fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
         let mut entries: Vec<PathBuf> = std::fs::read_dir(dir)
@@ -224,6 +234,7 @@ fn sources() -> Vec<String> {
             (rust || extension == Some("blp")).then_some(name)
         })
         .collect();
+    names.extend(DESKTOP_DRAFTS.iter().map(|&file| file.to_owned()));
     names.sort();
     for file in TEST_ONLY_FILES {
         assert!(
@@ -242,6 +253,10 @@ fn scan_all() -> Vec<(String, Scan)> {
             let text = read(&repo().join(&file));
             let scan = if Path::new(&file).extension().is_some_and(|e| e == "rs") {
                 extract::scan_rust(&file, &text)
+            } else if file.ends_with(".desktop.in") {
+                extract::scan_desktop(&file, &text)
+            } else if file.ends_with(".metainfo.xml.in") {
+                extract::scan_metainfo(&file, &text)
             } else {
                 extract::scan_blueprint(&file, &text)
             };
@@ -490,6 +505,14 @@ fn form_problems(english: &str, text: &str, french: bool) -> Vec<String> {
     if english.ends_with('…') != text.ends_with('…') {
         problems.push(format!("final … lost or added: {english:?} → {text:?}"));
     }
+    // A `.desktop` file's Keywords: search terms, each ended by a `;` that
+    // is a separator, not punctuation (ADR 0060).
+    let keywords = is_keyword_list(english);
+    if keywords && !is_keyword_list(text) {
+        problems.push(format!(
+            "not a list of search terms each ended by ';': {text:?}"
+        ));
+    }
     for c in ['<', '&'] {
         if text.contains(c) && !english.contains(c) {
             problems.push(format!(
@@ -498,11 +521,26 @@ fn form_problems(english: &str, text: &str, french: bool) -> Vec<String> {
         }
     }
     if french {
-        for problem in french_typography(text) {
+        let text = if keywords {
+            text.replace(';', ",")
+        } else {
+            text.to_owned()
+        };
+        for problem in french_typography(&text) {
             problems.push(format!("{problem}: {text:?}"));
         }
     }
     problems
+}
+
+/// Whether `text` is a `.desktop` Keywords list: terms, none empty or
+/// padded, each ended by a `;`.
+fn is_keyword_list(text: &str) -> bool {
+    text.strip_suffix(';').is_some_and(|terms| {
+        terms
+            .split(';')
+            .all(|term| !term.is_empty() && term.trim() == term)
+    })
 }
 
 #[test]
@@ -829,6 +867,124 @@ fn the_extraction_finds_marked_calls_comments_and_unmarked_text() {
 }
 
 #[test]
+fn the_desktop_drafts_are_read_as_xgettext_reads_them() {
+    let desktop = "[Desktop Entry]\nName=Rappel\n# Translators: Search terms.\n# Keep the semicolons.\nKeywords=cards;study;\nExec=rappel\n\n# Not for translators.\nComment=Memorize\n";
+    let scan = extract::scan_desktop("x.desktop.in", desktop);
+    assert!(scan.errors.is_empty(), "{:?}", scan.errors);
+    let found: Vec<(&str, Option<&str>, usize)> = scan
+        .messages
+        .iter()
+        .map(|m| (m.id.as_str(), m.comment.as_deref(), m.line))
+        .collect();
+    assert_eq!(
+        found,
+        [
+            ("Rappel", None, 2),
+            (
+                "cards;study;",
+                Some("Translators: Search terms. Keep the semicolons."),
+                5
+            ),
+            ("Memorize", None, 9),
+        ]
+    );
+    let merged = extract::merge_desktop(desktop, "fr", |id| {
+        (id == "Memorize").then(|| "Mémorisez".to_owned())
+    })
+    .expect("it reads");
+    assert!(
+        merged.contains("Comment=Memorize\nComment[fr]=Mémorisez\n"),
+        "{merged}"
+    );
+    assert!(!merged.contains("Name[fr]"), "{merged}");
+    let translated = extract::scan_desktop("x.desktop.in", "[Desktop Entry]\nName[fr]=Rappel\n");
+    assert_eq!(
+        translated.errors.len(),
+        1,
+        "a translation in the source is refused"
+    );
+
+    let metainfo = r#"<?xml version="1.0"?>
+<component type="desktop-application">
+  <id>x</id>
+  <name>Rappel</name>
+  <!-- Translators: At most 35 characters. -->
+  <summary>Memorize
+    with flashcards</summary>
+  <developer id="x"><name translate="no">Someone</name></developer>
+  <description>
+    <p>One.</p>
+    <ul><li>Two</li></ul>
+  </description>
+  <url type="homepage">https://example.org/?a=1&amp;b=2</url>
+  <screenshots><screenshot type="default"><image>i.png</image><caption>Three</caption></screenshot></screenshots>
+  <releases>
+    <release version="1" date="2026-01-01"><description translate="no"><p>Not this</p></description></release>
+    <release version="0" date="2025-01-01"><description><p>Four</p></description></release>
+  </releases>
+</component>
+"#;
+    let scan = extract::scan_metainfo("x.metainfo.xml.in", metainfo);
+    assert!(scan.errors.is_empty(), "{:?}", scan.errors);
+    let found: Vec<(&str, Option<&str>)> = scan
+        .messages
+        .iter()
+        .map(|m| (m.id.as_str(), m.comment.as_deref()))
+        .collect();
+    assert_eq!(
+        found,
+        [
+            ("Rappel", None),
+            (
+                "Memorize with flashcards",
+                Some("Translators: At most 35 characters.")
+            ),
+            ("One.", None),
+            ("Two", None),
+            ("Three", None),
+            ("Four", None),
+        ]
+    );
+    let merged = extract::merge_metainfo(metainfo, "fr", |id| Some(format!("«{id}» & co")))
+        .expect("it reads");
+    assert!(
+        merged.contains("with flashcards</summary>\n  <summary xml:lang=\"fr\">«Memorize with flashcards» &amp; co</summary>"),
+        "{merged}"
+    );
+    assert!(
+        merged.contains("<li>Two</li>\n    <li xml:lang=\"fr\">«Two» &amp; co</li>"),
+        "{merged}"
+    );
+    assert_eq!(merged.matches("xml:lang").count(), 6);
+    for bad in [
+        "<component><summary>A <em>b</em></summary></component>",
+        "<component><summary>A &amp; b</summary></component>",
+        "<component><summary xml:lang=\"fr\">A</summary></component>",
+        "<component><summary></summary></component>",
+        "<component><description><p>A</p></component>",
+    ] {
+        let scan = extract::scan_metainfo("x", bad);
+        assert_eq!(scan.errors.len(), 1, "{bad}");
+    }
+}
+
+#[test]
+fn keyword_lists_keep_their_semicolons() {
+    assert!(is_keyword_list("cards;study;"));
+    assert!(!is_keyword_list("cards;study"));
+    assert!(!is_keyword_list("cards;;study;"));
+    assert!(!is_keyword_list("Done; next"));
+    assert_eq!(
+        form_problems("cards;study;", "cartes;étudier;", true),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        form_problems("cards;study;", "cartes, étudier", true).len(),
+        1
+    );
+}
+
+#[test]
 fn a_merge_keeps_translations_and_puts_removed_ones_aside() {
     let entry = |id: &str, strs: &[&str]| Entry {
         id: id.to_owned(),
@@ -1135,7 +1291,12 @@ fn toasts_keep_their_titles_in_french() {
     let by_key: HashMap<String, &Entry> = french.iter().map(|e| (e.key(), e)).collect();
     let mut problems = Vec::new();
     for entry in template.iter().filter(|e| !e.id.is_empty()) {
-        if NOT_TOASTS.contains(&entry.id.as_str()) {
+        // The desktop integration drafts' messages are not the app's.
+        let drafts_only = entry
+            .references
+            .iter()
+            .all(|file| DESKTOP_DRAFTS.contains(&file.as_str()));
+        if NOT_TOASTS.contains(&entry.id.as_str()) || drafts_only {
             continue;
         }
         let Some(translated) = by_key.get(&entry.key()) else {

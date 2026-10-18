@@ -17,11 +17,11 @@
 //! a test asks for French ([`tests::in_french`]).
 
 #[cfg(test)]
-mod extract;
+pub mod extract;
 // The app reads catalogs through the C library; `build.rs` includes this
 // module itself to compile them, and the tests use it to check them.
 #[cfg(test)]
-mod po;
+pub mod po;
 #[cfg(test)]
 pub mod tests;
 
