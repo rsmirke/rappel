@@ -355,6 +355,15 @@ fn folder_with_history(tmp: &tempfile::TempDir) -> (std::path::PathBuf, Vec<Stri
     (dir, ids)
 }
 
+/// The open store after a reset that leaves no damaged setting, and
+/// whether it reset anything.
+fn opened(reset: SettingReset) -> (Store, bool) {
+    match reset.then {
+        AfterReset::Opened(store) => (store, reset.was_reset),
+        AfterReset::Damaged(key) => panic!("{key} is still damaged"),
+    }
+}
+
 /// The settings `folder_with_history` stores.
 const CHANGED: Settings = Settings {
     desired_retention: 0.85,
@@ -460,8 +469,9 @@ fn resetting_a_damaged_setting_puts_its_default_back_and_nothing_else() {
         damage(&dir, key, "damaged");
         let backups_before = list_backups(&dir).unwrap().len();
 
-        let store = reset_setting(&dir, key).unwrap();
+        let (store, was_reset) = opened(reset_setting(&dir, key).unwrap());
 
+        assert!(was_reset, "{key}");
         assert_eq!(
             store.settings().unwrap(),
             with_default(CHANGED, key),
@@ -539,17 +549,16 @@ fn a_second_damaged_setting_is_reported_after_the_first_is_reset() {
         })
     ));
 
-    let err = reset_setting(&dir, SettingKey::DesiredRetention).unwrap_err();
+    let reset = reset_setting(&dir, SettingKey::DesiredRetention).unwrap();
 
+    assert!(reset.was_reset);
     assert!(
         matches!(
-            err,
-            Error::DamagedSetting {
-                key: SettingKey::MaxReviewsPerDay,
-                ..
-            }
+            reset.then,
+            AfterReset::Damaged(SettingKey::MaxReviewsPerDay)
         ),
-        "{err}"
+        "{:?}",
+        reset.then
     );
     let db = dir.join(DB_FILE_NAME);
     assert_eq!(stored_value(&db, SettingKey::DesiredRetention), None);
@@ -557,7 +566,7 @@ fn a_second_damaged_setting_is_reported_after_the_first_is_reset() {
         stored_value(&db, SettingKey::MaxReviewsPerDay).as_deref(),
         Some("lots")
     );
-    let store = reset_setting(&dir, SettingKey::MaxReviewsPerDay).unwrap();
+    let (store, _) = opened(reset_setting(&dir, SettingKey::MaxReviewsPerDay).unwrap());
     assert_eq!(
         store.settings().unwrap(),
         Settings {
@@ -575,7 +584,8 @@ fn resetting_a_setting_that_is_not_damaged_changes_nothing() {
     drop(Store::open(&dir).unwrap());
     let backups = list_backups(&dir).unwrap().len();
     for key in SettingKey::ALL {
-        let store = reset_setting(&dir, key).unwrap();
+        let (store, was_reset) = opened(reset_setting(&dir, key).unwrap());
+        assert!(!was_reset, "{key}");
         assert_eq!(store.settings().unwrap(), CHANGED, "{key}");
     }
     assert_eq!(list_backups(&dir).unwrap().len(), backups, "no backup");

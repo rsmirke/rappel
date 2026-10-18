@@ -40,7 +40,10 @@ type OnTooNew = dyn Fn(i64, u32);
 
 /// Called when the database the page installed has a damaged stored
 /// setting, with its key (ADR 0052).
-type OnDamagedSetting = dyn Fn(rappel_core::domain::SettingKey);
+/// Also says how the database was installed and where the old files went
+/// (`replaced`, `set_aside`), for the window's toast.
+type OnDamagedSetting =
+    dyn Fn(rappel_core::domain::SettingKey, Recovered, Option<PathBuf>, Option<PathBuf>);
 
 mod imp {
     use std::cell::{Cell, RefCell};
@@ -154,7 +157,11 @@ impl RecoveryPage {
     /// installed has a damaged stored setting: the window then shows the
     /// page that resets it, as at startup (ADR 0052). There is one such
     /// callback.
-    pub fn set_on_damaged_setting(&self, f: impl Fn(rappel_core::domain::SettingKey) + 'static) {
+    pub fn set_on_damaged_setting(
+        &self,
+        f: impl Fn(rappel_core::domain::SettingKey, Recovered, Option<PathBuf>, Option<PathBuf>)
+        + 'static,
+    ) {
         let f: Rc<OnDamagedSetting> = Rc::new(f);
         self.imp()
             .on_damaged_setting
@@ -166,16 +173,23 @@ impl RecoveryPage {
     fn damaged_setting<T>(
         &self,
         result: &Result<rappel_core::Result<T>, worker::Panicked>,
+        how: Recovered,
     ) -> bool {
-        let Ok(Err(rappel_core::Error::DamagedSetting { key, .. })) = result else {
-            return false;
+        let (key, replaced, set_aside) = match result {
+            Ok(Err(rappel_core::Error::InstalledWithDamagedSetting {
+                key,
+                replaced,
+                set_aside,
+            })) => (*key, replaced.clone(), set_aside.clone()),
+            Ok(Err(rappel_core::Error::DamagedSetting { key, .. })) => (*key, None, None),
+            _ => return false,
         };
         tracing::warn!(%key, "the installed database has a damaged setting");
         let imp = self.imp();
         imp.errors.clear();
         let handler = imp.on_damaged_setting.borrow().as_ref().map(Callback::get);
         if let Some(handler) = handler {
-            handler(*key);
+            handler(key, how, replaced, set_aside);
         }
         true
     }
@@ -290,7 +304,7 @@ impl RecoveryPage {
             AppState::restore_unopened(&worker_dir, &backup)
         })
         .await;
-        if self.damaged_setting(&result) {
+        if self.damaged_setting(&result, Recovered::Backup) {
             return;
         }
 
@@ -349,7 +363,7 @@ impl RecoveryPage {
         let worker_dir = dir.clone();
         let result =
             worker::run(self, move || AppState::finish_restore_unopened(&worker_dir)).await;
-        if self.damaged_setting(&result) {
+        if self.damaged_setting(&result, Recovered::Finished) {
             return;
         }
 
@@ -427,7 +441,7 @@ impl RecoveryPage {
         // The app is held while it runs, as for a restore.
         let worker_dir = dir.clone();
         let result = worker::run(self, move || AppState::start_fresh_unopened(&worker_dir)).await;
-        if self.damaged_setting(&result) {
+        if self.damaged_setting(&result, Recovered::Fresh) {
             return;
         }
 

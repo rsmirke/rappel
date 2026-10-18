@@ -10,19 +10,18 @@ use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::glib;
 use rappel_core::domain::SettingKey;
-use rappel_core::storage::Store;
+use rappel_core::storage::{AfterReset, SettingReset, Store};
 
-use crate::startup::{
-    DAMAGED_SETTING_TITLE, damaged_setting_text, data_folder_line, setting_reset_text,
-};
+use crate::startup::{damaged_setting_text, data_folder_line, setting_reset_text};
 use crate::state::AppState;
 use crate::ui::callback::Callback;
 use crate::ui::toast::{info_toast, show_toast_from};
 use crate::ui::worker;
 
-/// Called with the data directory, the open store and the key that was
-/// reset, once no stored setting is damaged any more.
-type OnReset = dyn Fn(PathBuf, Store, SettingKey);
+/// Called with the data directory, the open store, the key and whether it
+/// was reset (`false`: it was no longer damaged), once no stored setting is
+/// damaged any more.
+type OnReset = dyn Fn(PathBuf, Store, SettingKey, bool);
 
 /// The status page's icon, left out on a short window.
 const ICON: &str = "dialog-warning-symbolic";
@@ -118,7 +117,7 @@ impl SettingPage {
         &self,
         key: SettingKey,
         data_dir: PathBuf,
-        on_reset: impl Fn(PathBuf, Store, SettingKey) + 'static,
+        on_reset: impl Fn(PathBuf, Store, SettingKey, bool) + 'static,
     ) {
         let imp = self.imp();
         imp.path_label.set_label(&data_folder_line(&data_dir));
@@ -131,7 +130,6 @@ impl SettingPage {
     fn set_key(&self, key: SettingKey) {
         let imp = self.imp();
         imp.key.set(Some(key));
-        imp.status.set_title(DAMAGED_SETTING_TITLE);
         // The description is Pango markup; the text holds no markup.
         imp.status
             .set_description(Some(&glib::markup_escape_text(&damaged_setting_text(key))));
@@ -168,22 +166,28 @@ impl SettingPage {
         })
         .await;
         let message = match result {
-            Ok(Ok(store)) => {
+            Ok(Ok(SettingReset {
+                was_reset,
+                then: AfterReset::Opened(store),
+            })) => {
                 imp.errors.clear();
                 // Clone the callback out so no borrow is held while it runs.
                 let handler = imp.on_reset.borrow().as_ref().map(Callback::get);
                 if let Some(handler) = handler {
-                    handler(dir, store, key);
+                    handler(dir, store, key, was_reset);
                 }
                 return;
             }
-            Ok(Err(rappel_core::Error::DamagedSetting { key: next, .. })) => {
-                // This one was reset; another is damaged too.
-                tracing::warn!(%key, %next, "setting reset; another stored setting is damaged");
+            Ok(Ok(SettingReset {
+                was_reset,
+                then: AfterReset::Damaged(next),
+            })) => {
+                // Another one is damaged too.
+                tracing::warn!(%key, %next, "another stored setting is damaged");
                 imp.errors.clear();
                 self.set_key(next);
                 self.focus_action();
-                show_toast_from(self, info_toast(&setting_reset_text(key)));
+                show_toast_from(self, info_toast(&setting_reset_text(key, was_reset)));
                 return;
             }
             Ok(Err(err)) => {
@@ -247,7 +251,8 @@ pub(crate) mod tests {
             page.show(
                 SettingKey::DesiredRetention,
                 data.clone(),
-                move |_, store, key| {
+                move |_, store, key, was_reset| {
+                    assert!(was_reset);
                     sink.replace(Some((key, store.settings().ok())));
                 },
             );
@@ -278,7 +283,7 @@ pub(crate) mod tests {
             let page: SettingPage = glib::Object::new();
             let done = Rc::new(std::cell::Cell::new(None));
             let sink = Rc::clone(&done);
-            page.show(first, data.clone(), move |_, _, key| sink.set(Some(key)));
+            page.show(first, data.clone(), move |_, _, key, _| sink.set(Some(key)));
             let context = glib::MainContext::default();
 
             context.block_on(page.reset());
@@ -312,7 +317,7 @@ pub(crate) mod tests {
             page.show(
                 SettingKey::MaxReviewsPerDay,
                 data.clone(),
-                move |_, _, _| {
+                move |_, _, _, _| {
                     sink.set(true);
                 },
             );

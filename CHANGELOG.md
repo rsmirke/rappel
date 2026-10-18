@@ -18,7 +18,7 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 - Development: `scripts/screenshot.py`, the batch-mode screenshot harness (a private Xvfb display, input only through XTest).
-- `rappel-core`: `storage::reset_setting(data_dir, key)` (a backup, then the one damaged row removed and, for the retention, the schedule rebuilt, in one transaction) and `Store::used_tags` (the tags at least one live card has).
+- `rappel-core`: `storage::reset_setting(data_dir, key)` (a backup, then the one damaged row removed and, for the retention, the schedule rebuilt, in one transaction; returns `SettingReset`), `Error::InstalledWithDamagedSetting` (a restored backup with a damaged setting: where the old files went) and `Store::used_tags` (the tags at least one live card has).
 - `rappel-core`: `Error::CardAlreadyNew`; `Store::new_card_ids(deck)` lists a deck's new cards in one query; `BrowseRow::is_new` says whether a card is new, also when it is suspended.
 
 ## [0.2.0-beta.1] — 2026-10-18

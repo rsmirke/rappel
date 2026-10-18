@@ -151,9 +151,6 @@ pub fn too_new_text(found: i64, supported: u32) -> String {
     )
 }
 
-/// The title of the page for a damaged stored setting.
-pub const DAMAGED_SETTING_TITLE: &str = "A Setting Is Damaged";
-
 /// The setting's name as Preferences shows it.
 pub fn setting_name(key: SettingKey) -> &'static str {
     match key {
@@ -193,13 +190,22 @@ pub fn damaged_setting_text(key: SettingKey) -> String {
     )
 }
 
-/// The toast once the setting is reset.
-pub fn setting_reset_text(key: SettingKey) -> String {
-    format!(
-        "“{}” was reset to {}. A backup was made first.",
-        setting_name(key),
-        setting_default(key)
-    )
+/// The toast once the setting page is done with `key`: reset to its
+/// default, or (`was_reset` false) found readable again meanwhile, so left
+/// as it was.
+pub fn setting_reset_text(key: SettingKey, was_reset: bool) -> String {
+    if was_reset {
+        format!(
+            "“{}” was reset to {}. A backup was made first.",
+            setting_name(key),
+            setting_default(key)
+        )
+    } else {
+        format!(
+            "“{}” can be read again, so it was not changed.",
+            setting_name(key)
+        )
+    }
 }
 
 /// The screen for a data directory that could not be resolved or created.
@@ -343,8 +349,12 @@ mod tests {
             ]
         );
         assert_eq!(
-            setting_reset_text(SettingKey::DesiredRetention),
+            setting_reset_text(SettingKey::DesiredRetention, true),
             "“Desired Retention” was reset to 90%. A backup was made first."
+        );
+        assert_eq!(
+            setting_reset_text(SettingKey::MaxNewPerDay, false),
+            "“New Cards per Day” can be read again, so it was not changed."
         );
         let text = damaged_setting_text(SettingKey::DayStartHour);
         assert!(text.starts_with("The stored value of “Day Starts At” in Preferences"));

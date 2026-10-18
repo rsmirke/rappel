@@ -156,6 +156,21 @@ pub enum Error {
         value: String,
     },
 
+    /// A restore or Finish Restore installed its copy, and the copy has a
+    /// damaged stored setting, so it was not opened: the files were moved
+    /// all the same, and this says where, as
+    /// [`Restored`](crate::storage::Restored) would. The setting is reset
+    /// with [`crate::storage::reset_setting`] (ADR 0052).
+    #[error("the database was installed, but its stored setting {key} cannot be read")]
+    InstalledWithDamagedSetting {
+        /// The damaged setting.
+        key: crate::domain::SettingKey,
+        /// Where the previous database was moved, if anywhere.
+        replaced: Option<std::path::PathBuf>,
+        /// Where a waiting restore copy was kept, if anywhere.
+        set_aside: Option<std::path::PathBuf>,
+    },
+
     /// FSRS could not compute a memory state (non-finite input state).
     #[error("scheduler error: {0}")]
     Fsrs(#[from] fsrs::FSRSError),

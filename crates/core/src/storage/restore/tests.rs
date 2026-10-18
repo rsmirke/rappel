@@ -1655,4 +1655,50 @@ fn without_hard_links_the_copy_is_copied_aside_never_over_a_file() {
     assert_eq!(fs::read(e.set_aside()).unwrap(), b"someone else's");
     assert_eq!(mode(&first), 0o600);
     assert_eq!(fs::read(&partial).unwrap(), b"waiting", "left in place");
+    let scratch = e
+        .data
+        .join(format!("{DB_FILE_NAME}.restore.set-aside.part"));
+    assert!(!scratch.exists(), "no scratch copy left");
+    // A cut copy a crash left under the scratch name is replaced, never
+    // given a set-aside name.
+    fs::write(&scratch, b"cut").unwrap();
+    let second = copy_to_free_name(&e.data, &partial, ".set-aside-", DAY0 + DAY_MS).unwrap();
+    assert_eq!(fs::read(&second).unwrap(), b"waiting");
+    assert!(!scratch.exists());
+}
+
+/// A backup whose stored setting is damaged is installed, and the error
+/// says where the old files went, so the app can say it (ADR 0052).
+#[test]
+fn a_restored_backup_with_a_damaged_setting_says_where_the_files_went() {
+    let e = Env::new();
+    let (store, backup) = e.diverged();
+    drop(store);
+    {
+        let conn = Connection::open(&backup).unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES ('day_start_hour', 'x')",
+            [],
+        )
+        .unwrap();
+    }
+    let partial = restore_partial_path(&e.data);
+    fs::write(&partial, b"waiting").unwrap();
+
+    let err = e.restore(&backup).unwrap_err();
+
+    match err {
+        Error::InstalledWithDamagedSetting {
+            key,
+            replaced,
+            set_aside,
+        } => {
+            assert_eq!(key, crate::domain::SettingKey::DayStartHour);
+            assert_eq!(replaced.as_deref(), Some(e.replaced().as_path()));
+            assert_eq!(set_aside.as_deref(), Some(e.set_aside().as_path()));
+        }
+        other => panic!("expected InstalledWithDamagedSetting, got {other:?}"),
+    }
+    assert!(e.db().exists(), "the backup is installed");
+    assert!(matches!(e.open(), Err(Error::DamagedSetting { .. })));
 }

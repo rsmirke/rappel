@@ -463,10 +463,18 @@ impl RappelWindow {
                     self,
                     #[strong]
                     data_dir,
-                    move |key| window.show_problem(Problem::DamagedSetting {
-                        key,
-                        data_dir: data_dir.clone(),
-                    })
+                    move |key, how, replaced, set_aside| {
+                        window.show_problem(Problem::DamagedSetting {
+                            key,
+                            data_dir: data_dir.clone(),
+                        });
+                        // The files were moved all the same: say where.
+                        window.add_toast(persistent_toast(&recovered_message(
+                            how,
+                            replaced.as_deref(),
+                            set_aside.as_deref(),
+                        )));
+                    }
                 ));
                 imp.recovery_page.show(
                     reason,
@@ -486,7 +494,9 @@ impl RappelWindow {
                     glib::clone!(
                         #[weak(rename_to = window)]
                         self,
-                        move |dir, store, key| window.setting_reset(dir, store, key)
+                        move |dir, store, key, was_reset| {
+                            window.setting_reset(dir, store, key, was_reset);
+                        }
                     ),
                 );
                 imp.stack.set_visible_child_name("setting");
@@ -531,9 +541,10 @@ impl RappelWindow {
         data_dir: PathBuf,
         store: rappel_core::storage::Store,
         key: SettingKey,
+        was_reset: bool,
     ) {
         self.show_main(AppState::new(data_dir, store));
-        self.add_toast(info_toast(&setting_reset_text(key)));
+        self.add_toast(info_toast(&setting_reset_text(key, was_reset)));
     }
 
     fn restored(&self, data_dir: PathBuf, restored: Restored, how: Recovered) {

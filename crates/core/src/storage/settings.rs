@@ -221,9 +221,29 @@ fn is_damaged(conn: &Connection, key: SettingKey) -> Result<bool> {
     Ok(value.is_some_and(|v| !is_valid(key, &v)))
 }
 
+/// What [`reset_setting`] did.
+#[derive(Debug)]
+pub struct SettingReset {
+    /// Whether the setting was damaged and its row removed (after a
+    /// backup). `false` if another process fixed it meanwhile.
+    pub was_reset: bool,
+    /// What the settings are like now.
+    pub then: AfterReset,
+}
+
+/// The database after [`reset_setting`].
+#[derive(Debug)]
+pub enum AfterReset {
+    /// No stored setting is damaged: the open store.
+    Opened(Store),
+    /// This other setting is damaged too, so the database was not opened.
+    Damaged(SettingKey),
+}
+
 /// Opens the database in `data_dir` whose stored setting `key` is damaged
 /// ([`Error::DamagedSetting`] from [`Store::open`]), puts that setting's
-/// default back, and returns the open store (ADR 0052).
+/// default back, and returns what it did and the open store, or the next
+/// damaged setting (ADR 0052).
 ///
 /// The database is opened as [`Store::open`] opens it (checks, daily
 /// backup, migrations), except that the settings are not checked first.
@@ -238,11 +258,10 @@ fn is_damaged(conn: &Connection, key: SettingKey) -> Result<bool> {
 /// valid (or not stored) is left alone, and no backup is made for it.
 ///
 /// # Errors
-/// - [`Error::DamagedSetting`] naming another key if that one is damaged
-///   too; `key` was reset (with its backup) and the page asks again.
-/// - The errors of [`Store::open`], backup errors, scheduler and SQLite
-///   errors. A failure before the commit changes no setting.
-pub fn reset_setting(data_dir: &Path, key: SettingKey) -> Result<Store> {
+/// The errors of [`Store::open`] (but [`Error::DamagedSetting`]: another
+/// damaged key is [`AfterReset::Damaged`]), backup errors, scheduler and
+/// SQLite errors. A failure before the commit changes no setting.
+pub fn reset_setting(data_dir: &Path, key: SettingKey) -> Result<SettingReset> {
     reset_setting_with(
         &data_dir.join(DB_FILE_NAME),
         &data_dir.join(BACKUP_DIR_NAME),
@@ -259,25 +278,33 @@ pub(super) fn reset_setting_with(
     key: SettingKey,
     now_ms: i64,
     migrations: &[Migration],
-) -> Result<Store> {
+) -> Result<SettingReset> {
     let mut store =
         Store::open_unchecked(db_path, backup_dir, now_ms, migrations, Protect::Nothing)?;
-    if is_damaged(&store.conn, key)? {
+    let was_reset = if is_damaged(&store.conn, key)? {
         let path = create_backup(&store.conn, backup_dir, now_ms)?;
         tracing::info!(path = %path.display(), %key, "database backed up before resetting a setting");
-        remove_damaged(&mut store.conn, key)?;
-    }
-    store.checked()
+        remove_damaged(&mut store.conn, key)?
+    } else {
+        false
+    };
+    let then = match store.checked() {
+        Ok(store) => AfterReset::Opened(store),
+        Err(Error::DamagedSetting { key: next, .. }) => AfterReset::Damaged(next),
+        Err(err) => return Err(err),
+    };
+    Ok(SettingReset { was_reset, then })
 }
 
 /// Removes the row of damaged setting `key` in one transaction, rebuilding
 /// the schedule cache with the default retention when `key` is the desired
 /// retention. Nothing is written if the value is no longer damaged.
-fn remove_damaged(conn: &mut Connection, key: SettingKey) -> Result<()> {
+/// Returns whether the row was removed.
+fn remove_damaged(conn: &mut Connection, key: SettingKey) -> Result<bool> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     // Checked again inside the write: another process may have fixed it.
     if !is_damaged(&tx, key)? {
-        return Ok(());
+        return Ok(false);
     }
     tx.execute("DELETE FROM settings WHERE key = ?1", [key.as_str()])?;
     if key == SettingKey::DesiredRetention {
@@ -288,7 +315,7 @@ fn remove_damaged(conn: &mut Connection, key: SettingKey) -> Result<()> {
     }
     tx.commit()?;
     tracing::info!(%key, "damaged setting reset to its default");
-    Ok(())
+    Ok(true)
 }
 
 /// Makes the settings table hold exactly `settings`, inside the caller's

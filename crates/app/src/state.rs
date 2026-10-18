@@ -107,7 +107,10 @@ impl AppState {
     /// `data_dir`, after a backup, and opens the database (see
     /// [`storage::reset_setting`], ADR 0052). Blocking; runs on a worker
     /// thread, before any database is open.
-    pub fn reset_setting_unopened(data_dir: &Path, key: SettingKey) -> rappel_core::Result<Store> {
+    pub fn reset_setting_unopened(
+        data_dir: &Path,
+        key: SettingKey,
+    ) -> rappel_core::Result<storage::SettingReset> {
         storage::reset_setting(data_dir, key)
     }
 

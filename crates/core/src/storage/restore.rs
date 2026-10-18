@@ -90,6 +90,9 @@ pub struct Restored {
 ///   schema. Nothing was changed.
 /// - [`Error::Io`] (`AlreadyExists`) for something other than a regular
 ///   file at the waiting copy's name. Nothing was changed.
+/// - [`Error::InstalledWithDamagedSetting`] if the restored database has a
+///   damaged stored setting: it is installed, and the error says where the
+///   old files went.
 /// - IO errors while copying or moving files, and any error from
 ///   [`Store::open`] on the restored database. If the old files were
 ///   already moved aside, they stay under their `replaced-…` name, and
@@ -207,12 +210,31 @@ fn finish_restore_with(data_dir: &Path, now_ms: i64, migrations: &[Migration]) -
         now_ms,
         migrations,
         Protect::Everything,
-    )?;
-    Ok(Restored {
-        store,
-        replaced,
-        set_aside: None,
-    })
+    );
+    installed(store, replaced, None)
+}
+
+/// The [`Restored`] for a database installed and opened as `store`. If its
+/// open found a damaged stored setting, the files were moved all the same,
+/// so the error says where, as [`Restored`] would (ADR 0052).
+fn installed(
+    store: Result<Store>,
+    replaced: Option<PathBuf>,
+    set_aside: Option<PathBuf>,
+) -> Result<Restored> {
+    match store {
+        Ok(store) => Ok(Restored {
+            store,
+            replaced,
+            set_aside,
+        }),
+        Err(Error::DamagedSetting { key, .. }) => Err(Error::InstalledWithDamagedSetting {
+            key,
+            replaced,
+            set_aside,
+        }),
+        Err(err) => Err(err),
+    }
 }
 
 /// Whether `err`, from checking a restore copy, is about the copy's content,
@@ -385,12 +407,8 @@ fn restore_with(
         now_ms,
         migrations,
         Protect::Backup(backup),
-    )?;
-    Ok(Restored {
-        store,
-        replaced,
-        set_aside,
-    })
+    );
+    installed(store, replaced, set_aside)
 }
 
 /// The backup must be a regular file with a backup name directly inside
@@ -891,21 +909,26 @@ fn link_to_free_name(
     Err(no_free_name(partial))
 }
 
-/// Copies `partial` to a free `rappel.sqlite3.restore<infix><stamp>[-N]`
-/// that did not exist (the next one is tried if it appeared meanwhile), for
-/// a file system without hard links.
+/// Copies `partial` to a free `rappel.sqlite3.restore<infix><stamp>[-N]`,
+/// for a file system without hard links. The bytes go to the scratch name
+/// `rappel.sqlite3.restore.set-aside.part` first (a leftover from a crash
+/// is replaced) and are synced, and only the whole copy is renamed to the
+/// free name, so a crash never leaves a cut copy under it. Without hard
+/// links there is no rename that refuses to overwrite, so the free name is
+/// checked just before the rename: a file created there by someone else in
+/// between could be replaced. Nothing in Rappel writes such names, so the
+/// race is only with another program, and only on such file systems.
 fn copy_to_free_name(data_dir: &Path, partial: &Path, infix: &str, now_ms: i64) -> Result<PathBuf> {
-    let stem = restore_stem(data_dir);
-    for _ in 0..100 {
-        let target = free_name(&stem, infix, now_ms)?;
-        match copy_new(partial, &target) {
-            Ok(()) => return Ok(target),
-            Err(Error::Io { path, source })
-                if path == target && source.kind() == io::ErrorKind::AlreadyExists => {}
-            Err(err) => return Err(err),
-        }
-    }
-    Err(no_free_name(partial))
+    let scratch = data_dir.join(format!("{DB_FILE_NAME}.restore.set-aside.part"));
+    copy_private(partial, &scratch).inspect_err(|_| remove_copy(&scratch))?;
+    let target = free_name(&restore_stem(data_dir), infix, now_ms)?;
+    fs::rename(&scratch, &target)
+        .map_err(|source| Error::Io {
+            path: scratch.clone(),
+            source,
+        })
+        .inspect_err(|_| remove_copy(&scratch))?;
+    Ok(target)
 }
 
 fn no_free_name(partial: &Path) -> Error {

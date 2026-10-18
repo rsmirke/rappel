@@ -1179,10 +1179,7 @@ impl BrowserPage {
             Err(rappel_core::Error::CardNotFound(_) | rappel_core::Error::DeckNotFound(_)) => {
                 // Another window or an import removed a card or a deck: the
                 // list shown is old. Nothing was written (the write is all or
-                // nothing).
-                if let Err(err) = self.load_filters(None) {
-                    self.error_toast(&format!("The decks could not be read: {err}"));
-                }
+                // nothing). `changed` reads the filters and the rows again.
                 self.changed();
                 show_toast_from(self, info_toast(&text::stale_text()));
             }
@@ -1217,7 +1214,7 @@ impl BrowserPage {
         // The tags in use may have changed (a tag added, taken off, or on
         // deleted cards only), and the tag filter lists those.
         if let Err(err) = self.load_filters(None) {
-            self.error_toast(&format!("The tags could not be read: {err}"));
+            self.error_toast(&format!("The decks and tags could not be read: {err}"));
         }
         self.requery();
     }
