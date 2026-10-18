@@ -13,7 +13,9 @@ use crate::pages::{BrowserPage, DeckPage, DecksPage, Recovered};
 use crate::startup::{Problem, data_folder_line, too_new_text};
 use crate::state::AppState;
 use crate::transfer;
+use crate::ui::nav;
 use crate::ui::toast::{persistent_toast, warning_message};
+use crate::window_state;
 
 /// The two jobs of the primary menu.
 #[derive(Debug, Clone, Copy)]
@@ -41,7 +43,7 @@ mod imp {
         #[template_child]
         pub toast_overlay: TemplateChild<adw::ToastOverlay>,
         #[template_child]
-        pub stack: TemplateChild<gtk::Stack>,
+        pub stack: TemplateChild<adw::ViewStack>,
         #[template_child]
         pub navigation_view: TemplateChild<adw::NavigationView>,
         #[template_child]
@@ -110,6 +112,10 @@ mod imp {
                     crate::dialogs::preferences::show(window, state);
                 }
             });
+            // The primary menu. Needs no database, so always enabled.
+            klass.install_action("win.about", None, |window, _, _| {
+                crate::dialogs::about::show(window);
+            });
         }
 
         fn instance_init(obj: &glib::subclass::InitializingObject<Self>) {
@@ -125,6 +131,9 @@ mod imp {
             window.action_set_enabled("win.new", false);
             window.action_set_enabled("win.search", false);
             window.action_set_enabled("win.preferences", false);
+            // The only focusable widgets of their pages.
+            crate::ui::focus::unselect_on_first_focus(&self.too_new_path);
+            crate::ui::focus::unselect_on_first_focus(&self.error_details);
             for action in super::TRANSFER_ACTIONS {
                 window.action_set_enabled(action, false);
             }
@@ -137,6 +146,7 @@ mod imp {
         fn close_request(&self) -> glib::Propagation {
             let window = self.obj();
             let Some(editor) = window.unsaved_editor() else {
+                window.save_state();
                 return self.parent_close_request();
             };
             glib::spawn_future_local(glib::clone!(
@@ -194,7 +204,7 @@ impl RappelWindow {
         }
         // Checked before keeping the state, so a failure leaves the window
         // without one (and a later retry could still call this).
-        if let Err(err) = state.list_decks() {
+        if let Err(err) = state.list_decks(rappel_core::time::now_ms()) {
             self.decks_unreadable(&err, state.data_dir());
             return;
         }
@@ -213,6 +223,10 @@ impl RappelWindow {
         }
         tracing::debug!("showing the main page");
         imp.stack.set_visible_child_name("main");
+        // Only at startup, before the window is shown; not after a restore.
+        if !self.is_mapped() {
+            self.restore_state();
+        }
         self.action_set_enabled("win.new-deck", true);
         self.action_set_enabled("win.new", true);
         self.action_set_enabled("win.search", true);
@@ -220,6 +234,71 @@ impl RappelWindow {
         for action in TRANSFER_ACTIONS {
             self.action_set_enabled(action, true);
         }
+    }
+
+    /// Applies the size, maximised state and open deck saved when the
+    /// window last closed (`window_state`). Called before the window is
+    /// first presented.
+    fn restore_state(&self) {
+        let imp = self.imp();
+        let Some(state) = imp.state.get() else {
+            return;
+        };
+        let saved = window_state::load(state.data_dir());
+        let (width, height) =
+            window_state::fit_to_monitors(saved.width, saved.height, &monitor_sizes(self));
+        self.set_default_size(width, height);
+        if saved.maximized {
+            // "It's permitted to call this function before showing a window,
+            // in which case the window will be maximized when it appears
+            // onscreen initially" (gtk_window_maximize docs).
+            self.maximize();
+        }
+        if let Some(id) = saved.deck_id {
+            // Straight to the deck page, without the slide from the list.
+            let view = &imp.navigation_view;
+            let animate = view.is_animate_transitions();
+            view.set_animate_transitions(false);
+            imp.decks_page.reopen(&id);
+            view.set_animate_transitions(animate);
+        }
+    }
+
+    /// The pages of the navigation stack, bottom first.
+    fn pages(&self) -> Vec<adw::NavigationPage> {
+        let stack = self.imp().navigation_view.navigation_stack();
+        (0..stack.n_items())
+            .filter_map(|i| stack.item(i).and_downcast())
+            .collect()
+    }
+
+    /// Saves the size, maximised state and open deck for the next start.
+    /// Only from the main page: a recovery or error page has no database
+    /// and nothing to remember.
+    fn save_state(&self) {
+        let imp = self.imp();
+        let Some(state) = imp.state.get() else {
+            return;
+        };
+        if imp.stack.visible_child_name().as_deref() != Some("main") {
+            return;
+        }
+        let deck_id = window_state::deck_to_reopen(
+            self.pages()
+                .iter()
+                .map(|page| page.downcast_ref::<DeckPage>().and_then(DeckPage::deck_id)),
+        );
+        // The size the window has when not maximised: "the recommended way
+        // for saving window state across restarts" (gtk_window_get_default_size
+        // docs).
+        let (width, height) = self.default_size();
+        let saved = window_state::WindowState {
+            width,
+            height,
+            maximized: self.is_maximized(),
+            deck_id,
+        };
+        window_state::save(state.data_dir(), &saved);
     }
 
     /// Runs an export or import unless one is already running. Its actions
@@ -276,15 +355,16 @@ impl RappelWindow {
         } else {
             return;
         };
-        match BrowserPage::new(state.clone(), deck_id.as_deref()) {
-            Ok(browser) => imp.navigation_view.push(&browser),
-            Err(err) => {
-                crate::ui::toast::show_error(
-                    self,
-                    "opening All Cards",
-                    &format!("The cards could not be read: {err}"),
-                );
-            }
+        // The visible page is not All Cards (see above); the helper keeps
+        // the rule in one place.
+        if let Err(err) = nav::push_unless_on_top(&imp.navigation_view, || {
+            BrowserPage::new(state.clone(), deck_id.as_deref())
+        }) {
+            crate::ui::toast::show_error(
+                self,
+                "opening All Cards",
+                &format!("The cards could not be read: {err}"),
+            );
         }
     }
 
@@ -292,8 +372,7 @@ impl RappelWindow {
     /// the deck list.
     pub fn study_changed(&self) {
         let imp = self.imp();
-        let stack = imp.navigation_view.navigation_stack();
-        for page in (0..stack.n_items()).filter_map(|i| stack.item(i)) {
+        for page in self.pages() {
             if let Some(deck) = page.downcast_ref::<DeckPage>() {
                 deck.update_study();
             } else if let Some(browser) = page.downcast_ref::<BrowserPage>() {
@@ -308,8 +387,7 @@ impl RappelWindow {
     /// (suspend, delete and their Undo): reads the decks and every open deck page's cards
     /// again. A study session keeps the cards it started with.
     pub fn data_changed(&self) {
-        let stack = self.imp().navigation_view.navigation_stack();
-        for page in (0..stack.n_items()).filter_map(|i| stack.item(i)) {
+        for page in self.pages() {
             if let Some(decks) = page.downcast_ref::<DecksPage>() {
                 decks.refresh();
             } else if let Some(deck) = page.downcast_ref::<DeckPage>() {
@@ -342,8 +420,7 @@ impl RappelWindow {
             page.restored(card);
         }
         // An open All Cards page lists the card too.
-        let stack = imp.navigation_view.navigation_stack();
-        for page in (0..stack.n_items()).filter_map(|i| stack.item(i)) {
+        for page in self.pages() {
             if let Some(browser) = page.downcast_ref::<BrowserPage>() {
                 browser.requery();
             }
@@ -357,6 +434,16 @@ impl RappelWindow {
         tracing::debug!(?problem, "showing a startup problem page");
         match problem {
             Problem::Recovery { reason, data_dir } => {
+                let dir = data_dir.clone();
+                imp.recovery_page.set_on_too_new(glib::clone!(
+                    #[weak(rename_to = window)]
+                    self,
+                    move |found, supported| window.show_problem(Problem::TooNew {
+                        found,
+                        supported,
+                        data_dir: dir.clone(),
+                    })
+                ));
                 imp.recovery_page.show(
                     reason,
                     data_dir,
@@ -399,57 +486,179 @@ impl RappelWindow {
     }
 
     fn restored(&self, data_dir: PathBuf, restored: Restored, how: Recovered) {
-        let message = recovered_message(how, restored.replaced.as_deref());
+        let message = recovered_message(
+            how,
+            restored.replaced.as_deref(),
+            restored.set_aside.as_deref(),
+        );
         self.show_main(AppState::new(data_dir, restored.store));
         self.add_toast(persistent_toast(&message));
     }
 }
 
-/// The toast after the recovery page got a database: what happened, and
-/// where the previous database was kept.
-fn recovered_message(how: Recovered, replaced: Option<&Path>) -> String {
+/// The toast after the recovery page got a database: what happened, where
+/// the previous database was kept, and where an unusable restore copy was
+/// (`set_aside`, ADR 0050, row 35).
+fn recovered_message(how: Recovered, replaced: Option<&Path>, set_aside: Option<&Path>) -> String {
     let done = match how {
         Recovered::Backup => "Backup restored",
         Recovered::Finished => "Restore finished",
         Recovered::Fresh => "Started with an empty database",
     };
-    match replaced {
+    let mut message = match replaced {
         Some(path) => format!(
             "{done}. The previous database was kept as {}",
             path.display()
         ),
         None => done.to_owned(),
+    };
+    if let Some(path) = set_aside {
+        message.push_str(". The restore copy that could not be used was kept as ");
+        message.push_str(&path.display().to_string());
     }
+    message
+}
+
+/// The size of each monitor of `widget`'s display, in application pixels
+/// (`gdk_monitor_get_geometry`), for fitting a saved window size to them.
+fn monitor_sizes(widget: &impl IsA<gtk::Widget>) -> Vec<(i32, i32)> {
+    let monitors = widget.display().monitors();
+    (0..monitors.n_items())
+        .filter_map(|i| monitors.item(i).and_downcast::<gtk::gdk::Monitor>())
+        .map(|monitor| {
+            let geometry = monitor.geometry();
+            (geometry.width(), geometry.height())
+        })
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// A window opened as at startup on a data directory whose saved state
+    /// reopens a deck of `cards` cards; not shown. Returns the window, its
+    /// deck page and the directory, which must outlive them.
+    fn reopened_with(cards: usize) -> (RappelWindow, DeckPage, tempfile::TempDir) {
+        let (tmp, state) = crate::testing::temporary_state();
+        let data_dir = state.data_dir().to_path_buf();
+        let deck = state.create_deck("Deck").unwrap();
+        for i in 0..cards {
+            state
+                .add_card_with_tags(&deck.id, &format!("front {i}"), "back", &[])
+                .unwrap();
+        }
+        window_state::save(
+            &data_dir,
+            &window_state::WindowState {
+                deck_id: Some(deck.id),
+                ..window_state::WindowState::default()
+            },
+        );
+        let window: RappelWindow = glib::Object::new();
+        window.show_main(state);
+        let page = window
+            .imp()
+            .navigation_view
+            .visible_page()
+            .and_downcast::<DeckPage>()
+            .expect("the saved deck is reopened");
+        (window, page, tmp)
+    }
+
+    /// The window's focus widget (it need not be shown for that).
+    fn focus_of(window: &RappelWindow) -> gtk::Widget {
+        gtk::prelude::RootExt::focus(window).expect("the window has a focus widget")
+    }
+
+    #[test]
+    fn a_deck_reopened_at_startup_has_the_focus_on_its_first_card() {
+        crate::testing::with_widgets(|| {
+            let (window, page, _tmp) = reopened_with(3);
+            let focus = focus_of(&window);
+            assert!(focus.is_ancestor(&page), "not Back or the deck list");
+            let list = focus
+                .ancestor(gtk::ListView::static_type())
+                .expect("a card of the list has the focus");
+            assert!(list.is_ancestor(&page));
+            window.destroy();
+        });
+    }
+
+    #[test]
+    fn an_empty_deck_reopened_at_startup_has_the_focus_on_add_card() {
+        crate::testing::with_widgets(|| {
+            let (window, page, _tmp) = reopened_with(0);
+            let focus = focus_of(&window);
+            assert!(focus.is_ancestor(&page));
+            let button = focus.downcast::<gtk::Button>().expect("a button");
+            assert_eq!(button.action_name().as_deref(), Some("deck.new-card"));
+            window.destroy();
+        });
+    }
+
     #[test]
     fn recovery_toasts_say_what_happened_and_where_the_old_file_is() {
         let kept = Path::new("/data/rappel.sqlite3.replaced-20261015-120000");
         assert_eq!(
-            recovered_message(Recovered::Backup, Some(kept)),
+            recovered_message(Recovered::Backup, Some(kept), None),
             "Backup restored. The previous database was kept as \
              /data/rappel.sqlite3.replaced-20261015-120000"
         );
         assert_eq!(
-            recovered_message(Recovered::Backup, None),
+            recovered_message(Recovered::Backup, None, None),
             "Backup restored"
         );
         assert_eq!(
-            recovered_message(Recovered::Finished, None),
+            recovered_message(Recovered::Finished, None, None),
             "Restore finished"
         );
         assert_eq!(
-            recovered_message(Recovered::Fresh, Some(kept)),
+            recovered_message(Recovered::Fresh, Some(kept), None),
             "Started with an empty database. The previous database was kept as \
              /data/rappel.sqlite3.replaced-20261015-120000"
         );
         assert_eq!(
-            recovered_message(Recovered::Fresh, None),
+            recovered_message(Recovered::Fresh, None, None),
             "Started with an empty database"
         );
+        let copy = Path::new("/data/rappel.sqlite3.restore.refused-20261015-120000");
+        assert_eq!(
+            recovered_message(Recovered::Fresh, Some(kept), Some(copy)),
+            "Started with an empty database. The previous database was kept as \
+             /data/rappel.sqlite3.replaced-20261015-120000. The restore copy that could not be \
+             used was kept as /data/rappel.sqlite3.restore.refused-20261015-120000"
+        );
+    }
+
+    /// Finish Restore on a waiting copy from a newer Rappel shows the "too
+    /// new" page, as a database that is too new does, with its version
+    /// (ADR 0050, row 35).
+    #[test]
+    fn a_waiting_copy_from_a_newer_rappel_shows_the_too_new_page() {
+        crate::testing::with_widgets(|| {
+            let tmp = tempfile::tempdir().expect("a temporary directory");
+            let (data, partial) = crate::pages::interrupted_restore_folder(&tmp, false);
+            // `user_version`, bytes 60 to 63 of the header, big-endian.
+            let mut bytes = std::fs::read(&partial).expect("the copy is read");
+            bytes[60..64].copy_from_slice(&10_000_u32.to_be_bytes());
+            std::fs::write(&partial, bytes).expect("the copy is written");
+            let window: RappelWindow = glib::Object::new();
+            window.show_problem(Problem::Recovery {
+                reason: crate::startup::RecoveryReason::InterruptedRestore,
+                data_dir: data,
+            });
+            let imp = window.imp();
+            assert_eq!(imp.stack.visible_child_name().as_deref(), Some("recovery"));
+            glib::MainContext::default().block_on(imp.recovery_page.finish_restore());
+            assert_eq!(imp.stack.visible_child_name().as_deref(), Some("too-new"));
+            let description = imp.too_new_page.description().unwrap_or_default();
+            assert!(
+                description.contains("database version 10000"),
+                "{description}"
+            );
+            assert!(partial.exists(), "the copy is kept");
+            window.destroy();
+        });
     }
 }

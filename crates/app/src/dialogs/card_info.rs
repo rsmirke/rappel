@@ -62,47 +62,91 @@ pub fn open(
     }
 }
 
+/// The objects of `data/card_info_dialog.blp` this file fills in.
+pub(crate) struct Layout {
+    dialog: adw::Dialog,
+    created: adw::ActionRow,
+    edited: adw::ActionRow,
+    status: adw::ActionRow,
+    reviews: adw::ActionRow,
+    pass_rate: adw::ActionRow,
+    lapses: adw::ActionRow,
+    stability: adw::ActionRow,
+    difficulty: adw::ActionRow,
+    recall: adw::ActionRow,
+    next_due: adw::ActionRow,
+    front: gtk::Label,
+    history: gtk::ListBox,
+    note: gtk::Label,
+}
+
+impl Layout {
+    /// Loads the layout; `Err` with the first missing object's id, after
+    /// logging every missing one.
+    pub(crate) fn load() -> Result<Self, &'static str> {
+        let builder = dialog::builder(FILE);
+        let row = |id| dialog::object::<adw::ActionRow>(&builder, FILE, id);
+        // Every object is looked up before the first `?`, so each missing
+        // one is logged.
+        let (dialog, front, history, note) = (
+            dialog::object(&builder, FILE, "card_info_dialog"),
+            dialog::object(&builder, FILE, "front_label"),
+            dialog::object(&builder, FILE, "history_list"),
+            dialog::object(&builder, FILE, "history_note"),
+        );
+        let (created, edited, status, reviews, pass_rate, lapses) = (
+            row("created_row"),
+            row("edited_row"),
+            row("status_row"),
+            row("reviews_row"),
+            row("pass_rate_row"),
+            row("lapses_row"),
+        );
+        let (stability, difficulty, recall, next_due) = (
+            row("stability_row"),
+            row("difficulty_row"),
+            row("recall_row"),
+            row("next_due_row"),
+        );
+        Ok(Self {
+            dialog: dialog?,
+            created: created?,
+            edited: edited?,
+            status: status?,
+            reviews: reviews?,
+            pass_rate: pass_rate?,
+            lapses: lapses?,
+            stability: stability?,
+            difficulty: difficulty?,
+            recall: recall?,
+            next_due: next_due?,
+            front: front?,
+            history: history?,
+            note: note?,
+        })
+    }
+}
+
 /// The dialog for card `card_id` as of `now`, filled in.
 fn build(state: &AppState, card_id: &str, now: i64) -> Result<Built, Failure> {
     let card = state.card(card_id).map_err(Failure::Read)?;
     let info = state.card_info(card_id, now).map_err(Failure::Read)?;
-    let builder = dialog::builder(FILE);
-    let get = |id: &str| dialog::object::<adw::ActionRow>(&builder, FILE, id);
-    let (
-        Some(card_dialog),
-        Some(created),
-        Some(edited),
-        Some(status),
-        Some(reviews),
-        Some(pass_rate),
-        Some(lapses),
-        Some(stability),
-        Some(difficulty),
-        Some(recall),
-        Some(next_due),
-    ) = (
-        dialog::object::<adw::Dialog>(&builder, FILE, "card_info_dialog"),
-        get("created_row"),
-        get("edited_row"),
-        get("status_row"),
-        get("reviews_row"),
-        get("pass_rate_row"),
-        get("lapses_row"),
-        get("stability_row"),
-        get("difficulty_row"),
-        get("recall_row"),
-        get("next_due_row"),
-    )
-    else {
-        return Err(Failure::Layout);
-    };
-    let (Some(front), Some(list), Some(note)) = (
-        dialog::object::<gtk::Label>(&builder, FILE, "front_label"),
-        dialog::object::<gtk::ListBox>(&builder, FILE, "history_list"),
-        dialog::object::<gtk::Label>(&builder, FILE, "history_note"),
-    ) else {
-        return Err(Failure::Layout);
-    };
+    let Layout {
+        dialog: card_dialog,
+        created,
+        edited,
+        status,
+        reviews,
+        pass_rate,
+        lapses,
+        stability,
+        difficulty,
+        recall,
+        next_due,
+        front,
+        history: list,
+        note,
+    } = Layout::load().map_err(|_| Failure::Layout)?;
 
     // Card text is untrusted: plain text in labels with markup off.
     front.set_label(&plain_summary(&card.front_md));
@@ -175,18 +219,10 @@ mod tests {
         titles
     }
 
-    fn state() -> (tempfile::TempDir, AppState) {
-        adw::init().unwrap();
-        gtk::gio::resources_register_include!("rappel.gresource").unwrap();
-        let tmp = tempfile::tempdir().unwrap();
-        let state = AppState::open(tmp.path().join("data")).unwrap();
-        (tmp, state)
-    }
-
     #[test]
     fn the_history_shows_resets_as_markers_newest_first() {
-        crate::testing::with_gtk(|| {
-            let (_tmp, state) = state();
+        crate::testing::with_widgets(|| {
+            let (_tmp, state) = crate::testing::temporary_state();
             let deck = state.create_deck("Deck").unwrap();
             let id = state
                 .add_card_with_tags(&deck.id, "front", "back", &[])
@@ -194,7 +230,7 @@ mod tests {
                 .card
                 .id;
             let now = rappel_core::time::now_ms();
-            let day = 86_400_000;
+            let day = crate::ui::time::DAY_MS;
             state
                 .record_review(&id, Grade::Pass, Duration::from_secs(3), now - 3 * day)
                 .unwrap();
@@ -214,8 +250,8 @@ mod tests {
 
     #[test]
     fn a_card_never_studied_says_so() {
-        crate::testing::with_gtk(|| {
-            let (_tmp, state) = state();
+        crate::testing::with_widgets(|| {
+            let (_tmp, state) = crate::testing::temporary_state();
             let deck = state.create_deck("Deck").unwrap();
             let id = state
                 .add_card_with_tags(&deck.id, "front", "back", &[])
@@ -232,8 +268,8 @@ mod tests {
 
     #[test]
     fn a_missing_card_is_not_built() {
-        crate::testing::with_gtk(|| {
-            let (_tmp, state) = state();
+        crate::testing::with_widgets(|| {
+            let (_tmp, state) = crate::testing::temporary_state();
             assert!(matches!(
                 build(&state, "no-such-card", rappel_core::time::now_ms()),
                 Err(Failure::Read(rappel_core::Error::CardNotFound(_)))

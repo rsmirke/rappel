@@ -7,7 +7,7 @@ use crate::Error;
 use crate::domain::{CardState, EventKind, Grade, ReviewEvent};
 use crate::scheduling::{Scheduler, surviving};
 use crate::stats::{self, DayActivity, HistoryEntry};
-use crate::test_support::{DAY_MS, T0, fastest};
+use crate::test_support::{DAY_MS, T0, assert_cpu_within, fastest};
 
 /// "Now" in these tests: 40 days after the first review of the property
 /// tests, so some of their reviews are in the 30-day window and some not.
@@ -551,12 +551,112 @@ fn stats_are_fast_at_five_thousand_cards_and_a_hundred_thousand_reviews() {
     });
     assert!(info.reviews >= 2_000);
 
-    assert!(all_time < LIMIT, "global stats took {all_time:?}");
-    assert!(deck_time < LIMIT, "deck stats took {deck_time:?}");
-    assert!(card_time < CARD_LIMIT, "card info took {card_time:?}");
+    assert_cpu_within(all_time, LIMIT, "global stats");
+    assert_cpu_within(deck_time, LIMIT, "deck stats");
+    assert_cpu_within(card_time, CARD_LIMIT, "card info");
 }
 
 /// About 10 times what was measured on a debug build (ADR 0025): 0.3 s for
-/// the statistics, 10 ms for one card.
+/// the statistics, 10 ms for one card. In CPU time, checked against the
+/// machine's slowdown (`assert_cpu_within`, ADR 0049).
 const LIMIT: Duration = Duration::from_secs(2);
 const CARD_LIMIT: Duration = Duration::from_millis(100);
+
+/// 9999-12-31T23:59:59.999Z, the latest time an import accepts.
+const LATEST_IMPORTED: i64 = 253_402_300_799_999;
+
+/// Histories an import can bring (ADR 0050): reviews at the first and last
+/// times a file may hold, a clock that ran backwards for 2,000 reviews
+/// (each id later, each time earlier), 2,000 reviews in the same
+/// millisecond with the largest durations, and reviews a year ahead of
+/// now. The cache rebuilds, the statistics and card information stay
+/// within their ranges, and each read is fast.
+#[test]
+fn hostile_histories_give_sound_statistics_quickly() {
+    const RUN: i64 = 2_000;
+    let (mut store, _, cards) = store_with_decks(1, 4);
+    let mut ids = store.ids.clone();
+    let mut events = Vec::new();
+    let mut push = |card: &str, at: i64, grade: Grade, duration_ms: i64| {
+        events.push(ReviewEvent {
+            id: ids.next(at.clamp(0, LATEST_IMPORTED)).unwrap(),
+            card_id: card.to_owned(),
+            reviewed_at: at,
+            kind: EventKind::Review(grade),
+            duration_ms,
+        });
+    };
+    push(&cards[0], 0, Grade::Fail, 0);
+    push(&cards[0], 1, Grade::Pass, 0);
+    push(&cards[0], LATEST_IMPORTED, Grade::Pass, i64::MAX);
+    for k in 0..RUN {
+        let grade = if k % 3 == 0 { Grade::Fail } else { Grade::Pass };
+        push(&cards[1], NOW - k * DAY_MS / 7, grade, 1_000);
+        push(&cards[2], NOW - DAY_MS, grade, i64::MAX);
+    }
+    for k in 0..10 {
+        push(
+            &cards[3],
+            NOW + 365 * DAY_MS + k * DAY_MS,
+            Grade::Pass,
+            1_000,
+        );
+    }
+    store.ids = ids;
+    let tx = store.conn.transaction().unwrap();
+    for e in &events {
+        super::super::schedule::insert_event(&tx, e).unwrap();
+    }
+    tx.commit().unwrap();
+    store.rebuild_schedule_cache(&Scheduler::default()).unwrap();
+
+    let (time, all) = fastest("stats of hostile histories", 3, || {
+        stats_of(&store, Scope::All)
+    });
+    // Every review inside the 30 days is counted once, the huge durations
+    // saturate instead of wrapping.
+    let window = past();
+    let in_window = events
+        .iter()
+        .filter(|e| window.day_of(e.reviewed_at).is_some())
+        .count();
+    assert_eq!(
+        all.days.iter().map(|d| u64::from(d.reviews)).sum::<u64>(),
+        u64::try_from(in_window).unwrap()
+    );
+    assert!(
+        all.days
+            .iter()
+            .all(|d| d.duration_ms >= 0 && d.passes <= d.reviews)
+    );
+    assert!(all.pass_rate.is_some_and(|r| (0.0..=1.0).contains(&r)));
+    assert!(
+        all.expected_retention
+            .is_some_and(|r| (0.0..=1.0).contains(&r)),
+        "{:?}",
+        all.expected_retention
+    );
+    assert_eq!(all.scheduled_cards, 4);
+    assert_cpu_within(time, CARD_LIMIT, "stats of hostile histories");
+
+    for card in &cards {
+        let (time, info) = fastest("card_info of a hostile history", 3, || {
+            store.card_info(card, NOW).unwrap()
+        });
+        assert!(info.passes <= info.reviews);
+        assert!(info.stability.is_some_and(|s| s.is_finite() && s > 0.0));
+        assert!(info.difficulty.is_some_and(f32::is_finite));
+        assert!(
+            info.retrievability
+                .is_some_and(|r| (0.0..=1.0).contains(&r)),
+            "{:?}",
+            info.retrievability
+        );
+        assert!(info.next_due.is_some());
+        assert_cpu_within(time, CARD_LIMIT, "card_info of a hostile history");
+    }
+    let (time, _) = fastest("list_decks of hostile histories", 3, || {
+        store.list_decks(NOW, NOW - DAY_MS / 2).unwrap()
+    });
+    assert_cpu_within(time, CARD_LIMIT, "list_decks of hostile histories");
+}

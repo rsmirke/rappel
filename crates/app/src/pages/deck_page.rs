@@ -23,11 +23,12 @@ use crate::dialogs::card_editor::{CardEditor, Saved};
 use crate::dialogs::card_info;
 use crate::pages::{ReviewPage, StatsPage};
 use crate::state::AppState;
-use crate::ui::focus::index_after_removal;
+use crate::ui::focus::{self, ShownFocus, index_after_removal};
+use crate::ui::text::due_new_line;
 use crate::ui::toast::{info_toast, log_failure, show_error, show_toast_from, undo_toast};
 use crate::ui::undo::{self, UndoFailure};
 use crate::ui::{init_once, nav};
-use crate::widgets::{CardObject, CardRow};
+use crate::widgets::{CardObject, CardRow, card_row};
 use crate::window::RappelWindow;
 
 mod imp {
@@ -40,16 +41,22 @@ mod imp {
     use rappel_core::domain::Deck;
 
     use crate::state::AppState;
+    use crate::ui::breakpoint;
     use crate::ui::debounce::Debounce;
     use crate::ui::rows;
 
-    #[derive(Debug, Default, gtk::CompositeTemplate)]
+    #[derive(Debug, Default, gtk::CompositeTemplate, glib::Properties)]
+    #[properties(wrapper_type = super::DeckPage)]
     #[template(resource = "/io/github/rsmirke/Rappel/deck_page.ui")]
     pub struct DeckPage {
+        #[template_child]
+        pub breakpoint: TemplateChild<adw::Breakpoint>,
         #[template_child]
         pub window_title: TemplateChild<adw::WindowTitle>,
         #[template_child]
         pub content_stack: TemplateChild<gtk::Stack>,
+        #[template_child]
+        pub study_bar: TemplateChild<gtk::ActionBar>,
         #[template_child]
         pub card_list: TemplateChild<gtk::ListView>,
         #[template_child]
@@ -64,6 +71,10 @@ mod imp {
         pub focus_after_edit: RefCell<Option<String>>,
         /// The pending re-check of what there is to study.
         pub study_timer: Debounce,
+        /// A narrow window (the breakpoint applies): the rows show fewer
+        /// tag pills.
+        #[property(get, set)]
+        pub compact: Cell<bool>,
     }
 
     #[glib::object_subclass]
@@ -101,11 +112,26 @@ mod imp {
         }
     }
 
+    #[glib::derived_properties]
     impl ObjectImpl for DeckPage {
         fn constructed(&self) {
             self.parent_constructed();
+            let page = self.obj();
             // Back from studying: what is left to study changed.
-            self.obj().connect_shown(super::DeckPage::update_study);
+            page.connect_shown(|page| {
+                page.update_study();
+                page.focus_when_shown();
+            });
+            page.connect_compact_notify(super::DeckPage::update_study_bar);
+            // As on All Cards (ADR 0036).
+            breakpoint::follow(
+                &self.breakpoint,
+                glib::clone!(
+                    #[weak]
+                    page,
+                    move |compact| page.set_compact(compact)
+                ),
+            );
         }
     }
     impl WidgetImpl for DeckPage {}
@@ -144,7 +170,7 @@ impl DeckPage {
         ));
         imp.card_list
             .set_model(Some(&gtk::NoSelection::new(Some(store.clone()))));
-        imp.card_list.set_factory(Some(&row_factory()));
+        imp.card_list.set_factory(Some(&row_factory(&page)));
         imp.card_list.connect_activate(glib::clone!(
             #[weak]
             page,
@@ -222,10 +248,6 @@ impl DeckPage {
         let Some(view) = nav::navigation_view(self) else {
             return;
         };
-        // A double click or key repeat must not push two sessions.
-        if view.visible_page().is_some_and(|p| p.is::<ReviewPage>()) {
-            return;
-        }
         // Cards saved from the session's editor update this list too.
         let on_saved = glib::clone!(
             #[weak(rename_to = deck_page)]
@@ -234,12 +256,13 @@ impl DeckPage {
                 deck_page.show_saved(saved);
             }
         );
-        match ReviewPage::new(state.clone(), deck.clone(), on_saved) {
-            Ok(page) => {
-                self.action_set_enabled("deck.study", false);
-                view.push(&page);
-            }
-            Err(err) => self.error_toast(&format!("The session could not start: {err}")),
+        let pushed = nav::push_unless_on_top(&view, || {
+            let page = ReviewPage::new(state.clone(), deck.clone(), on_saved)?;
+            self.action_set_enabled("deck.study", false);
+            Ok::<_, rappel_core::Error>(page)
+        });
+        if let Err(err) = pushed {
+            self.error_toast(&format!("The session could not start: {err}"));
         }
     }
 
@@ -252,13 +275,8 @@ impl DeckPage {
         let Some(view) = nav::navigation_view(self) else {
             return;
         };
-        // Key repeat must not stack a second page.
-        if view.visible_page().is_some_and(|p| p.is::<StatsPage>()) {
-            return;
-        }
-        match StatsPage::new(state, Some(deck)) {
-            Ok(page) => view.push(&page),
-            Err(err) => self.error_toast(&format!("The statistics could not be read: {err}")),
+        if let Err(err) = nav::push_unless_on_top(&view, || StatsPage::new(state, Some(deck))) {
+            self.error_toast(&format!("The statistics could not be read: {err}"));
         }
     }
 
@@ -359,12 +377,7 @@ impl DeckPage {
             return;
         }
         store.remove(position);
-        match index_after_removal(position, store.n_items()) {
-            Some(next) => self.focus(next),
-            None => {
-                imp.empty_add_button.grab_focus();
-            }
-        }
+        self.focus_or_empty_state(index_after_removal(position, store.n_items()));
 
         // Undo must work after going back to the deck list too, when this
         // page may be gone: the closure keeps the state, not the page.
@@ -516,6 +529,50 @@ impl DeckPage {
         }
     }
 
+    /// Focuses the first card (or Add Card) unless the focus is already
+    /// on this page (see [`focus::when_shown`]). On a push the focus is
+    /// set here, in `shown`, never before: a grab before or during the push
+    /// is lost (`ui::nav`). At startup the page is pushed without animation
+    /// before the window is shown, and `shown` is emitted during that push:
+    /// with animations off `switch_page` skips the transition, whose `done`
+    /// handler emits it (`adw_animation_skip`, `transition_done_cb`,
+    /// source read for libadwaita 1.8 and 1.9). The window then keeps this focus widget
+    /// (`gtk_window_show` moves the focus only when it has none,
+    /// gtk/gtkwindow.c, source read for GTK 4.22). Observed with
+    /// libadwaita 1.10.0 and GTK 4.24.1, where the window test runs.
+    fn focus_when_shown(&self) {
+        let inside = self
+            .root()
+            .and_then(|root| root.focus())
+            .is_some_and(|focus| focus.is_ancestor(self));
+        let rows = self.imp().cards.get().map_or(0, gio::ListStore::n_items);
+        match focus::when_shown(inside, rows) {
+            ShownFocus::Keep => {}
+            ShownFocus::FirstRow => {
+                // `scroll_to` with FOCUS only moves the list's focus item
+                // while the focus is outside it; the grab then focuses that
+                // item's row, making it if needed (`gtk_list_base_scroll_to`,
+                // `gtk_list_base_grab_focus`, gtk/gtklistbase.c, source read
+                // for GTK 4.20 and 4.22; observed with GTK 4.24.1).
+                let list = &self.imp().card_list;
+                list.scroll_to(0, gtk::ListScrollFlags::FOCUS, None);
+                list.grab_focus();
+            }
+            ShownFocus::EmptyState => self.focus_or_empty_state(None),
+        }
+    }
+
+    /// Focuses the card at `position`, or with `None` the empty state's
+    /// Add Card button.
+    fn focus_or_empty_state(&self, position: Option<u32>) {
+        match position {
+            Some(position) => self.focus(position),
+            None => {
+                self.imp().empty_add_button.grab_focus();
+            }
+        }
+    }
+
     /// Scrolls to the card at `position` and gives it the keyboard focus.
     fn focus(&self, position: u32) {
         self.imp()
@@ -528,6 +585,16 @@ impl DeckPage {
         let empty = imp.cards.get().is_none_or(|s| s.n_items() == 0);
         imp.content_stack
             .set_visible_child_name(if empty { "empty" } else { "list" });
+        self.update_study_bar();
+    }
+
+    /// Reveals the bottom Study bar only on a narrow window over a deck
+    /// with cards (see [`study_bar_shown`]).
+    fn update_study_bar(&self) {
+        let imp = self.imp();
+        let empty = imp.cards.get().is_none_or(|s| s.n_items() == 0);
+        imp.study_bar
+            .set_revealed(study_bar_shown(self.compact(), empty));
     }
 
     fn item(&self, position: u32) -> Option<CardObject> {
@@ -670,22 +737,26 @@ fn undo_card_delete(
     }
 }
 
-/// The deck page's subtitle: "3 due · 20 new", or "Nothing to study".
+/// The deck page's subtitle: "1,234 due · 20 new", or "Nothing to study"
+/// (the same counts as the deck list's rows, `ui::text::due_new_line`).
 fn study_subtitle(input: &StudyInput) -> String {
-    let due = input.reviews.len() + input.steps.len();
-    let new = input.new.len();
-    match (due, new) {
-        (0, 0) => "Nothing to study".to_owned(),
-        (due, 0) => format!("{due} due"),
-        (0, new) => format!("{new} new"),
-        (due, new) => format!("{due} due · {new} new"),
-    }
+    due_new_line(input.reviews.len() + input.steps.len(), input.new.len())
+        .unwrap_or_else(|| "Nothing to study".to_owned())
+}
+
+/// Whether the bottom Study bar shows: on a narrow window (`compact`, where
+/// Study leaves the header), unless the deck is empty. An empty deck shows
+/// its status page with Add Card alone; a disabled Study pill under it
+/// would only be noise. On a wide window the header's Study stays, disabled,
+/// so the header does not change shape when the first card is added.
+fn study_bar_shown(compact: bool, empty: bool) -> bool {
+    compact && !empty
 }
 
 /// The longest single wait before re-checking what there is to study. A
 /// later change is reached in steps, so a changed clock or time zone is
 /// noticed within this long.
-const MAX_STUDY_WAIT_MS: u64 = 3_600_000;
+const MAX_STUDY_WAIT_MS: u64 = crate::ui::time::HOUR_MS.unsigned_abs();
 
 /// How long to wait from `now` until the earlier of `next_change` (the next
 /// card that becomes due, if any) and `next_day` (the next study day, which
@@ -715,36 +786,20 @@ fn insert_in_order(store: &gio::ListStore, item: &CardObject) -> u32 {
     })
 }
 
-/// Builds a [`CardRow`] per visible row and points it at its card.
-fn row_factory() -> gtk::SignalListItemFactory {
-    let factory = gtk::SignalListItemFactory::new();
-    factory.connect_setup(|_, item| {
-        if let Some(item) = item.downcast_ref::<gtk::ListItem>() {
-            item.set_child(Some(&CardRow::default()));
-        }
-    });
-    factory.connect_bind(|_, item| {
-        let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
-            return;
-        };
-        if let (Some(card), Some(row)) = (
-            item.item().and_downcast::<CardObject>(),
-            item.child().and_downcast::<CardRow>(),
-        ) {
-            row.bind(&card);
-            // Screen readers read the front and the tags, not "row".
+/// Builds a [`CardRow`] per visible row, following the page's `compact`,
+/// and points it at its card.
+fn row_factory(page: &DeckPage) -> gtk::SignalListItemFactory {
+    card_row::factory(
+        page,
+        CardRow::default,
+        &["compact"],
+        |row, card: &CardObject, item| {
+            row.bind(card);
+            // Screen readers read the front, the back and the tags, not "row"
+            // (`card_row::text::row_label`).
             item.set_accessible_label(&card.row_label());
-        }
-    });
-    factory.connect_unbind(|_, item| {
-        if let Some(row) = item
-            .downcast_ref::<gtk::ListItem>()
-            .and_then(|item| item.child().and_downcast::<CardRow>())
-        {
-            row.unbind();
-        }
-    });
-    factory
+        },
+    )
 }
 
 #[cfg(test)]
@@ -786,10 +841,13 @@ mod tests {
 
     #[test]
     fn finding_the_last_of_5000_cards_is_fast() {
-        let (found, scans) = crate::testing::within(
+        // About 2 ms of CPU time in a debug build; the bound leaves 10 times
+        // that, and more than the CPU clock's precision (one tick).
+        let bound = Duration::from_millis(20);
+        let (found, scans, verdict) = crate::testing::within(
             Duration::from_secs(5),
             "5,000 cards made and scanned",
-            || {
+            move || {
                 let store = gio::ListStore::new::<CardObject>();
                 let items: Vec<CardObject> = (0..5_000)
                     .map(|i| {
@@ -808,18 +866,29 @@ mod tests {
                     })
                     .collect();
                 store.extend_from_slice(&items);
-                let start = std::time::Instant::now();
-                let found = (
-                    position_in(&store, "card-04999"),
-                    position_in(&store, "missing"),
-                );
-                (found, start.elapsed())
+                let (scans, found) = crate::testing::cpu_time_of(|| {
+                    (
+                        position_in(&store, "card-04999"),
+                        position_in(&store, "missing"),
+                    )
+                });
+                // Checked on this thread, which did the work (ADR 0049).
+                (found, scans, crate::testing::cpu_within(scans, bound))
             },
         );
         crate::testing::print_timing("position_in, two scans of 5,000 cards", scans);
         assert_eq!(found, (Some(4_999), None));
-        // About 2 ms in a debug build; the bound leaves 10 times that.
-        assert!(scans < Duration::from_millis(20), "{scans:?}");
+        if let Err(message) = verdict {
+            panic!("position_in, two scans of 5,000 cards: {message}");
+        }
+    }
+
+    #[test]
+    fn the_study_bar_shows_only_on_a_narrow_window_with_cards() {
+        assert!(study_bar_shown(true, false));
+        assert!(!study_bar_shown(true, true));
+        assert!(!study_bar_shown(false, false));
+        assert!(!study_bar_shown(false, true));
     }
 
     #[test]
@@ -833,17 +902,17 @@ mod tests {
         assert_eq!(study_subtitle(&input), "3 due · 20 new");
         input.new.clear();
         assert_eq!(study_subtitle(&input), "3 due");
+        // Digits are grouped, as in the deck list.
+        input.reviews = vec![due("r"); 1_234];
+        assert_eq!(study_subtitle(&input), "1,235 due");
     }
 
     /// A page over a deck of `n` cards that are all due.
     fn page_of(n: usize) -> (tempfile::TempDir, AppState, DeckPage, Vec<String>) {
-        adw::init().unwrap();
-        gio::resources_register_include!("rappel.gresource").unwrap();
-        let tmp = tempfile::tempdir().unwrap();
-        let state = AppState::open(tmp.path().join("data")).unwrap();
+        let (tmp, state) = crate::testing::temporary_state();
         let deck = state.create_deck("Deck").unwrap();
         let now = rappel_core::time::now_ms();
-        let day = 24 * 60 * 60 * 1000;
+        let day = crate::ui::time::DAY_MS;
         let ids = (0..n)
             .map(|i| {
                 let id = state
@@ -865,7 +934,7 @@ mod tests {
 
     #[test]
     fn a_reset_changes_the_counts_and_its_undo_changes_them_back() {
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let (_tmp, state, page, ids) = page_of(2);
             let subtitle = || page.imp().window_title.subtitle().to_string();
             assert_eq!(subtitle(), "2 due");
@@ -886,7 +955,7 @@ mod tests {
 
     #[test]
     fn a_suspended_card_leaves_the_counts_and_its_undo_brings_it_back() {
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let (_tmp, state, page, ids) = page_of(2);
             let subtitle = || page.imp().window_title.subtitle().to_string();
             assert_eq!(subtitle(), "2 due");
@@ -901,8 +970,26 @@ mod tests {
     }
 
     #[test]
+    fn the_study_bar_follows_the_width_and_the_cards() {
+        crate::testing::with_widgets(|| {
+            let (_tmp, state, page, ids) = page_of(1);
+            let bar = || page.imp().study_bar.is_revealed();
+            assert!(!bar());
+            page.set_compact(true);
+            assert!(bar());
+            // The last card goes: the empty state stands alone.
+            page.delete(&ids[0]);
+            assert!(!bar());
+            undo_card_delete(&state, &ids[0], &page.downgrade(), None);
+            assert!(bar());
+            page.set_compact(false);
+            assert!(!bar());
+        });
+    }
+
+    #[test]
     fn an_undo_after_the_card_was_studied_again_changes_nothing() {
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let (_tmp, state, page, ids) = page_of(1);
             page.reset(&ids[0]);
             let reset = state

@@ -1,6 +1,8 @@
 /* The app's only stylesheet, loaded by AdwApplication from `style.css` in
  * the resource base path (AdwApplication docs, "Stylesheet"). It styles the
- * grid of a Markdown table and the sideways-scroll hint of wide formulas (render/).
+ * grid of a Markdown table and the sideways-scroll hint of wide formulas (render/),
+ * the focus ring of a chart, the deck and card rows, the tag pills, and the
+ * review page's card text size and answer buttons.
  * No literal colours: lines and shading are the text colour at a low
  * opacity, so they follow light, dark and high-contrast themes. */
 
@@ -44,4 +46,100 @@
   outline: 2px solid alpha(currentColor, 0.6);
   outline-offset: 2px;
   border-radius: 4px;
+}
+
+/* A deck row (data/deck_row.blp). Its line is drawn by libadwaita's
+ * `row label.subtitle` rule, which dims it; the due count is in the accent
+ * colour (`.accent`) and stays at full strength, so it reads as the thing
+ * to do. A little more room above and below than an action row's 6 px, so
+ * the two-line rows are comfortable to point at and to tap. */
+.deck-row label.deck-due {
+  opacity: 1;
+}
+
+.deck-row > box.header > box.title,
+row > box.header.card-row > box.title {
+  margin-top: 12px;
+  margin-bottom: 12px;
+}
+
+/* The back of a card row is as tall as a tag pill, so rows with and without
+ * tags line up. */
+row > box.header.card-row label.subtitle {
+  min-height: 18px;
+}
+
+/* A tag pill (widgets/tag_pills.rs): a small rounded label on a faint fill
+ * of the text colour, neutral (no accent), so it reads the same in light and
+ * dark styles. With high contrast (libadwaita sets `prefers-contrast: more`,
+ * and raises `--border-opacity` to 50%), it also gets an outline, so its
+ * edge does not depend on the faint fill. */
+.tag-pill {
+  min-height: 18px;
+  padding: 0 6px;
+  border-radius: 9999px;
+  background-color: alpha(currentColor, 0.1);
+}
+
+@media (prefers-contrast: more) {
+  .tag-pill {
+    box-shadow: inset 0 0 0 1px var(--border-color);
+  }
+}
+
+/* A removable tag pill (the tag entry, widgets/tag_entry.rs): the label
+ * and a small round remove button share the pill. The pill is as tall as
+ * the button, which keeps libadwaita's flat, circular look and its focus
+ * ring; only its size is set here. */
+.tag-pill.removable {
+  min-height: 24px;
+  padding: 0 0 0 6px;
+}
+
+.tag-pill.removable > button {
+  min-width: 24px;
+  min-height: 24px;
+  padding: 0;
+}
+
+/* The tag entry's frame (data/tag_entry.blp) has the background of a text
+ * view, like the card editor's text fields above it, so the three read as
+ * fields of one form. Its text is a bare GtkText, whose placeholder
+ * libadwaita dims only inside an entry: dim it the same way here. */
+.tag-entry > frame {
+  background-color: var(--view-bg-color);
+  color: var(--view-fg-color);
+}
+
+.tag-entry text > placeholder {
+  opacity: var(--dim-opacity);
+}
+
+/* The card on the review page (data/review_page.blp): its text is larger
+ * than body text, the front a little more than the back, so the question
+ * stands out. Everything render/ draws is sized from the inherited font:
+ * headings are a percentage of it (libadwaita's `title-*`), formulas are
+ * drawn at the widget's font size (render/math_view.rs). Only `monospace`
+ * sets an absolute size (the system's monospace font), so code is scaled
+ * here by the same factor. The editor's preview stays at body size. */
+.card-front {
+  font-size: 125%;
+}
+
+.card-back {
+  font-size: 112%;
+}
+
+.card-front .monospace {
+  font-size: calc(var(--monospace-font-size) * 1.25);
+}
+
+.card-back .monospace {
+  font-size: calc(var(--monospace-font-size) * 1.12);
+}
+
+/* The review page's answer buttons: easy to hit, at least 48 px tall
+ * (the content box plus libadwaita's 10 px pill padding). */
+button.review-button {
+  min-height: 28px;
 }

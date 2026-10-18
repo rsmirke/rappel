@@ -2,6 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-10-16
+- Amended by: ADR 0043 (point 6: no preview toggle when wide; Edit / Preview instead of the preview below when narrow)
 
 ## Context
 

@@ -38,8 +38,14 @@ pub struct Scheduled {
     pub next_due: String,
 }
 
-/// "12.4 days", "1 day", "130 days" (stability is in days).
+/// "12.4 days", "1 day", "130 days" (stability is in days). Not a number,
+/// or an infinite one, is "—" (ADR 0050, row 34).
 pub fn stability_text(days: f32) -> String {
+    if !days.is_finite() {
+        return "—".to_owned();
+    }
+    // A negative stability (never valid) as zero, and -0 without its sign.
+    let days = if days > 0.0 { days } else { 0.0 };
     if (days - 1.0).abs() < 0.05 {
         "1 day".to_owned()
     } else if days >= 100.0 {
@@ -49,9 +55,13 @@ pub fn stability_text(days: f32) -> String {
     }
 }
 
-/// "5.3 of 10".
+/// "5.3 of 10"; "—" for not a number or an infinite one.
 pub fn difficulty_text(difficulty: f32) -> String {
-    format!("{difficulty:.1} of 10")
+    if difficulty.is_finite() {
+        format!("{difficulty:.1} of 10")
+    } else {
+        "—".to_owned()
+    }
 }
 
 pub fn memory(info: &CardInfo, now: i64, when: When<'_>) -> Memory {
@@ -283,5 +293,63 @@ mod tests {
         i.history.extend((0..1_511).map(|t| review(t, Grade::Fail)));
         let h = history(&i, &when);
         assert_eq!(h.note.as_deref(), Some("1,512 older entries not shown"));
+    }
+
+    /// A hostile history (ADR 0050, rows 23 and 34): counts at `u32::MAX`,
+    /// times at both ends of `i64`, values that are not numbers. Nothing
+    /// panics and every text is sane.
+    #[test]
+    fn hostile_values_never_panic() {
+        let mut card = info();
+        card.reviews = u32::MAX;
+        card.passes = u32::MAX;
+        card.lapses = u32::MAX;
+        card.stability = Some(f32::NAN);
+        card.difficulty = Some(f32::INFINITY);
+        card.retrievability = Some(f32::NAN);
+        card.next_due = Some(i64::MAX);
+        card.created_at = i64::MIN;
+        card.history = vec![
+            HistoryEntry::Review {
+                at: i64::MIN,
+                grade: Grade::Pass,
+                duration_ms: i64::MAX,
+                interval_ms: i64::MAX,
+            },
+            HistoryEntry::Review {
+                at: i64::MAX,
+                grade: Grade::Fail,
+                duration_ms: i64::MIN,
+                interval_ms: i64::MIN,
+            },
+            HistoryEntry::Reset { at: 0 },
+        ];
+        let dates = |t: i64| crate::ui::time::date_time(t);
+        let shown = memory(&card, i64::MIN, &dates);
+        assert_eq!(shown.reviews, "4,294,967,295");
+        assert_eq!(shown.pass_rate, "100%");
+        let scheduled = shown.scheduled.expect("scheduled");
+        assert_eq!(scheduled.stability, "—");
+        assert_eq!(scheduled.difficulty, "—");
+        assert_eq!(scheduled.recall, "—");
+        assert!(
+            scheduled.next_due.ends_with("in 1000 years"),
+            "{}",
+            scheduled.next_due
+        );
+        let lines = history(&card, &dates).lines;
+        assert_eq!(lines.len(), 3);
+        assert!(
+            lines[1].subtitle.ends_with("0 s · next in 1 min"),
+            "{}",
+            lines[1].subtitle
+        );
+        assert!(
+            lines[2].subtitle.ends_with("next in 1000 years"),
+            "{}",
+            lines[2].subtitle
+        );
+        assert_eq!(stability_text(f32::MAX), format!("{:.0} days", f32::MAX));
+        assert_eq!(stability_text(-0.0), "0.0 days");
     }
 }

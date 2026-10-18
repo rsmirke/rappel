@@ -789,15 +789,16 @@ mod tests {
         // only guards against a blow-up.
         let biggest = largest_fitting_sum();
         assert!(biggest.len() < MAX_SOURCE_BYTES);
-        let start = std::time::Instant::now();
-        let mut budget = Budget::default();
-        for i in 0..MAX_FORMULAS {
-            let source = format!("{biggest}+b_{i}");
-            // `+ b_i` may push it over the cap; both outcomes are bounded.
-            let placed = budget.place(&source, false);
-            assert!(matches!(placed, Placement::Formula | Placement::Source));
-        }
-        assert!(start.elapsed().as_secs() < 60);
+        let (used, ()) = crate::testing::cpu_time_of(|| {
+            let mut budget = Budget::default();
+            for i in 0..MAX_FORMULAS {
+                let source = format!("{biggest}+b_{i}");
+                // `+ b_i` may push it over the cap; both outcomes are bounded.
+                let placed = budget.place(&source, false);
+                assert!(matches!(placed, Placement::Formula | Placement::Source));
+            }
+        });
+        crate::testing::assert_cpu_within(used, Duration::from_secs(60), "200 largest formulas");
     }
 
     #[test]

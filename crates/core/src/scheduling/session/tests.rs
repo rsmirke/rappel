@@ -450,19 +450,24 @@ fn forgetting_the_answers_turns_undo_off_and_keeps_the_rest() {
 
 proptest! {
     /// Any run of answers and undos leaves the session equal to one that
-    /// only got the answers that survive.
+    /// only got the answers that survive: the whole session, queue order,
+    /// steps, seen cards, summary and the answers left to undo included
+    /// (#57), except the card the last undo pinned, which the plain
+    /// session never had.
     #[test]
     fn undos_leave_the_surviving_answers(
         ops in proptest::collection::vec((any::<bool>(), any::<bool>(), any::<bool>()), 0..40),
     ) {
         let make = || session_of(&["r1", "r2", "r3", "r4"], &["n1", "n2"]);
         let (mut session, mut plain) = (make(), make());
-        let mut kept: Vec<(String, Grade, Phase)> = Vec::new();
+        let mut kept: Vec<(String, String, Grade, CardState)> = Vec::new();
+        let mut last_undone = None;
         for (i, (undo, pass, learning)) in ops.into_iter().enumerate() {
             if undo {
                 if let Some(id) = session.undo_last() {
-                    kept.pop();
-                    prop_assert!(!id.is_empty());
+                    let (answered, ..) = kept.pop().expect("an undo takes back a kept answer");
+                    prop_assert_eq!(&id, &answered);
+                    last_undone = Some(id);
                 }
                 continue;
             }
@@ -470,16 +475,22 @@ proptest! {
             let grade = if pass { Grade::Pass } else { Grade::Fail };
             let phase = if learning { Phase::Relearning } else { Phase::Review };
             let st = state(phase, T0 + MIN + i64::try_from(i).unwrap());
-            session.graded(&id, &format!("e{i}"), grade, Duration::from_secs(2), &st);
-            kept.push((id, grade, phase));
+            let entry = format!("e{i}");
+            session.graded(&id, &entry, grade, Duration::from_secs(2), &st);
+            // Answering the card an undo brought back unpins it.
+            if last_undone.as_deref() == Some(id.as_str()) {
+                last_undone = None;
+            }
+            kept.push((id, entry, grade, st));
         }
         // Replaying the surviving answers on a plain session, in order,
-        // each time answering the card the first session had on screen.
-        for (i, (id, grade, phase)) in kept.iter().enumerate() {
-            let st = state(*phase, T0 + MIN + i64::try_from(i).unwrap());
-            plain.graded(id, "x", *grade, Duration::from_secs(2), &st);
+        // each time answering the card the first session had on screen,
+        // with the same entry and the same new state.
+        for (id, entry, grade, st) in &kept {
+            plain.graded(id, entry, *grade, Duration::from_secs(2), st);
         }
-        prop_assert_eq!(session.summary(), plain.summary());
-        prop_assert_eq!(session.remaining(), plain.remaining());
+        // The pin is what an undo adds: the card it brought back comes next.
+        prop_assert_eq!(session.pinned.take(), last_undone);
+        prop_assert_eq!(session, plain);
     }
 }

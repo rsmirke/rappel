@@ -4,6 +4,7 @@
 - Date: 2026-10-15
 - Amends: ADR 0011 (the recovery page with no backups)
 - Amended by: ADR 0026 (Finish Restore, the follow-up it mentions)
+- Amended by: ADR 0050 (row 35: with a waiting copy that cannot be used and no backup, Start Fresh renames the copy aside)
 
 ## Context
 

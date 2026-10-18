@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc ded69cf11846e87923645918758379b620e64af205cd80e091a59e6198203da7 # shrinks to n_cards = 2, steps = [Review { card: 1, pass: false, clock_delta: 0, duration_ms: 0 }, Review { card: 2, pass: false, clock_delta: -2, duration_ms: 0 }, Restart, Review { card: 1, pass: false, clock_delta: 0, duration_ms: 0 }]
+cc 5aa03a566ce390c58a3bf59522cae1d0cf44722815c4bc22b21c2dcf940e825b # shrinks to writes = [Reset(0, 17935601), Review(0, 53282328), Undo(0, 97331217), Review(0, 43728839), Review(0, 9330561), Review(0, 156539992), Undo(0, 143924639), Review(0, 28224452), Review(0, 162255375), Reset(0, 0), Review(0, 0), Reset(0, 0)], starts = [0]

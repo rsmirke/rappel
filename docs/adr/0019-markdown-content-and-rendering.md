@@ -3,6 +3,7 @@
 - Status: Accepted
 - Date: 2026-10-16
 - Amends: ADR 0014 (the review page shows rendered Markdown, not plain text)
+- Amended by: ADR 0045 (the review page shows card text larger than body text), ADR 0046 (the style class `dim-label` is now `dimmed`)
 - Amended: 2026-10-16, every side has the same layout (no large centred single paragraph); tables get a border and a header row
 
 ## Context

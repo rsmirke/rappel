@@ -2,10 +2,12 @@ using Gtk 4.0;
 using Adw 1;
 using GtkSource 5;
 
-// The card editor. The title ("New Card" / "Edit Card") and the texts are
-// set in dialogs/card_editor/mod.rs, and so are the buffers' Markdown
-// language and style scheme. The preview sits beside the sources when the
-// dialog is wide, below them when it is narrow (the breakpoint).
+// The card editor (ADR 0022, ADR 0043). The title ("New Card" / "Edit
+// Card") and the texts are set in dialogs/card_editor/mod.rs, and so are the
+// buffers' Markdown language and style scheme. Front, Back and Tags are laid
+// out as the groups of a preferences page. Wide, the preview is beside them;
+// narrow (the breakpoint), the Edit / Preview toggle in the bottom bar shows
+// one or the other (`layout::panes`, applied in mod.rs).
 template $RappelCardEditor: Adw.Dialog {
   content-width: 960;
   content-height: 640;
@@ -14,12 +16,11 @@ template $RappelCardEditor: Adw.Dialog {
   width-request: 360;
   height-request: 294;
 
-  Adw.Breakpoint {
+  Adw.Breakpoint breakpoint {
     condition ("max-width: 720sp")
 
     setters {
-      main_box.orientation: vertical;
-      preview_separator.orientation: horizontal;
+      mode_bar.visible: true;
     }
   }
 
@@ -47,241 +48,246 @@ template $RappelCardEditor: Adw.Dialog {
           "suggested-action",
         ]
       }
-
-      [end]
-      Gtk.ToggleButton preview_button {
-        icon-name: "view-dual-symbolic";
-        tooltip-text: _("Preview");
-        active: true;
-
-        accessibility {
-          label: _("Preview");
-        }
-      }
     }
 
     content: Adw.ToastOverlay toast_overlay {
-      child: Gtk.Box main_box {
+      child: Gtk.Box {
         orientation: horizontal;
 
-        // Scrolls rather than clips when the window is short (360 x 294).
-        Gtk.ScrolledWindow {
+        // Scrolls rather than clips when the dialog is short (360 x 294).
+        Gtk.ScrolledWindow edit_pane {
           hscrollbar-policy: never;
           hexpand: true;
           vexpand: true;
 
-          Gtk.Box {
-            orientation: vertical;
-            spacing: 6;
-            hexpand: true;
-            vexpand: true;
-            margin-top: 6;
-            margin-bottom: 18;
-            margin-start: 18;
-            margin-end: 18;
+          child: Adw.Clamp {
+            maximum-size: 720;
+            tightening-threshold: 600;
 
-            Gtk.Label front_label {
-              label: _("Front");
-              xalign: 0;
+            child: Gtk.Box {
+              orientation: vertical;
+              spacing: 24;
+              margin-top: 12;
+              margin-bottom: 24;
+              margin-start: 12;
+              margin-end: 12;
 
-              styles [
-                "heading",
-              ]
-            }
-
-            // A frame, not a card: GtkFrame clips its child to its rounded
-            // corners (`gtk_frame_init` sets overflow hidden), and libadwaita
-            // draws it as a 1 px border that follows light, dark and high
-            // contrast. A card on the scroller had its corners painted over by
-            // the view's square background, cutting its shadow. The background
-            // is the Adwaita style scheme's (the view colour; mod.rs). No
-            // `inline` class: libadwaita 1.10's style-class docs say it "cannot
-            // be used with GtkSourceView"
-            // (gnome.pages.gitlab.gnome.org/libadwaita/doc/1.10/style-classes.html).
-            Gtk.Frame {
-              child: Gtk.ScrolledWindow {
-                hscrollbar-policy: never;
-                min-content-height: 96;
+              Adw.PreferencesGroup front_group {
+                title: _("Front");
                 vexpand: true;
 
-                child: GtkSource.View front_view {
-                  buffer: GtkSource.Buffer front_buffer {};
-                  monospace: true;
-                  wrap-mode: word_char;
-                  accepts-tab: false;
-                  top-margin: 12;
-                  bottom-margin: 12;
-                  left-margin: 12;
-                  right-margin: 12;
+                // A frame, not a card: GtkFrame clips its child to its
+                // rounded corners (`gtk_frame_init` sets overflow hidden),
+                // and libadwaita draws it as a 1 px border that follows
+                // light, dark and high contrast. A card on the scroller had
+                // its corners painted over by the view's square background,
+                // cutting its shadow. The background is the Adwaita style
+                // scheme's (the view colour; mod.rs). No `inline` class:
+                // libadwaita's style-class docs say it "cannot be used with
+                // GtkSourceView"
+                // (gnome.pages.gitlab.gnome.org/libadwaita/doc/1.9/style-classes.html).
+                Gtk.Frame {
+                  vexpand: true;
 
-                  accessibility {
-                    labelled-by: front_label;
-                    described-by: front_error;
-                  }
-                };
-              };
-            }
+                  child: Gtk.ScrolledWindow {
+                    hscrollbar-policy: never;
+                    min-content-height: 96;
+                    vexpand: true;
 
-            Gtk.Label front_error {
-              visible: false;
-              wrap: true;
-              xalign: 0;
+                    child: GtkSource.View front_view {
+                      buffer: GtkSource.Buffer front_buffer {};
+                      monospace: true;
+                      wrap-mode: word_char;
+                      accepts-tab: false;
+                      top-margin: 12;
+                      bottom-margin: 12;
+                      left-margin: 12;
+                      right-margin: 12;
 
-              styles [
-                "error",
-                "caption",
-              ]
-            }
+                      accessibility {
+                        label: _("Front");
+                        described-by: front_error;
+                      }
+                    };
+                  };
+                }
 
-            Gtk.Label back_label {
-              label: _("Back");
-              xalign: 0;
-              margin-top: 12;
+                Gtk.Label front_error {
+                  visible: false;
+                  wrap: true;
+                  xalign: 0;
+                  margin-top: 6;
 
-              styles [
-                "heading",
-              ]
-            }
-
-            Gtk.Frame {
-              child: Gtk.ScrolledWindow {
-                hscrollbar-policy: never;
-                min-content-height: 96;
-                vexpand: true;
-
-                child: GtkSource.View back_view {
-                  buffer: GtkSource.Buffer back_buffer {};
-                  monospace: true;
-                  wrap-mode: word_char;
-                  accepts-tab: false;
-                  top-margin: 12;
-                  bottom-margin: 12;
-                  left-margin: 12;
-                  right-margin: 12;
-
-                  accessibility {
-                    labelled-by: back_label;
-                    described-by: back_error;
-                  }
-                };
-              };
-            }
-
-            Gtk.Label back_error {
-              visible: false;
-              wrap: true;
-              xalign: 0;
-
-              styles [
-                "error",
-                "caption",
-              ]
-            }
-
-            Gtk.Label tags_label {
-              label: _("Tags");
-              xalign: 0;
-              margin-top: 12;
-
-              styles [
-                "heading",
-              ]
-            }
-
-            // Names separated by commas; suggestions from the tags that exist
-            // appear in a popover (widgets/tag_suggestions.rs), and the entry
-            // keeps the focus throughout.
-            Gtk.Entry tags_entry {
-              placeholder-text: _("Separate tags with commas");
-
-              accessibility {
-                labelled-by: tags_label;
-                described-by: tags_error;
+                  styles [
+                    "error",
+                    "caption",
+                  ]
+                }
               }
-            }
 
-            Gtk.Label tags_error {
-              visible: false;
-              wrap: true;
-              xalign: 0;
+              Adw.PreferencesGroup back_group {
+                title: _("Back");
+                vexpand: true;
 
-              styles [
-                "error",
-                "caption",
-              ]
-            }
-          }
+                Gtk.Frame {
+                  vexpand: true;
+
+                  child: Gtk.ScrolledWindow {
+                    hscrollbar-policy: never;
+                    min-content-height: 96;
+                    vexpand: true;
+
+                    child: GtkSource.View back_view {
+                      buffer: GtkSource.Buffer back_buffer {};
+                      monospace: true;
+                      wrap-mode: word_char;
+                      accepts-tab: false;
+                      top-margin: 12;
+                      bottom-margin: 12;
+                      left-margin: 12;
+                      right-margin: 12;
+
+                      accessibility {
+                        label: _("Back");
+                        described-by: back_error;
+                      }
+                    };
+                  };
+                }
+
+                Gtk.Label back_error {
+                  visible: false;
+                  wrap: true;
+                  xalign: 0;
+                  margin-top: 6;
+
+                  styles [
+                    "error",
+                    "caption",
+                  ]
+                }
+              }
+
+              Adw.PreferencesGroup {
+                title: _("Tags");
+                description: _("Press Enter or type a comma after each tag");
+
+                $RappelTagEntry tag_entry {}
+              }
+
+              // A quiet reminder of the save key, after the fields: it
+              // scrolls with them, so it never takes room from them on a
+              // small screen. The Save button's tooltip says it too.
+              Gtk.Box save_hint {
+                halign: start;
+                spacing: 6;
+
+                styles [
+                  "dimmed",
+                ]
+
+                Adw.ShortcutLabel {
+                  accelerator: "<Control>Return";
+
+                  styles [
+                    "caption",
+                  ]
+                }
+
+                Gtk.Label {
+                  label: _("to save");
+
+                  styles [
+                    "caption",
+                  ]
+                }
+              }
+            };
+          };
         }
 
-        Gtk.Separator preview_separator {
+        Gtk.Separator pane_separator {
           orientation: vertical;
-          visible: bind preview_button.active;
         }
 
         // Not focusable: the rendered labels are not (see render/mod.rs),
-        // so Tab goes from the back straight to the header buttons.
-        Gtk.ScrolledWindow {
+        // so Tab goes from the tags straight to the header buttons.
+        Gtk.ScrolledWindow preview_pane {
           hscrollbar-policy: never;
           hexpand: true;
           vexpand: true;
-          visible: bind preview_button.active;
 
-          child: Gtk.Box {
-            orientation: vertical;
-            spacing: 12;
-            margin-top: 6;
-            margin-bottom: 18;
-            margin-start: 18;
-            margin-end: 18;
+          child: Adw.Clamp {
+            maximum-size: 720;
+            tightening-threshold: 600;
 
-            Gtk.Label preview_label {
-              label: _("Preview");
-              xalign: 0;
-
-              styles [
-                "heading",
-              ]
-            }
-
-            Gtk.Label preview_note {
-              label: _("This card is long: only its start is previewed.");
-              visible: false;
-              wrap: true;
-              xalign: 0;
-
-              styles [
-                "dim-label",
-                "caption",
-              ]
-            }
-
-            // Laid out like the review page's card: the front, then the
-            // back under a separator when it has something to show.
-            Gtk.Box {
+            child: Gtk.Box {
               orientation: vertical;
-              spacing: 24;
-              accessible-role: group;
+              margin-top: 12;
+              margin-bottom: 24;
+              margin-start: 12;
+              margin-end: 12;
 
-              accessibility {
-                labelled-by: preview_label;
-              }
+              // Its description is the note shown when a side is longer
+              // than the preview renders (`render::shown_part`), set in
+              // mod.rs.
+              Adw.PreferencesGroup preview_group {
+                title: _("Preview");
 
-              Gtk.Box preview_front {
-                orientation: vertical;
-              }
+                // Laid out like the review page's card: the front, then the
+                // back under a separator when it has something to show.
+                Gtk.Box {
+                  orientation: vertical;
+                  spacing: 24;
+                  accessible-role: group;
 
-              Gtk.Separator preview_back_separator {
-                visible: false;
-              }
+                  accessibility {
+                    label: _("Preview");
+                  }
 
-              Gtk.Box preview_back {
-                orientation: vertical;
-                visible: false;
+                  Gtk.Box preview_front {
+                    orientation: vertical;
+                  }
+
+                  Gtk.Separator preview_back_separator {
+                    visible: false;
+                  }
+
+                  Gtk.Box preview_back {
+                    orientation: vertical;
+                    visible: false;
+                  }
+                }
               }
-            }
+            };
           };
         }
       };
     };
+
+    // Narrow only (the breakpoint): which pane fills the dialog. At the
+    // bottom, as the HIG places a view switcher on narrow windows, so the
+    // header keeps its title and two buttons at 360 px.
+    [bottom]
+    Gtk.ActionBar mode_bar {
+      visible: false;
+
+      [center]
+      Adw.ToggleGroup mode_toggles {
+        active-name: "edit";
+
+        Adw.Toggle {
+          name: "edit";
+          label: _("_Edit");
+          use-underline: true;
+        }
+
+        Adw.Toggle {
+          name: "preview";
+          label: _("_Preview");
+          use-underline: true;
+        }
+      }
+    }
   };
 }

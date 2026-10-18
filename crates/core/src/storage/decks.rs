@@ -3,7 +3,7 @@
 
 use rusqlite::{Connection, ErrorCode, OptionalExtension, TransactionBehavior, params};
 
-use super::review::study_input_in;
+use super::review::deck_counts_in;
 use super::{Store, observe_max_id};
 use crate::domain::{
     Deck, DeckSummary, MAX_DECK_NAME_BYTES, deck_name_fits, deck_name_key, has_nul,
@@ -85,6 +85,9 @@ impl Store {
     /// counts are the lengths of [`Store::study_input`] for the study day
     /// that began at `day_start`: due reviews and step cards (those due
     /// within 20 minutes included), and the new cards still allowed today.
+    /// Each summary also has the deck's card and suspended counts, the
+    /// cards the daily limits hold back, and the next study change
+    /// ([`Store::next_study_change`]), read in the same transaction.
     ///
     /// # Errors
     /// SQLite errors.
@@ -93,12 +96,17 @@ impl Store {
         let decks = live_decks(&tx)?;
         let mut summaries = Vec::with_capacity(decks.len());
         for deck in decks {
-            // The deck page's own rules (ADR 0014), so both always agree.
-            let input = study_input_in(&tx, &deck.id, now, day_start)?;
+            // The deck page's own rules (ADR 0014), so both always agree;
+            // counted without reading the cards' ids (ADR 0041).
+            let c = deck_counts_in(&tx, &deck.id, now, day_start)?;
             summaries.push(DeckSummary {
                 deck,
-                new_count: count_of(input.new.len()),
-                due_count: count_of(input.reviews.len() + input.steps.len()),
+                new_count: c.new,
+                due_count: c.reviews.saturating_add(c.steps),
+                card_count: c.live,
+                suspended_count: c.suspended,
+                held_back_count: c.held_back,
+                next_change_at: c.next_change_at,
             });
         }
         // Read only: ending it commits nothing.
@@ -271,11 +279,6 @@ pub(super) fn ensure_live_deck(conn: &Connection, id: &str) -> Result<()> {
     )
     .optional()?
     .ok_or_else(|| Error::DeckNotFound(id.to_owned()))
-}
-
-/// A count for [`DeckSummary`]; no deck holds more than `u32::MAX` cards.
-fn count_of(n: usize) -> u32 {
-    u32::try_from(n).unwrap_or(u32::MAX)
 }
 
 #[cfg(test)]

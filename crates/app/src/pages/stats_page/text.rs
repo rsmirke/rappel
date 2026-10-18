@@ -4,6 +4,7 @@
 
 use crate::state::StatsData;
 use crate::ui::text::{count, group_digits, percent, studied_text};
+use crate::ui::tile::Tile;
 use crate::widgets::bar_chart::ChartBar;
 use crate::widgets::bar_chart::layout::{Bar, nice_ceiling};
 use crate::widgets::chart_card::ChartModel;
@@ -18,21 +19,21 @@ pub struct DayNames<'a> {
     pub long: &'a dyn Fn(i64) -> String,
 }
 
-/// One headline number.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Tile {
-    /// The big text, "91%" or "—" without data.
-    pub value: String,
-    pub caption: String,
-    /// What a screen reader says for the whole tile.
-    pub accessible: String,
-}
-
 pub const REVIEWS_TITLE: &str = "Reviews per Day";
 pub const TIME_TITLE: &str = "Time Studied per Day";
 pub const FORECAST_TITLE: &str = "Due Forecast";
 
 const NO_DATA: &str = "—";
+
+/// The label of the empty state's button, which goes back to the page the
+/// statistics were opened from: a deck's page, or the deck list.
+pub fn back_label(one_deck: bool) -> &'static str {
+    if one_deck {
+        "_Back to Deck"
+    } else {
+        "_Back to Decks"
+    }
+}
 
 /// The three headline numbers.
 pub fn headline(data: &StatsData) -> [Tile; 3] {
@@ -46,8 +47,8 @@ pub fn headline(data: &StatsData) -> [Tile; 3] {
             accessible: format!("{caption}: {said}"),
         }
     };
-    let reviews: u32 = stats.days.iter().map(|d| d.reviews).sum();
-    let studied_ms: i64 = stats.days.iter().map(|d| d.duration_ms).sum();
+    let reviews = total_u32(stats.days.iter().map(|d| d.reviews));
+    let studied_ms = total_ms(stats.days.iter().map(|d| d.duration_ms));
     [
         tile(
             stats.expected_retention.map(percent),
@@ -74,6 +75,19 @@ pub fn nothing_to_show(data: &StatsData) -> bool {
     stats.scheduled_cards == 0
         && stats.days.iter().all(|d| d.reviews == 0)
         && stats.forecast.iter().all(|&n| n == 0)
+}
+
+/// The sum of `counts`, stopping at `u32::MAX`: a day's counts come from
+/// the database and may each be as large as that (ADR 0050, row 23), and a
+/// plain sum would overflow.
+fn total_u32(counts: impl IntoIterator<Item = u32>) -> u32 {
+    counts.into_iter().fold(0, u32::saturating_add)
+}
+
+/// The sum of `durations` in milliseconds, stopping at the ends of `i64`,
+/// as [`total_u32`] does.
+fn total_ms(durations: impl IntoIterator<Item = i64>) -> i64 {
+    durations.into_iter().fold(0, i64::saturating_add)
 }
 
 /// "3 reviews", "1 review".
@@ -150,8 +164,8 @@ pub fn reviews_chart(data: &StatsData, names: &DayNames<'_>) -> ChartModel {
             }
         })
         .collect();
-    let total: u32 = days.iter().map(|d| d.reviews).sum();
-    let passed: u32 = days.iter().map(|d| d.passes).sum();
+    let total = total_u32(days.iter().map(|d| d.reviews));
+    let passed = total_u32(days.iter().map(|d| d.passes));
     let summary = match busiest(days.iter().map(|d| f64::from(d.reviews))) {
         None => "Last 30 days: no reviews.".to_owned(),
         Some((i, most)) => format!(
@@ -200,7 +214,7 @@ pub fn time_chart(data: &StatsData, names: &DayNames<'_>) -> ChartModel {
             }
         })
         .collect();
-    let total: i64 = days.iter().map(|d| d.duration_ms).sum();
+    let total = total_ms(days.iter().map(|d| d.duration_ms));
     let summary = match busiest(days.iter().map(|d| minutes(d.duration_ms))) {
         None => "Last 30 days: no time studied.".to_owned(),
         Some((i, _)) => format!(
@@ -261,7 +275,7 @@ pub fn forecast_chart(data: &StatsData, names: &DayNames<'_>) -> ChartModel {
             }
         })
         .collect();
-    let total: u32 = stats.forecast.iter().sum();
+    let total = total_u32(stats.forecast.iter().copied());
     let summary = if total == 0 {
         "Next 14 days: nothing due.".to_owned()
     } else {
@@ -333,7 +347,7 @@ mod tests {
     fn data(days: Vec<DayActivity>, forecast: Vec<u32>, overdue: u32) -> StatsData {
         let n = i64::try_from(days.len()).unwrap();
         let a = i64::try_from(forecast.len()).unwrap();
-        let scheduled = forecast.iter().sum();
+        let scheduled = total_u32(forecast.iter().copied());
         StatsData {
             stats: Stats {
                 days,
@@ -350,6 +364,12 @@ mod tests {
 
     fn quiet() -> StatsData {
         data(vec![day(0, 0, 0); 30], vec![0; 14], 0)
+    }
+
+    #[test]
+    fn the_empty_state_goes_back_where_it_came_from() {
+        assert_eq!(back_label(true), "_Back to Deck");
+        assert_eq!(back_label(false), "_Back to Decks");
     }
 
     #[test]
@@ -504,6 +524,55 @@ mod tests {
         assert_eq!(m.summary, "Next 14 days: nothing due.");
         assert_eq!(m.empty, Some("Nothing due in the next 14 days"));
         assert_eq!(m.note, None);
+    }
+
+    /// Counts and durations as large as the database can hold, negative
+    /// durations and far dates: nothing panics or overflows, and every
+    /// number stays sane (ADR 0050, rows 23 and 34).
+    #[test]
+    fn hostile_numbers_never_panic_and_stay_sane() {
+        let hostile = [
+            day(u32::MAX, u32::MAX, i64::MAX),
+            day(u32::MAX, 0, i64::MIN),
+            day(5, 9, -1),
+        ];
+        let mut days: Vec<DayActivity> = hostile.iter().copied().cycle().take(30).collect();
+        days[0] = day(u32::MAX, u32::MAX, i64::MAX);
+        let mut all = data(days, vec![u32::MAX; 14], u32::MAX);
+        all.stats.pass_rate = Some(f64::NAN);
+        all.stats.expected_retention = Some(f64::INFINITY);
+        all.past_starts = vec![i64::MIN; 30];
+        all.ahead_starts = vec![i64::MAX; 14];
+        let names = DayNames {
+            short: &crate::ui::time::day_short,
+            with_weekday: &crate::ui::time::day_with_weekday,
+            long: &crate::ui::time::day_long,
+        };
+        let tiles = headline(&all);
+        for tile in &tiles {
+            assert!(
+                !tile.value.contains("NaN") && !tile.value.contains("inf"),
+                "{tile:?}"
+            );
+        }
+        for chart in [
+            reviews_chart(&all, &names),
+            time_chart(&all, &names),
+            forecast_chart(&all, &names),
+        ] {
+            assert!(chart.ceiling.is_finite() && chart.ceiling >= 1.0);
+            for bar in &chart.bars {
+                assert!(bar.bar.solid.is_finite() && bar.bar.solid >= 0.0);
+                assert!(bar.bar.hatched.is_finite() && bar.bar.hatched >= 0.0);
+            }
+            assert!(!chart.summary.contains('-'), "{}", chart.summary);
+            assert!(chart.summary.len() < 300, "{}", chart.summary);
+        }
+        assert!(
+            reviews_chart(&all, &names)
+                .summary
+                .starts_with("Last 30 days: 4,294,967,295 reviews")
+        );
     }
 
     #[test]

@@ -131,7 +131,7 @@ fn block_widget(block: &Block, lists: usize, math: &mut Budget) -> gtk::Widget {
             let quote = gtk::Box::new(gtk::Orientation::Horizontal, BLOCK_SPACING);
             quote.append(&gtk::Separator::new(gtk::Orientation::Vertical));
             let inner = blocks_widget(blocks, lists, math);
-            inner.add_css_class("dim-label");
+            inner.add_css_class("dimmed");
             inner.set_hexpand(true);
             quote.append(&inner);
             quote.upcast()
@@ -240,6 +240,7 @@ fn text_widget(
         let label = wrapping_label(false, role);
         label.set_use_markup(true);
         label.set_label(&markup.markup);
+        name_without_breaks(&label);
         label.set_wrap(wrap);
         label.set_xalign(match alignment {
             Alignment::Start => 0.0,
@@ -331,11 +332,35 @@ fn plain_label(text: &str, centred: bool) -> gtk::Label {
     let label = wrapping_label(centred, Role::Label);
     label.set_use_markup(false);
     label.set_label(&breaks::breakable(text));
+    name_without_breaks(&label);
     label
 }
 
+/// Gives `label` an accessible name without the breaks its text has for
+/// layout (`breaks`), as the math paragraphs do (ADR 0025 row 3, ADR 0051).
+/// GTK names a label by its text: each new text sets
+/// `GTK_ACCESSIBLE_PROPERTY_LABEL` to it, for every role that may be named
+/// (`gtk_label_set_text_internal`, gtk/gtklabel.c, GTK 4.24), so this runs
+/// after the text is set. The labels here are Label or Heading roles, both
+/// named from content. Returns the name set, if the text had breaks.
+///
+/// The AT-SPI Text interface of a label still gives its text with the
+/// breaks (`gtk_label_accessible_text_get_contents` returns
+/// `gtk_label_get_text`); its offsets and extents must match what is drawn.
+fn name_without_breaks(label: &gtk::Label) -> Option<String> {
+    let text = label.text();
+    if !text.contains(breaks::BREAK) {
+        return None;
+    }
+    let name = breaks::without_breaks(&text);
+    label.update_property(&[gtk::accessible::Property::Label(&name)]);
+    Some(name)
+}
+
 /// `role` is construct-only, so it is set here: a heading is announced as
-/// one (with its level, set by the caller).
+/// one (with its level, set by the caller). Every `set_label` on such a
+/// label must be followed by [`name_without_breaks`]: GTK names the label
+/// again from each new text, breaks included.
 fn wrapping_label(centred: bool, role: Role) -> gtk::Label {
     let label = gtk::Label::builder()
         .accessible_role(role)
@@ -413,9 +438,59 @@ pub fn shown_part(md: &str) -> (&str, bool) {
 
 #[cfg(test)]
 mod tests {
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     use super::*;
+
+    /// Every label under `widget`, in order.
+    fn labels_under(widget: &gtk::Widget) -> Vec<gtk::Label> {
+        let mut out = Vec::new();
+        let mut child = widget.first_child();
+        while let Some(c) = child {
+            if let Ok(label) = c.clone().downcast::<gtk::Label>() {
+                out.push(label);
+            }
+            out.extend(labels_under(&c));
+            child = c.next_sibling();
+        }
+        out
+    }
+
+    #[test]
+    fn labels_with_breaks_are_named_without_them() {
+        crate::testing::with_widgets(|| {
+            let run = "0123456789abcdef".repeat(10);
+            let md = format!("Hash: {run}\n\n# {run}\n\n**{run}** and *more*");
+            let side = render(&rappel_core::content::parse(&md));
+            let labels = labels_under(side.upcast_ref());
+            assert_eq!(labels.len(), 3);
+            for label in &labels {
+                // Drawn with the breaks: the text a label lays out has them.
+                assert!(label.text().contains(breaks::BREAK), "{}", label.text());
+                assert!(matches!(
+                    label.accessible_role(),
+                    Role::Label | Role::Heading
+                ));
+                // Named without them. GTK has no public getter for the value
+                // of an accessible property (`gtk_test_accessible_check_property`
+                // is only in gtk4-sys, variadic and unsafe), so this cannot
+                // read the name `render` set, and does not notice if a call
+                // to `name_without_breaks` is removed; it calls it again to
+                // check what it sets. The AT-SPI walk in ADR 0051 read the
+                // names in the running app.
+                let name = name_without_breaks(label).expect("the text has breaks");
+                assert!(!name.contains(breaks::BREAK));
+                assert!(name.contains(&run), "{name}");
+            }
+            // Plain text (a side over the widget limit, a formula's source).
+            let label = plain_label(&run, false);
+            assert!(label.text().contains(breaks::BREAK));
+            assert_eq!(name_without_breaks(&label).as_deref(), Some(run.as_str()));
+            // Short runs: GTK's own name, the text, is left.
+            let label = plain_label("short words", false);
+            assert_eq!(name_without_breaks(&label), None);
+        });
+    }
 
     #[test]
     fn short_sides_are_shown_whole() {
@@ -489,25 +564,30 @@ mod tests {
             sides.map(|(what, side)| {
                 assert!(side.len() <= MAX_SHOWN_BYTES);
                 let shown = render(&rappel_core::content::parse(&side));
-                let start = Instant::now();
-                // GTK asks for the natural width (no width limit) and then
-                // the height at the width it gives.
-                let _ = shown.measure(gtk::Orientation::Horizontal, -1);
-                let _ = shown.measure(gtk::Orientation::Vertical, 600);
-                let first = start.elapsed();
-                let start = Instant::now();
-                let _ = shown.measure(gtk::Orientation::Vertical, 300);
-                (what, first, start.elapsed())
+                // CPU time: Pango lays out on this thread, and a loaded
+                // machine must not fail the bound (ADR 0049).
+                let (first, ()) = crate::testing::cpu_time_of(|| {
+                    // GTK asks for the natural width (no width limit) and
+                    // then the height at the width it gives.
+                    let _ = shown.measure(gtk::Orientation::Horizontal, -1);
+                    let _ = shown.measure(gtk::Orientation::Vertical, 600);
+                });
+                let (relayout, ()) = crate::testing::cpu_time_of(|| {
+                    let _ = shown.measure(gtk::Orientation::Vertical, 300);
+                });
+                // Checked on this thread, which did the work.
+                let verdict = crate::testing::cpu_within(first, Duration::from_secs(3)).and(
+                    crate::testing::cpu_within(relayout, Duration::from_millis(200)),
+                );
+                (what, first, relayout, verdict)
             })
         });
-        for (what, first, relayout) in times {
+        for (what, first, relayout, verdict) in times {
             crate::testing::print_timing(&format!("first layout, 32 KiB, {what}"), first);
             crate::testing::print_timing(&format!("relayout, 32 KiB, {what}"), relayout);
-            assert!(first < Duration::from_secs(3), "{what}: {first:?}");
-            assert!(
-                relayout < Duration::from_millis(200),
-                "{what}: {relayout:?}"
-            );
+            if let Err(message) = verdict {
+                panic!("{what}: first layout {first:?}, relayout {relayout:?}: {message}");
+            }
         }
     }
 }

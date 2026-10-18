@@ -2,6 +2,8 @@
 
 - Status: Accepted
 - Date: 2026-10-16
+- Amended by: ADR 0049 (time bounds are on CPU time at the speed of the machine they were set on, with a separate wall-clock hang timeout)
+- Amended by: ADR 0050 (round 2: the entry points added since #47, rows 15 to 29 in core and 30 to 38 in the app)
 
 ## Context
 

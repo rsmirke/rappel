@@ -291,6 +291,18 @@ pub struct DeckSummary {
     pub new_count: u32,
     /// Due reviews and step cards, those due within 20 minutes included.
     pub due_count: u32,
+    /// Live cards in the deck, suspended ones included.
+    pub card_count: u32,
+    /// Live cards that are suspended.
+    pub suspended_count: u32,
+    /// Cards that would be studied now but for the daily limits: new cards
+    /// past today's allowance and due reviews past today's allowance. They
+    /// come back when the next study day begins.
+    pub held_back_count: u32,
+    /// When the deck next offers one more reviewed card, after `now`
+    /// (`Store::next_study_change`); `None` if no card will become due.
+    /// The next study day, which renews the limits, is the caller's to add.
+    pub next_change_at: Option<i64>,
 }
 
 /// A card. Deleted cards are never returned.

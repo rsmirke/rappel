@@ -1,6 +1,24 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
   "permissions": {
+    "allow": [
+      "Bash(cargo *)",
+      "Bash(scripts/check.sh)",
+      "Bash(scripts/check.sh *)",
+      "Bash(./scripts/check.sh)",
+      "Bash(xvfb-run *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git switch *)",
+      "Bash(git push *)",
+      "Bash(gh pr create *)",
+      "Bash(gh pr checks)",
+      "Bash(gh pr checks *)",
+      "Bash(gh pr view)",
+      "Bash(gh pr view *)",
+      "Bash(gh pr merge)",
+      "Bash(gh pr merge *)"
+    ],
     "deny": [
       "Bash(git checkout --)",
       "Bash(git checkout -- *)",
@@ -39,6 +57,22 @@
       "Bash(rm -r -f *)",
       "Bash(rm -f -r *)",
       "Bash(rm --recursive --force *)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3",
+            "args": ["-I", "${CLAUDE_PROJECT_DIR}/.claude/hooks/guard-main.py"],
+            "timeout": 30,
+            "onFailure": "block"
+          }
+        ]
+      }
     ]
   }
 }

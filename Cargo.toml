@@ -5,7 +5,7 @@ members = ["crates/core", "crates/app"]
 exclude = ["third_party"]
 
 [workspace.package]
-version = "0.2.0-alpha.3"
+version = "0.2.0-beta.1"
 edition = "2024"
 # gtk4 0.11 / libadwaita 0.9 / gio 0.22 require Rust 1.92.
 rust-version = "1.92"
@@ -18,14 +18,18 @@ rappel-core = { path = "crates/core" }
 
 # UI (app crate only; never in rappel-core).
 gtk = { package = "gtk4", version = "0.11", features = ["v4_14"] }
-adw = { package = "libadwaita", version = "0.9", features = ["v1_6"] }
-glib-build-tools = "0.22"
+adw = { package = "libadwaita", version = "0.9", features = ["v1_8"] }
 # The card editor (SPEC §4.4, ADR 0022): GtkSourceView 5 bindings, same
 # gtk-rs release as gtk4 0.11. v5_10 for the built-in Adwaita style schemes.
 sourceview5 = { version = "0.11", features = ["v5_10"] }
 # Card text rendering (app): grapheme cluster boundaries, so the breaks that
 # keep long runs fast to lay out never split a character (ADR 0025).
 unicode-segmentation = "1.13"
+
+# Window state (app): the O_NOFOLLOW and O_NONBLOCK flags for opening an
+# untrusted file without following a link or blocking on a pipe (ADR 0050,
+# row 33). Constants only; already in the tree through GLib's bindings.
+libc = "0.2"
 
 # Errors (rappel-core).
 thiserror = "2"

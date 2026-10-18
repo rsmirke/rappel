@@ -55,7 +55,7 @@ template $RappelDecksPage: Adw.NavigationPage {
           description: _("Create a deck to start adding cards");
 
           child: Gtk.Button empty_new_button {
-            label: _("_New Deck");
+            label: _("_Create Deck");
             use-underline: true;
             action-name: "win.new-deck";
             halign: center;
@@ -100,8 +100,9 @@ template $RappelDecksPage: Adw.NavigationPage {
   };
 }
 
-// The primary menu (F10). Keyboard Shortcuts and About will join Preferences
-// in the last section, as the GNOME HIG orders them.
+// The primary menu (F10). The last section is Preferences, Keyboard
+// Shortcuts and About, in the order the GNOME HIG gives. Preferences and
+// Keyboard Shortcuts show their keys from the application's accelerators.
 menu primary_menu {
   section {
     item {
@@ -126,6 +127,16 @@ menu primary_menu {
     item {
       label: _("_Preferences");
       action: "win.preferences";
+    }
+
+    item {
+      label: _("_Keyboard Shortcuts");
+      action: "app.shortcuts";
+    }
+
+    item {
+      label: _("_About Rappel");
+      action: "win.about";
     }
   }
 }

@@ -12,7 +12,8 @@
     <file preprocess="xml-stripblanks">deck_name_dialog.ui</file>
     <file preprocess="xml-stripblanks">deck_page.ui</file>
     <file preprocess="xml-stripblanks">card_row.ui</file>
-    <file preprocess="xml-stripblanks">browser_row.ui</file>
+    <file preprocess="xml-stripblanks">tag_pills.ui</file>
+    <file preprocess="xml-stripblanks">tag_entry.ui</file>
     <file preprocess="xml-stripblanks">browser_page.ui</file>
     <file preprocess="xml-stripblanks">browser_dialogs.ui</file>
     <file preprocess="xml-stripblanks">card_editor.ui</file>
@@ -27,6 +28,8 @@
     <file preprocess="xml-stripblanks">stats_page.ui</file>
     <file preprocess="xml-stripblanks">card_info_dialog.ui</file>
     <file preprocess="xml-stripblanks">history_row.ui</file>
+    <!-- Found by AdwApplication itself: app.shortcuts and Ctrl+?. -->
+    <file preprocess="xml-stripblanks">shortcuts-dialog.ui</file>
       <!-- Not compiled: plain CSS, loaded by AdwApplication. -->
     <file>style.css</file>
   </gresource>

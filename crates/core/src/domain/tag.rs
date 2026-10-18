@@ -66,7 +66,8 @@ pub fn parse_tag_field(text: &str) -> std::result::Result<Vec<String>, TagFieldE
     let pieces: Vec<&str> = text.split(',').collect();
     let last = pieces.len() - 1;
     let mut names: Vec<String> = Vec::new();
-    let mut keys: Vec<String> = Vec::new();
+    // A set: a pasted list of thousands of names stays linear (ADR 0050).
+    let mut keys: std::collections::HashSet<String> = std::collections::HashSet::new();
     for (i, piece) in pieces.into_iter().enumerate() {
         if i == last && piece.trim().is_empty() {
             break;
@@ -75,9 +76,7 @@ pub fn parse_tag_field(text: &str) -> std::result::Result<Vec<String>, TagFieldE
             position: i + 1,
             error,
         })?;
-        let key = name_key(name);
-        if !keys.contains(&key) {
-            keys.push(key);
+        if keys.insert(name_key(name)) {
             names.push(name.to_owned());
         }
     }
@@ -85,9 +84,10 @@ pub fn parse_tag_field(text: &str) -> std::result::Result<Vec<String>, TagFieldE
 }
 
 /// `name` trimmed, if it can be a tag name: not empty, at most
-/// [`MAX_TAG_NAME_BYTES`], no NUL and no comma. The card editor's tags
-/// field is a comma-separated list (SPEC §4.4), so a comma inside a name
-/// could not be typed back.
+/// [`MAX_TAG_NAME_BYTES`], no NUL and no comma. In the card editor's tags
+/// field a comma ends a name and makes it a pill (SPEC §4.4, ADR 0043), and
+/// [`parse_tag_field`] reads a comma-separated list, so a comma inside a
+/// name could not be typed.
 ///
 /// # Errors
 /// [`Error::EmptyTagName`], [`Error::TagNameTooLong`],

@@ -1,40 +1,104 @@
 using Gtk 4.0;
 
-// One card in the deck page's list. The labels are set in
-// widgets/card_row.rs; card content is untrusted, so markup is off.
+// One card in a list of cards (ADR 0042, 0044): the front as the title, the
+// back and the tags as the line under it, an icon when the card is
+// suspended and a menu. On All Cards a third line says the deck and the
+// status, and a check button shows while cards are being chosen. Laid out
+// like an action row through the classes libadwaita styles in any row
+// (`row > box.header > box.title`, `.title`, `row label.subtitle`), as the
+// deck rows are (ADR 0041). The texts are set
+// in widgets/card_row.rs; card content and tag names are untrusted, so no
+// label here parses markup.
 template $RappelCardRow: Gtk.Box {
-  spacing: 12;
+  styles [
+    "header",
+    "card-row",
+  ]
 
-  Gtk.Label front_label {
-    use-markup: false;
-    single-line-mode: true;
-    ellipsize: end;
-    xalign: 0;
+  // All Cards, while cards are being chosen. It only shows the state: the
+  // row itself is what is activated (a click, Enter or Space).
+  Gtk.CheckButton check {
+    visible: false;
+    can-target: false;
+    focusable: false;
+    valign: center;
+  }
+
+  Gtk.Box {
+    orientation: vertical;
     hexpand: true;
-  }
-
-  // Tags after the front, dimmed and cut off before the front is: the
-  // front keeps the room it asks for, up to what the width leaves.
-  Gtk.Label tags_label {
-    visible: false;
-    use-markup: false;
-    single-line-mode: true;
-    ellipsize: end;
-    xalign: 0;
-    max-width-chars: 24;
+    valign: center;
 
     styles [
-      "dim-label",
+      "title",
     ]
+
+    // The front, on one line: its plain summary, never markup.
+    Gtk.Label front_label {
+      use-markup: false;
+      single-line-mode: true;
+      ellipsize: end;
+      xalign: 0;
+
+      styles [
+        "title",
+      ]
+    }
+
+    // The back, dimmed and smaller (libadwaita's `row label.subtitle`), and
+    // the tags at the end of the line. The back gives way first: the pills
+    // keep their width, and the back ends in "…".
+    Gtk.Box detail_box {
+      spacing: 12;
+
+      Gtk.Label back_label {
+        use-markup: false;
+        single-line-mode: true;
+        ellipsize: end;
+        xalign: 0;
+        hexpand: true;
+
+        styles [
+          "subtitle",
+        ]
+      }
+
+      // Not focusable: the row's accessible label says the tags.
+      $RappelTagPills tag_pills {
+        single-line: true;
+        valign: center;
+      }
+    }
+
+    // All Cards only: "Maths · Due in 3 days", plain text.
+    Gtk.Label caption_label {
+      visible: false;
+      use-markup: false;
+      single-line-mode: true;
+      ellipsize: end;
+      xalign: 0;
+
+      styles [
+        "caption",
+        "dimmed",
+      ]
+    }
   }
 
-  Gtk.Label suspended_label {
+  // A suspended card is not studied (ADR 0035). The icon has the word as
+  // its tooltip and accessible label; the row's label says it too.
+  Gtk.Image suspended_icon {
     visible: false;
-    label: _("Suspended");
+    icon-name: "media-playback-pause-symbolic";
+    tooltip-text: _("Suspended");
+    valign: center;
+
+    accessibility {
+      label: _("Suspended");
+    }
 
     styles [
-      "dim-label",
-      "caption",
+      "dimmed",
     ]
   }
 
@@ -42,7 +106,8 @@ template $RappelCardRow: Gtk.Box {
     icon-name: "view-more-symbolic";
     tooltip-text: _("Card Actions");
     valign: center;
-    menu-model: card_menu;
+    // The menu is given on first use (widgets/card_row.rs,
+    // `ui::rows::menu_on_demand`).
 
     styles [
       "flat",

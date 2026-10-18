@@ -20,15 +20,17 @@ use crate::dialogs::card_editor::{CardEditor, Saved};
 use crate::dialogs::{browser_dialogs, card_info};
 use crate::state::AppState;
 use crate::ui::focus::index_after_removal;
+use crate::ui::text::one_line;
 use crate::ui::toast::{info_toast, show_error, show_toast_from, undo_toast};
-use crate::ui::{dropdown, init_once, nav};
-use crate::widgets::{BrowseItem, BrowserRow};
+use crate::ui::{breakpoint, dropdown, init_once, nav};
+use crate::widgets::tag_entry::field::MAX_TAGS_PER_CARD;
+use crate::widgets::{BrowseItem, CardRow, card_row};
 use crate::window::RappelWindow;
 
 pub mod selection;
 pub mod text;
 
-use text::{Empty, EscapeAction, SuspendChoice};
+use text::{Empty, EscapeAction, ListKey, SpaceAction, SuspendChoice};
 
 mod imp {
     use std::cell::{Cell, OnceCell, RefCell};
@@ -52,7 +54,15 @@ mod imp {
         #[template_child]
         pub search_entry: TemplateChild<gtk::SearchEntry>,
         #[template_child]
-        pub select_button: TemplateChild<gtk::ToggleButton>,
+        pub title_stack: TemplateChild<gtk::Stack>,
+        #[template_child]
+        pub selection_title: TemplateChild<adw::WindowTitle>,
+        #[template_child]
+        pub select_button: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub select_all_button: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub cancel_button: TemplateChild<gtk::Button>,
         #[template_child]
         pub deck_filter: TemplateChild<gtk::DropDown>,
         #[template_child]
@@ -60,9 +70,13 @@ mod imp {
         #[template_child]
         pub state_filter: TemplateChild<gtk::DropDown>,
         #[template_child]
+        pub filter_bar: TemplateChild<adw::Clamp>,
+        #[template_child]
         pub content_stack: TemplateChild<gtk::Stack>,
         #[template_child]
-        pub clear_button: TemplateChild<gtk::Button>,
+        pub empty_page: TemplateChild<adw::StatusPage>,
+        #[template_child]
+        pub empty_button: TemplateChild<gtk::Button>,
         #[template_child]
         pub tags_button: TemplateChild<gtk::MenuButton>,
         #[template_child]
@@ -72,9 +86,13 @@ mod imp {
         #[template_child]
         pub action_bar: TemplateChild<gtk::ActionBar>,
         #[template_child]
-        pub selection_label: TemplateChild<gtk::Label>,
+        pub move_button: TemplateChild<gtk::Button>,
         #[template_child]
         pub suspend_button: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub delete_button: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub reset_button: TemplateChild<gtk::Button>,
         #[template_child]
         pub suspend_content: TemplateChild<adw::ButtonContent>,
         /// A narrow window; the rows follow it.
@@ -93,6 +111,8 @@ mod imp {
         pub editing: Rc<Cell<bool>>,
         /// The card to focus when the editor closes: the one last saved.
         pub focus_after_edit: RefCell<Option<String>>,
+        /// What the list area shows (the rows, or which status page).
+        pub empty: Cell<super::Empty>,
         /// The filters are being rebuilt: their changes are not searches.
         pub quiet: Cell<bool>,
         /// Something was written here: the other pages read it on leaving.
@@ -129,7 +149,9 @@ mod imp {
             rows::install_id_action(klass, "browser.select-card", super::BrowserPage::press);
             // The action bar.
             klass.install_action("browser.move", None, |page, _, _| page.move_selected());
-            klass.install_action("browser.add-tag", None, |page, _, _| page.add_tag());
+            klass.install_action("browser.add-tags", None, |page, _, _| {
+                page.add_tags();
+            });
             klass.install_action("browser.remove-tag", None, |page, _, _| page.remove_tag());
             klass.install_action("browser.suspend-selected", None, |page, _, _| {
                 page.suspend_selected();
@@ -140,7 +162,14 @@ mod imp {
             klass.install_action("browser.delete-selected", None, |page, _, _| {
                 page.run_selected(super::Bulk::Delete);
             });
-            klass.install_action("browser.clear", None, |page, _, _| page.clear_filters());
+            // The header in and out of selection mode.
+            klass.install_action("browser.choose", None, |page, _, _| page.start_choosing());
+            klass.install_action("browser.cancel", None, |page, _, _| page.stop_choosing());
+            klass.install_action("browser.select-all", None, |page, _, _| page.select_all());
+            // The status page's button: back to the decks, or clear.
+            klass.install_action("browser.empty-action", None, |page, _, _| {
+                page.empty_action();
+            });
         }
 
         fn instance_init(obj: &glib::subclass::InitializingObject<Self>) {
@@ -150,7 +179,22 @@ mod imp {
 
     #[glib::derived_properties]
     impl ObjectImpl for BrowserPage {}
-    impl WidgetImpl for BrowserPage {}
+    impl WidgetImpl for BrowserPage {
+        fn root(&self) {
+            // Roots the children first (`gtk_widget_real_root`), so every
+            // `AdwButtonContent` has named its button by then.
+            self.parent_root();
+            for button in [
+                &*self.select_all_button,
+                &*self.move_button,
+                &*self.suspend_button,
+                &*self.delete_button,
+                &*self.reset_button,
+            ] {
+                super::name_by_own_label(button);
+            }
+        }
+    }
     impl NavigationPageImpl for BrowserPage {}
 }
 
@@ -165,7 +209,7 @@ glib::wrapper! {
 enum Bulk {
     Suspend(bool),
     Move { deck_id: String, deck_name: String },
-    AddTag(String),
+    AddTags(Vec<String>),
     RemoveTag(Tag),
     Reset,
     Delete,
@@ -182,13 +226,14 @@ struct Done {
     undo: UndoFn,
 }
 
-/// Does `action` on `ids`. `None` if every card was already as asked.
+/// Does `action` on `ids`. `Err` with the notice to show if no card
+/// changed: every card was already as asked, or (Add Tags) had no room.
 fn perform(
     state: &AppState,
     ids: &[String],
     action: Bulk,
     now: i64,
-) -> rappel_core::Result<Option<Done>> {
+) -> rappel_core::Result<Result<Done, String>> {
     let done = match action {
         Bulk::Suspend(suspended) => {
             let changed = state.set_suspended(ids, suspended)?;
@@ -206,12 +251,30 @@ fn perform(
                 undo: Box::new(move |s| s.unmove_cards(&moved)),
             }
         }
-        Bulk::AddTag(name) => {
-            let (tag, changed) = state.add_tag_to_cards(ids, &name)?;
+        Bulk::AddTags(names) => {
+            let limit = MAX_TAGS_PER_CARD;
+            let added = state.add_tags_to_cards(ids, &names, limit)?;
+            if added.cards.is_empty() {
+                return Ok(Err(if added.full.is_empty() {
+                    text::unchanged_text()
+                } else {
+                    text::no_room_text(limit)
+                }));
+            }
+            // Only the tags that went on some card are named.
+            let linked: std::collections::HashSet<&str> =
+                added.links.iter().map(|(_, id)| id.as_str()).collect();
+            let put: Vec<String> = added
+                .tags
+                .iter()
+                .filter(|t| linked.contains(t.id.as_str()))
+                .map(|t| t.name.clone())
+                .collect();
+            let links = added.links;
             Done {
-                text: text::tag_added_text(changed.len(), &tag.name),
-                total: changed.len(),
-                undo: Box::new(move |s| s.release_tag_from_cards(&changed, &tag.id)),
+                text: text::tags_added_text(&put, added.cards.len(), added.full.len(), limit),
+                total: added.cards.len(),
+                undo: Box::new(move |s| s.release_tags(&links)),
             }
         }
         Bulk::RemoveTag(tag) => {
@@ -243,7 +306,11 @@ fn perform(
             }
         }
     };
-    Ok((done.total > 0).then_some(done))
+    Ok(if done.total > 0 {
+        Ok(done)
+    } else {
+        Err(text::unchanged_text())
+    })
 }
 
 impl BrowserPage {
@@ -258,6 +325,9 @@ impl BrowserPage {
         imp.card_list
             .set_model(Some(&gtk::NoSelection::new(Some(store.clone()))));
         imp.card_list.set_factory(Some(&page.row_factory()));
+        for filter in [&*imp.deck_filter, &*imp.tag_filter, &*imp.state_filter] {
+            dropdown::shrinkable(filter);
+        }
         init_once(&imp.state, state);
         init_once(&imp.items, store);
         page.load_filters(deck_id)?;
@@ -266,9 +336,13 @@ impl BrowserPage {
         Ok(page)
     }
 
-    /// Puts the keyboard in the search field (Ctrl+F).
+    /// Puts the keyboard in the search field (Ctrl+F). Not while cards are
+    /// being chosen: the header shows the selection then, and Cancel or
+    /// Escape comes first (the choice is not dropped by a shortcut).
     pub fn focus_search(&self) {
-        self.imp().search_entry.grab_focus();
+        if !self.selecting() {
+            self.imp().search_entry.grab_focus();
+        }
     }
 
     /// Reads the rows again, after an import.
@@ -281,22 +355,17 @@ impl BrowserPage {
 
     fn connect_signals(&self) {
         let imp = self.imp();
-        imp.breakpoint.connect_apply(glib::clone!(
-            #[weak(rename_to = page)]
-            self,
-            move |_| {
-                page.set_compact(true);
-                page.update_selection_ui();
-            }
-        ));
-        imp.breakpoint.connect_unapply(glib::clone!(
-            #[weak(rename_to = page)]
-            self,
-            move |_| {
-                page.set_compact(false);
-                page.update_selection_ui();
-            }
-        ));
+        breakpoint::follow(
+            &imp.breakpoint,
+            glib::clone!(
+                #[weak(rename_to = page)]
+                self,
+                move |compact| {
+                    page.set_compact(compact);
+                    page.update_selection_ui();
+                }
+            ),
+        );
         imp.search_entry.connect_search_changed(glib::clone!(
             #[weak(rename_to = page)]
             self,
@@ -323,7 +392,7 @@ impl BrowserPage {
             #[upgrade_or]
             glib::Propagation::Proceed,
             move |_, key, _, _| {
-                if key == gtk::gdk::Key::Down {
+                if key == text::TO_LIST_KEY {
                     page.imp().card_list.grab_focus();
                     glib::Propagation::Stop
                 } else {
@@ -348,15 +417,7 @@ impl BrowserPage {
             self,
             move |_, position| page.activate(position)
         ));
-        imp.select_button.connect_toggled(glib::clone!(
-            #[weak(rename_to = page)]
-            self,
-            move |button| {
-                if !page.imp().quiet.get() {
-                    page.choose_mode(button.is_active());
-                }
-            }
-        ));
+        self.add_type_to_search();
         self.connect_hidden(|page| {
             // The deck pages and the deck list read what was written here
             // (the page may be about to go, so it is the window's to ask).
@@ -376,6 +437,53 @@ impl BrowserPage {
         self.add_escape();
     }
 
+    /// Typing in the list or on the status page searches: a key that types
+    /// a character goes into the search field, which takes the focus
+    /// without selecting its text, so typing, Backspace and the arrows
+    /// carry on there (`text::types_into_search`). Bubble phase on the
+    /// content, so the list's own keys come first, the filters and the
+    /// header keep theirs, and a key typed while a popover is open (a row's
+    /// menu, a drop-down's popup: the event comes from the popover's own
+    /// surface) stays there. Not GTK's `gtk_search_entry_set_key_capture_widget`:
+    /// it forwards keys from popovers under the capture widget too and
+    /// leaves the focus behind (gtksearchentry.c,
+    /// `capture_widget_key_handled`).
+    fn add_type_to_search(&self) {
+        let keys = gtk::EventControllerKey::new();
+        keys.connect_key_pressed(glib::clone!(
+            #[weak(rename_to = page)]
+            self,
+            #[upgrade_or]
+            glib::Propagation::Proceed,
+            move |keys, key, _, modifiers| {
+                let imp = page.imp();
+                let in_popover = keys.current_event().and_then(|event| event.surface())
+                    != imp.content_stack.native().and_then(|n| n.surface());
+                let search_empty = imp.search_entry.text().is_empty();
+                if !text::types_into_search(
+                    key,
+                    modifiers,
+                    in_popover,
+                    page.selecting(),
+                    search_empty,
+                ) {
+                    return glib::Propagation::Proceed;
+                }
+                let Some(field) = imp.search_entry.delegate().and_downcast::<gtk::Text>() else {
+                    return glib::Propagation::Proceed;
+                };
+                field.grab_focus_without_selecting();
+                field.set_position(-1);
+                if keys.forward(&field) {
+                    glib::Propagation::Stop
+                } else {
+                    glib::Propagation::Proceed
+                }
+            }
+        ));
+        self.imp().content_stack.add_controller(keys);
+    }
+
     /// Ctrl+A and Space on the list. Capture phase on the list, so they come
     /// before the list view's own bindings (`list.select-all` and the item's
     /// `listitem.select` do nothing on a list without a selection model).
@@ -388,21 +496,24 @@ impl BrowserPage {
             self,
             #[upgrade_or]
             glib::Propagation::Proceed,
-            move |_, key, _, modifiers| {
-                let ctrl = modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK);
-                if ctrl && matches!(key, gtk::gdk::Key::a | gtk::gdk::Key::A) {
+            move |_, key, _, modifiers| match text::list_key(key, modifiers) {
+                Some(ListKey::SelectAll) => {
                     page.select_all();
                     glib::Propagation::Stop
-                } else if key == gtk::gdk::Key::space
-                    && !ctrl
-                    && page.imp().selection.borrow().active()
-                    && let Some(id) = page.focused_card()
-                {
-                    page.toggle(&id);
-                    glib::Propagation::Stop
-                } else {
-                    glib::Propagation::Proceed
                 }
+                Some(ListKey::Space) => {
+                    let selecting = page.imp().selection.borrow().active();
+                    match text::space_action(selecting, page.row_has_focus()) {
+                        SpaceAction::Toggle => {
+                            if let Some(id) = page.focused_card() {
+                                page.toggle(&id);
+                            }
+                            glib::Propagation::Stop
+                        }
+                        SpaceAction::Pass => glib::Propagation::Proceed,
+                    }
+                }
+                None => glib::Propagation::Proceed,
             }
         ));
         self.imp().card_list.add_controller(keys);
@@ -418,7 +529,7 @@ impl BrowserPage {
             #[upgrade_or]
             glib::Propagation::Proceed,
             move |_, key, _, _| {
-                if key == gtk::gdk::Key::Escape {
+                if key == text::ESCAPE_KEY {
                     page.escape()
                 } else {
                     glib::Propagation::Proceed
@@ -448,60 +559,29 @@ impl BrowserPage {
     }
 
     /// Escape in an empty search field leaves it: for the list, or the
-    /// button of the empty state; with nothing to focus the page goes back.
+    /// button of the empty state.
     fn leave_search(&self) {
         let imp = self.imp();
         match imp.content_stack.visible_child_name().as_deref() {
             Some("list") => {
                 imp.card_list.grab_focus();
             }
-            Some("none") => {
-                imp.clear_button.grab_focus();
+            Some("empty") => {
+                imp.empty_button.grab_focus();
             }
-            _ => nav::pop(self),
+            _ => {}
         }
     }
 
     /// A row per visible card, following the page's `compact` and
     /// `selecting` properties.
     fn row_factory(&self) -> gtk::SignalListItemFactory {
-        let factory = gtk::SignalListItemFactory::new();
-        let page = self.downgrade();
-        factory.connect_setup(move |_, item| {
-            let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
-                return;
-            };
-            let row = BrowserRow::default();
-            if let Some(page) = page.upgrade() {
-                page.bind_property("compact", &row, "compact")
-                    .sync_create()
-                    .build();
-                page.bind_property("selecting", &row, "selecting")
-                    .sync_create()
-                    .build();
-            }
-            item.set_child(Some(&row));
-        });
-        factory.connect_bind(|_, item| {
-            let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
-                return;
-            };
-            if let (Some(card), Some(row)) = (
-                item.item().and_downcast::<BrowseItem>(),
-                item.child().and_downcast::<BrowserRow>(),
-            ) {
-                row.bind(&card, item);
-            }
-        });
-        factory.connect_unbind(|_, item| {
-            if let Some(row) = item
-                .downcast_ref::<gtk::ListItem>()
-                .and_then(|item| item.child().and_downcast::<BrowserRow>())
-            {
-                row.unbind();
-            }
-        });
-        factory
+        card_row::factory(
+            self,
+            CardRow::for_browser,
+            &["compact", "selecting"],
+            CardRow::bind_browse,
+        )
     }
 
     // --- reading ---------------------------------------------------------
@@ -567,7 +647,8 @@ impl BrowserPage {
         self.requery();
         let imp = self.imp();
         let n = imp.items.get().map_or(0, gio::ListStore::n_items);
-        imp.count_label.announce(
+        // From the page: the count label is hidden on a narrow window.
+        self.announce(
             &text::count_text(n as usize),
             gtk::AccessibleAnnouncementPriority::Medium,
         );
@@ -602,12 +683,38 @@ impl BrowserPage {
                 .collect()
         };
         store.splice(0, store.n_items(), &items);
-        let page = match text::empty_state(items.len(), text::is_filtered(&query)) {
-            Empty::No => "list",
-            Empty::NoCards => "empty",
-            Empty::NoResults => "none",
+        let filtered = text::is_filtered(&query);
+        // Whether there is any card at all, whatever the filters: read only
+        // when a filtered search found nothing (unfiltered, no rows means
+        // no cards).
+        let collection_empty = if items.is_empty() && filtered {
+            state
+                .list_decks(rappel_core::time::now_ms())?
+                .iter()
+                .all(|deck| deck.card_count == 0)
+        } else {
+            items.is_empty()
         };
-        imp.content_stack.set_visible_child_name(page);
+        let empty = text::empty_state(items.len(), filtered, collection_empty);
+        imp.empty.set(empty);
+        imp.filter_bar.set_visible(text::filters_shown(empty));
+        // Nothing to choose from.
+        self.action_set_enabled("browser.choose", !items.is_empty());
+        match text::empty_page(empty) {
+            None => imp.content_stack.set_visible_child_name("list"),
+            Some((icon, title, description)) => {
+                imp.empty_page.set_icon_name(Some(icon));
+                imp.empty_page.set_title(title);
+                imp.empty_page.set_description(Some(description));
+                imp.empty_button.set_label(if empty == Empty::NoCards {
+                    text::GO_TO_DECKS
+                } else {
+                    let (searched, filtered) = text::searched_and_filtered(&query);
+                    text::clear_label(searched, filtered)
+                });
+                imp.content_stack.set_visible_child_name("empty");
+            }
+        }
         imp.count_label.set_label(&text::count_text(items.len()));
         self.update_selection_ui();
         Ok(())
@@ -644,6 +751,13 @@ impl BrowserPage {
             .collect()
     }
 
+    /// Whether a row itself has the keyboard focus (not a button in it).
+    fn row_has_focus(&self) -> bool {
+        let list = &self.imp().card_list;
+        let focused = list.root().and_then(|root| root.focus());
+        focused.is_some() && focused == list.focus_child()
+    }
+
     /// The card whose row has the keyboard focus.
     fn focused_card(&self) -> Option<String> {
         let row = self
@@ -651,7 +765,7 @@ impl BrowserPage {
             .card_list
             .focus_child()?
             .first_child()
-            .and_downcast::<BrowserRow>()?;
+            .and_downcast::<CardRow>()?;
         let id = row.card_id();
         (!id.is_empty()).then_some(id)
     }
@@ -679,6 +793,9 @@ impl BrowserPage {
     fn select_all(&self) {
         let imp = self.imp();
         let ids = self.ids();
+        if ids.is_empty() {
+            return;
+        }
         imp.selection
             .borrow_mut()
             .select_all(ids.iter().map(String::as_str));
@@ -699,6 +816,33 @@ impl BrowserPage {
         let chosen = self.imp().selection.borrow_mut().toggle(id);
         item.set_selected(chosen);
         self.update_selection_ui();
+    }
+
+    /// The Select button: start choosing. The button hides, so the
+    /// keyboard goes to the list (or stays where it was if it is empty).
+    fn start_choosing(&self) {
+        self.choose_mode(true);
+        let imp = self.imp();
+        if imp.content_stack.visible_child_name().as_deref() == Some("list") {
+            imp.card_list.grab_focus();
+        }
+    }
+
+    /// Cancel: stop choosing (the keyboard goes to the Select button that
+    /// takes its place, `update_selection_ui`).
+    fn stop_choosing(&self) {
+        self.choose_mode(false);
+    }
+
+    /// The status page's button: on "No Cards Yet" back to the deck list
+    /// (where decks are made and cards added), on "No Results Found" clear
+    /// the search and filters.
+    fn empty_action(&self) {
+        match self.imp().empty.get() {
+            Empty::NoCards => nav::pop(self),
+            Empty::NoResults => self.clear_filters(),
+            Empty::No => {}
+        }
     }
 
     /// A long press on a row: start choosing with this card.
@@ -737,15 +881,29 @@ impl BrowserPage {
             let selection = imp.selection.borrow();
             (selection.active(), selection.len())
         };
-        self.set_selecting(active);
-        imp.quiet.set(true);
-        imp.select_button.set_active(active);
-        imp.quiet.set(false);
-        imp.action_bar.set_revealed(active);
-        imp.selection_label.set_label(&text::selection_title(n));
+        if self.selecting() != active {
+            // A header button about to hide must not keep the keyboard: it
+            // goes to the Select button that takes its place.
+            let header_focus = imp.select_all_button.has_focus() || imp.cancel_button.has_focus();
+            self.set_selecting(active);
+            // The header of selection mode (HIG): how many are chosen, Select
+            // All and Cancel; Back hides and Escape does not go back
+            // (`AdwNavigationPage:can-pop` docs), so Escape leaves the mode.
+            imp.title_stack
+                .set_visible_child_name(if active { "selection" } else { "search" });
+            imp.select_button.set_visible(!active);
+            imp.select_all_button.set_visible(active);
+            imp.cancel_button.set_visible(active);
+            self.set_can_pop(!active);
+            imp.action_bar.set_revealed(active);
+            if header_focus && !active {
+                imp.select_button.grab_focus();
+            }
+        }
+        imp.selection_title.set_title(&text::selection_title(n));
         for action in [
             "browser.move",
-            "browser.add-tag",
+            "browser.add-tags",
             "browser.remove-tag",
             "browser.suspend-selected",
             "browser.reset-selected",
@@ -756,10 +914,10 @@ impl BrowserPage {
         // Tags is a menu button, which does not follow its menu's actions.
         imp.tags_button.set_sensitive(n > 0);
         let choice = self.suspend_choice();
-        let (label, tooltip) = text::suspend_labels(choice);
-        imp.suspend_button.set_tooltip_text(Some(tooltip));
+        let (label, accessible) = text::suspend_labels(choice);
+        imp.suspend_button.set_tooltip_text(Some(label));
         imp.suspend_button
-            .update_property(&[gtk::accessible::Property::Label(tooltip)]);
+            .update_property(&[gtk::accessible::Property::Label(accessible)]);
         imp.suspend_content.set_icon_name(match choice {
             SuspendChoice::Suspend => "media-playback-pause-symbolic",
             SuspendChoice::Unsuspend => "media-playback-start-symbolic",
@@ -920,20 +1078,27 @@ impl BrowserPage {
         ));
     }
 
-    fn add_tag(&self) {
+    /// Asks for tags in the card editor's tag entry, with every tag as a
+    /// suggestion (the tag filter's list, read again on every change), and
+    /// puts them on the chosen cards (ADR 0051). Returns the dialog (tests
+    /// answer it).
+    fn add_tags(&self) -> Option<adw::AlertDialog> {
         let ids = self.chosen_ids();
         if ids.is_empty() {
-            return;
+            return None;
         }
-        glib::spawn_future_local(glib::clone!(
-            #[weak(rename_to = page)]
+        let all = self.imp().tags.borrow().clone();
+        let body = text::add_tags_body(ids.len());
+        browser_dialogs::add_tags(
             self,
-            async move {
-                if let Some(name) = browser_dialogs::ask_tag_name(&page).await {
-                    page.run(&ids, Bulk::AddTag(name));
-                }
-            }
-        ));
+            &body,
+            all,
+            glib::clone!(
+                #[weak(rename_to = page)]
+                self,
+                move |names| page.run(&ids, Bulk::AddTags(names))
+            ),
+        )
     }
 
     fn remove_tag(&self) {
@@ -983,13 +1148,13 @@ impl BrowserPage {
         let first = ids.first().and_then(|id| self.position(id));
         let first_id = ids.first().cloned();
         match perform(&state, ids, action, rappel_core::time::now_ms()) {
-            Ok(Some(done)) => {
+            Ok(Ok(done)) => {
                 self.choose_mode(false);
                 self.changed();
                 self.refocus(first, first_id.as_deref());
                 self.offer_undo(state, done);
             }
-            Ok(None) => show_toast_from(self, info_toast(&text::unchanged_text())),
+            Ok(Err(notice)) => show_toast_from(self, info_toast(&notice)),
             Err(rappel_core::Error::CardNotFound(_) | rappel_core::Error::DeckNotFound(_)) => {
                 // Another window or an import removed a card or a deck: the
                 // list shown is old. Nothing was written (the write is all or
@@ -1093,20 +1258,40 @@ fn undo(
 /// "All …" first, then the names, each on one line.
 fn labels<'a>(all: &str, names: impl Iterator<Item = &'a String>) -> Vec<String> {
     std::iter::once(all.to_owned())
-        .chain(names.map(|n| text::one_line(n)))
+        .chain(names.map(|n| one_line(n)))
         .collect()
+}
+
+/// Lets `button`'s own accessible label (Blueprint, or `suspend_labels`)
+/// name it, not its `AdwButtonContent`'s text. That content makes its
+/// label the button's mnemonic label when it is rooted
+/// (`adw_button_content_root`, source read for libadwaita 1.9 and main),
+/// which sets the button's labelled-by relation
+/// (`gtk_widget_add_mnemonic_label`, source read for GTK 4.24), and
+/// a labelled-by relation names a widget before its label property does
+/// (`gtk_at_context_get_text_accumulate`, steps 2B and 2C of the ARIA
+/// name computation, gtk/gtkatcontext.c, GTK 4.24). The button was then
+/// named by its visible word ("Move…") and, on a phone, where the
+/// breakpoint empties the words, not at all (observed over AT-SPI with
+/// libadwaita 1.10.0 and GTK 4.24.1). Only the accessible relation is
+/// reset: the mnemonic label stays, so a mnemonic such as Select All's
+/// "_All" still activates the button.
+fn name_by_own_label(button: &gtk::Button) {
+    button.reset_relation(gtk::AccessibleRelation::LabelledBy);
 }
 
 #[cfg(test)]
 mod tests {
-    use std::time::{Duration, Instant};
+    use std::cell::Cell;
+    use std::rc::Rc;
+    use std::time::Duration;
 
     use rappel_core::domain::Grade;
     use rappel_core::storage::{CardStatus, StateFilter};
 
     use super::*;
 
-    const DAY_MS: i64 = 24 * 60 * 60 * 1000;
+    use crate::ui::time::DAY_MS;
 
     fn tags(names: &[&str]) -> Vec<String> {
         names.iter().map(|n| (*n).to_owned()).collect()
@@ -1115,8 +1300,7 @@ mod tests {
     /// A state with decks "Maths" (algebra cards) and "Art" (one card).
     /// Returns the ids of the Maths cards.
     fn state_with_cards() -> (tempfile::TempDir, AppState, Vec<String>, String) {
-        let tmp = tempfile::tempdir().unwrap();
-        let state = AppState::open(tmp.path().join("data")).unwrap();
+        let (tmp, state) = crate::testing::temporary_state();
         let maths = state.create_deck("Maths").unwrap();
         let art = state.create_deck("Art").unwrap();
         let ids = ["alpha equation", "beta matrix", "gamma vector"]
@@ -1136,8 +1320,6 @@ mod tests {
     }
 
     fn page_over(state: &AppState, deck: Option<&str>) -> BrowserPage {
-        adw::init().unwrap();
-        gio::resources_register_include!("rappel.gresource").unwrap();
         BrowserPage::new(state.clone(), deck).unwrap()
     }
 
@@ -1168,10 +1350,12 @@ mod tests {
         assert_eq!((done.undo)(&state).unwrap(), 3);
         assert_eq!(rows(&state), before);
         // Already as asked: nothing to tell.
-        assert!(
+        assert_eq!(
             perform(&state, &ids, Bulk::Suspend(false), now)
                 .unwrap()
-                .is_none()
+                .err()
+                .as_deref(),
+            Some("Nothing changed; the cards were already like that")
         );
 
         // Move.
@@ -1186,11 +1370,19 @@ mod tests {
         assert_eq!(state.card(&ids[0]).unwrap().deck_id, maths);
 
         // Add a tag, take a tag off.
-        let done = perform(&state, &ids, Bulk::AddTag("hard".to_owned()), now)
+        let done = perform(&state, &ids, Bulk::AddTags(tags(&["hard"])), now)
             .unwrap()
             .unwrap();
         assert_eq!(done.text, "Tag “hard” added to 3 cards");
         assert_eq!(state.card_tags(&ids[1]).unwrap().len(), 2);
+        assert_eq!((done.undo)(&state).unwrap(), 3);
+        assert_eq!(rows(&state), before);
+        // Several at once; one the cards have already is not named, and one
+        // Undo takes off the others.
+        let bulk = Bulk::AddTags(tags(&["Algebra", "hard", "exam"]));
+        let done = perform(&state, &ids, bulk, now).unwrap().unwrap();
+        assert_eq!(done.text, "2 tags added to 3 cards");
+        assert_eq!(state.card_tags(&ids[1]).unwrap().len(), 3);
         assert_eq!((done.undo)(&state).unwrap(), 3);
         assert_eq!(rows(&state), before);
         let algebra = state
@@ -1242,6 +1434,38 @@ mod tests {
     }
 
     #[test]
+    fn add_tags_leaves_out_cards_at_the_limit_of_the_tags_field() {
+        let (_tmp, state, ids, _) = state_with_cards();
+        // The first card has the field's 100 tags: "algebra" and 99 more.
+        let many: Vec<String> = (1..MAX_TAGS_PER_CARD).map(|i| format!("t{i}")).collect();
+        state
+            .add_tags_to_cards(&ids[..1], &many, MAX_TAGS_PER_CARD)
+            .unwrap();
+        assert_eq!(state.card_tags(&ids[0]).unwrap().len(), MAX_TAGS_PER_CARD);
+        let now = rappel_core::time::now_ms();
+        let result = perform(&state, &ids[..1], Bulk::AddTags(tags(&["x"])), now);
+        assert_eq!(
+            result.unwrap().err().as_deref(),
+            Some("No tags added; a card can have at most 100 tags")
+        );
+        // A tag it has already is no tag past the limit.
+        let result = perform(&state, &ids[..1], Bulk::AddTags(tags(&["t1"])), now);
+        assert_eq!(
+            result.unwrap().err().as_deref(),
+            Some("Nothing changed; the cards were already like that")
+        );
+        let done = perform(&state, &ids, Bulk::AddTags(tags(&["x"])), now)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            done.text,
+            "Tag “x” added to 2 cards; 1 card left out, as a card can have at most 100 tags"
+        );
+        assert_eq!(state.card_tags(&ids[0]).unwrap().len(), MAX_TAGS_PER_CARD);
+        assert_eq!((done.undo)(&state).unwrap(), 2);
+    }
+
+    #[test]
     fn a_stale_list_changes_nothing() {
         let (_tmp, state, ids, _) = state_with_cards();
         state.delete_card(&ids[2]).unwrap();
@@ -1252,7 +1476,7 @@ mod tests {
 
     #[test]
     fn typing_and_the_filters_narrow_the_list() {
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let (_tmp, state, ids, maths) = state_with_cards();
             let page = page_over(&state, None);
             let imp = page.imp();
@@ -1280,8 +1504,19 @@ mod tests {
             page.search();
             assert_eq!(
                 imp.content_stack.visible_child_name().as_deref(),
-                Some("none")
+                Some("empty")
             );
+            assert_eq!(imp.empty_page.title(), "No Results Found");
+            assert_eq!(
+                imp.empty_button.label().as_deref(),
+                Some("_Clear Search and Filters")
+            );
+            // Its button clears both.
+            page.empty_action();
+            assert_eq!(shown(&page).len(), 4);
+            imp.search_entry.set_text("nothing like it");
+            page.search();
+            assert_eq!(imp.empty_button.label().as_deref(), Some("_Clear Search"));
 
             page.clear_filters();
             assert_eq!(shown(&page).len(), 4);
@@ -1292,7 +1527,7 @@ mod tests {
 
     #[test]
     fn opened_from_a_deck_it_starts_filtered_to_it() {
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let (_tmp, state, _, maths) = state_with_cards();
             let page = page_over(&state, Some(&maths));
             assert_eq!(shown(&page).len(), 3);
@@ -1302,34 +1537,70 @@ mod tests {
 
     #[test]
     fn an_empty_collection_says_so() {
-        crate::testing::with_gtk(|| {
-            let tmp = tempfile::tempdir().unwrap();
-            let state = AppState::open(tmp.path().join("data")).unwrap();
+        crate::testing::with_widgets(|| {
+            let (_tmp, state) = crate::testing::temporary_state();
             let page = page_over(&state, None);
+            let imp = page.imp();
             assert_eq!(
-                page.imp().content_stack.visible_child_name().as_deref(),
+                imp.content_stack.visible_child_name().as_deref(),
                 Some("empty")
             );
+            assert_eq!(imp.empty_page.title(), "No Cards Yet");
+            assert_eq!(imp.empty_button.label().as_deref(), Some("_Go to Decks"));
+            assert!(!imp.filter_bar.is_visible(), "nothing to filter");
+            // Nothing to choose: no selection mode, Ctrl+A does nothing.
+            let _ = page.activate_action("browser.choose", None);
+            assert!(!page.selecting(), "a disabled Select does nothing");
+            page.select_all();
+            assert!(!page.selecting());
+        });
+    }
+
+    #[test]
+    fn opened_from_an_empty_deck_it_says_no_cards_or_no_results() {
+        crate::testing::with_widgets(|| {
+            let (_tmp, state) = crate::testing::temporary_state();
+            let empty = state.create_deck("Empty").unwrap();
+            // No card anywhere: "No Cards Yet" at once, even filtered.
+            let page = page_over(&state, Some(&empty.id));
+            assert_eq!(page.imp().empty_page.title(), "No Cards Yet");
+            assert!(!page.imp().filter_bar.is_visible());
+            // Cards elsewhere: the deck filter finds none of them.
+            let other = state.create_deck("Other").unwrap();
+            state
+                .add_card_with_tags(&other.id, "front", "back", &[])
+                .unwrap();
+            let page = page_over(&state, Some(&empty.id));
+            assert_eq!(page.imp().empty_page.title(), "No Results Found");
+            assert!(page.imp().filter_bar.is_visible());
+            let _ = page.activate_action("browser.choose", None);
+            assert!(!page.selecting(), "a disabled Select does nothing");
         });
     }
 
     #[test]
     fn chosen_cards_are_suspended_and_selection_mode_ends() {
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let (_tmp, state, ids, _) = state_with_cards();
             let page = page_over(&state, None);
             let imp = page.imp();
             page.choose_mode(true);
             assert!(imp.action_bar.is_revealed());
-            assert_eq!(imp.selection_label.label(), "None selected");
+            assert_eq!(imp.selection_title.title(), "Select Cards");
+            assert!(imp.cancel_button.is_visible() && !imp.select_button.is_visible());
+            assert!(
+                !page.can_pop(),
+                "Escape leaves selection mode, not the page"
+            );
             page.toggle(&ids[0]);
             page.toggle(&ids[1]);
-            assert_eq!(imp.selection_label.label(), "2 selected");
+            assert_eq!(imp.selection_title.title(), "2 Selected");
             assert_eq!(page.suspend_choice(), SuspendChoice::Suspend);
 
             page.suspend_selected();
             assert!(!imp.selection.borrow().active());
             assert!(!imp.action_bar.is_revealed());
+            assert!(page.can_pop() && imp.select_button.is_visible());
             let suspended = |state: &AppState| {
                 state
                     .browse(
@@ -1354,8 +1625,114 @@ mod tests {
     }
 
     #[test]
+    fn the_header_buttons_enter_and_leave_selection_mode() {
+        crate::testing::with_widgets(|| {
+            let (_tmp, state, _, _) = state_with_cards();
+            let page = page_over(&state, None);
+            let imp = page.imp();
+            let window = gtk::Window::new();
+            window.set_child(Some(&page));
+            window.present();
+            imp.select_button.emit_clicked();
+            assert!(page.selecting());
+            assert_eq!(
+                imp.title_stack.visible_child_name().as_deref(),
+                Some("selection")
+            );
+            imp.select_all_button.emit_clicked();
+            assert_eq!(page.chosen_ids().len(), 4);
+            assert_eq!(imp.selection_title.title(), "4 Selected");
+            imp.cancel_button.emit_clicked();
+            assert!(!page.selecting());
+            assert!(page.can_pop(), "Back and Escape go back again after Cancel");
+            assert_eq!(page.chosen_ids().len(), 0);
+            assert_eq!(
+                imp.title_stack.visible_child_name().as_deref(),
+                Some("search")
+            );
+            window.destroy();
+        });
+    }
+
+    #[test]
+    fn add_tags_puts_the_tags_of_its_entry_on_the_chosen_cards() {
+        crate::testing::with_widgets(|| {
+            let (_tmp, state, ids, maths) = state_with_cards();
+            // A tag on another card, to be suggested.
+            state
+                .add_card_with_tags(&maths, "other", "back", &tags(&["Économie"]))
+                .unwrap();
+            let page = page_over(&state, None);
+            let window = adw::Window::new();
+            window.set_content(Some(&page));
+            window.present();
+            page.choose_mode(true);
+            page.toggle(&ids[0]);
+            page.toggle(&ids[1]);
+
+            let dialog = page.add_tags().unwrap();
+            assert_eq!(
+                dialog.body(),
+                "Choose the tags to put on 2 cards. Press Enter or type a comma after each one."
+            );
+            let entry = dialog
+                .extra_child()
+                .and_downcast::<crate::widgets::TagEntry>()
+                .unwrap();
+            // The focus goes to the entry's text; Enter there is Add once a
+            // tag is there.
+            assert_eq!(dialog.focus(), Some(entry.text().upcast()));
+            assert!(entry.text().activates_default());
+            assert!(!dialog.is_response_enabled("confirm"), "no tag yet");
+
+            // The editor's suggestions: "eco" finds "Économie".
+            entry.type_text("eco");
+            let found = entry.suggest_for_test();
+            assert_eq!(found.len(), 1);
+            entry.accept_suggestion(0);
+            assert_eq!(entry.pill_names(), ["Économie"]);
+            assert!(dialog.is_response_enabled("confirm"));
+            // A name too long for a tag turns Add off; a typed name counts.
+            entry.type_text(&"x".repeat(300));
+            assert!(!dialog.is_response_enabled("confirm"));
+            entry.type_text("exam");
+            assert!(dialog.is_response_enabled("confirm"));
+
+            dialog.emit_by_name::<()>("response", &[&"confirm"]);
+            let names = |id: &str| -> Vec<String> {
+                state
+                    .card_tags(id)
+                    .unwrap()
+                    .into_iter()
+                    .map(|t| t.name)
+                    .collect()
+            };
+            assert_eq!(names(&ids[0]), ["algebra", "exam", "Économie"]);
+            assert_eq!(names(&ids[1]), ["algebra", "exam", "Économie"]);
+            assert_eq!(names(&ids[2]), ["algebra"], "not chosen");
+            assert!(
+                !page.selecting(),
+                "selection mode ends, as for every action"
+            );
+
+            // Cancel adds nothing.
+            page.choose_mode(true);
+            page.toggle(&ids[2]);
+            let dialog = page.add_tags().unwrap();
+            let entry = dialog
+                .extra_child()
+                .and_downcast::<crate::widgets::TagEntry>()
+                .unwrap();
+            entry.type_text("later");
+            dialog.emit_by_name::<()>("response", &[&"cancel"]);
+            assert_eq!(names(&ids[2]), ["algebra"]);
+            window.destroy();
+        });
+    }
+
+    #[test]
     fn choose_all_then_leave_forgets_the_choice() {
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let (_tmp, state, _, _) = state_with_cards();
             let page = page_over(&state, None);
             page.select_all();
@@ -1369,9 +1746,67 @@ mod tests {
         });
     }
 
+    /// The action buttons have no labelled-by relation once rooted, so
+    /// their own accessible label names them (`name_by_own_label`), also on
+    /// a phone, where the breakpoint empties their words. A button with an
+    /// `AdwButtonContent` that is not reset has the relation, so the check
+    /// can fail.
+    #[test]
+    fn the_action_buttons_are_named_by_their_own_labels() {
+        use gtk::{AccessibleProperty, AccessibleRelation};
+        crate::testing::with_widgets(|| {
+            let control = gtk::Button::new();
+            control.set_child(Some(&adw::ButtonContent::builder().label("Move…").build()));
+            let control_window = gtk::Window::new();
+            control_window.set_child(Some(&control));
+            assert!(gtk::test_accessible_has_relation(
+                &control,
+                AccessibleRelation::LabelledBy
+            ));
+            control_window.destroy();
+
+            let (_tmp, state, _, _) = state_with_cards();
+            let page = page_over(&state, None);
+            let imp = page.imp();
+            let buttons = [
+                &*imp.select_all_button,
+                &*imp.move_button,
+                &*imp.suspend_button,
+                &*imp.delete_button,
+                &*imp.reset_button,
+            ];
+            let check = |when: &str| {
+                for button in buttons {
+                    assert!(
+                        !gtk::test_accessible_has_relation(button, AccessibleRelation::LabelledBy),
+                        "{when}: {:?} is labelled by its words",
+                        button.tooltip_text()
+                    );
+                    assert!(
+                        gtk::test_accessible_has_property(button, AccessibleProperty::Label),
+                        "{when}: {:?} has no label",
+                        button.tooltip_text()
+                    );
+                }
+            };
+            let window = gtk::Window::new();
+            window.set_default_size(360, 640);
+            window.set_child(Some(&page));
+            check("rooted");
+            // Shown at 360 px, the breakpoint applies and empties the words.
+            window.present();
+            assert!(crate::testing::settle_until(
+                || page.compact(),
+                std::time::Duration::from_secs(5)
+            ));
+            check("narrow");
+            window.destroy();
+        });
+    }
+
     #[test]
     fn a_suspended_card_reads_as_suspended() {
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let (_tmp, state, ids, _) = state_with_cards();
             state.set_suspended(&ids[..1], true).unwrap();
             let page = page_over(&state, None);
@@ -1382,16 +1817,18 @@ mod tests {
 
     #[test]
     fn escape_leaves_selection_mode_then_clears_the_search_without_panicking() {
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let (_tmp, state, ids, _) = state_with_cards();
             let page = page_over(&state, None);
             let imp = page.imp();
             // Both arms borrow the selection again: a `Ref` held while they
             // run would panic inside GTK's key handler and abort.
             page.choose_mode(true);
+            assert!(!page.can_pop());
             page.toggle(&ids[0]);
             assert_eq!(page.escape(), glib::Propagation::Stop);
             assert!(!imp.selection.borrow().active());
+            assert!(page.can_pop(), "Back and Escape go back again after Escape");
 
             imp.search_entry.set_text("alpha");
             assert_eq!(page.escape(), glib::Propagation::Stop);
@@ -1405,7 +1842,7 @@ mod tests {
 
     #[test]
     fn an_action_on_a_list_that_is_out_of_date_changes_nothing_and_reads_again() {
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let (_tmp, state, ids, _) = state_with_cards();
             let page = page_over(&state, None);
             assert_eq!(page.ids().len(), 4);
@@ -1424,11 +1861,8 @@ mod tests {
     /// bound, and the list only builds the rows that fit on screen.
     #[test]
     fn five_thousand_cards_stay_fast_and_virtual() {
-        crate::testing::with_gtk(|| {
-            adw::init().unwrap();
-            gio::resources_register_include!("rappel.gresource").unwrap();
-            let tmp = tempfile::tempdir().unwrap();
-            let state = AppState::open(tmp.path().join("data")).unwrap();
+        crate::testing::with_widgets(|| {
+            let (_tmp, state) = crate::testing::temporary_state();
             let deck = state.create_deck("Scratch").unwrap();
             for i in 0..5_000 {
                 state
@@ -1440,23 +1874,39 @@ mod tests {
                     )
                     .unwrap();
             }
-            let started = Instant::now();
-            let page = BrowserPage::new(state.clone(), None).unwrap();
-            let load = started.elapsed();
+            // CPU time on this thread, so a loaded machine does not fail
+            // the bounds (ADR 0049); the row count below is the work.
+            let (load, page) =
+                crate::testing::cpu_time_of(|| BrowserPage::new(state.clone(), None).unwrap());
             let imp = page.imp();
             assert_eq!(page.ids().len(), 5_000);
 
-            let started = Instant::now();
-            imp.search_entry.set_text("card 49");
-            page.search();
-            let search = started.elapsed();
+            let (search, ()) = crate::testing::cpu_time_of(|| {
+                imp.search_entry.set_text("card 49");
+                page.search();
+            });
             assert_eq!(page.ids().len(), 111, "Card 49, 490-499, 4900-4999");
             imp.search_entry.set_text("");
             page.search();
 
-            let started = Instant::now();
-            page.select_all();
-            let choose = started.elapsed();
+            // A huge paste: 1 MiB of words and search syntax. Only the start
+            // of the query is searched (ADR 0050, row 15), and the app does
+            // not cut the field; GTK keeps at most 65,535 bytes in it
+            // (`GTK_ENTRY_BUFFER_MAX_SIZE`, gtkentrybuffer.c). Laid out as
+            // the field would be when drawn.
+            let pasted = "card \"NEAR\" * OR ( x-y ".repeat(1 << 20 >> 5);
+            let (paste, ()) = crate::testing::cpu_time_of(|| {
+                imp.search_entry.set_text(&pasted);
+                let _ = imp.search_entry.measure(gtk::Orientation::Horizontal, -1);
+                page.search();
+            });
+            let kept = imp.search_entry.text().len();
+            assert!((60_000..=usize::from(u16::MAX)).contains(&kept), "{kept}");
+            assert_eq!(page.ids().len(), 0, "no card holds every word");
+            imp.search_entry.set_text("");
+            page.search();
+
+            let (choose, ()) = crate::testing::cpu_time_of(|| page.select_all());
             assert_eq!(page.chosen_ids().len(), 5_000);
             page.choose_mode(false);
 
@@ -1478,21 +1928,66 @@ mod tests {
 
             crate::testing::print_timing("browser page: load 5,000", load);
             crate::testing::print_timing("browser page: search", search);
+            crate::testing::print_timing("browser page: 1 MiB paste", paste);
             crate::testing::print_timing("browser page: choose all", choose);
             if std::env::var_os("RAPPEL_TIMINGS").is_some() {
                 eprintln!("browser page: rows built: {rows}");
             }
-            assert!(load < Duration::from_secs(5), "{load:?}");
-            assert!(search < Duration::from_secs(2), "{search:?}");
-            assert!(choose < Duration::from_secs(2), "{choose:?}");
+            crate::testing::assert_cpu_within(load, Duration::from_secs(5), "load");
+            crate::testing::assert_cpu_within(search, Duration::from_secs(2), "search");
+            crate::testing::assert_cpu_within(paste, Duration::from_millis(500), "1 MiB paste");
+            crate::testing::assert_cpu_within(choose, Duration::from_secs(2), "choose all");
             // The list view builds the rows in view and a few more to size itself
             // (about 200 here), never one per card.
             assert!(rows > 0 && rows < 500, "{rows} rows are built");
         });
     }
 
+    /// Pasting, then typing at once after it, is one search, run once the
+    /// field's `search-delay` (150 ms, `data/browser_page.blp`) has passed:
+    /// `GtkSearchEntry` restarts that delay on each change of a non-empty
+    /// text and emits `search-changed` when it runs out
+    /// (`GtkSearchEntry:search-delay` docs). The page searches only on that
+    /// signal and on a filter's change. The text goes in as typing and
+    /// pasting put it, through the field's `GtkText`; `set_text` would
+    /// first empty the field, a change `GtkSearchEntry` reports at once.
+    #[test]
+    fn a_paste_and_the_keys_after_it_are_one_search() {
+        crate::testing::with_widgets(|| {
+            let (_tmp, state) = crate::testing::temporary_state();
+            let deck = state.create_deck("Deck").unwrap();
+            state
+                .add_card_with_tags(&deck.id, "front", "back", &[])
+                .unwrap();
+            let page = BrowserPage::new(state, None).unwrap();
+            let entry = page.imp().search_entry.clone();
+            let field = entry
+                .delegate()
+                .and_downcast::<gtk::Text>()
+                .expect("a search entry edits through a GtkText");
+            let searches = Rc::new(Cell::new(0));
+            let seen = Rc::clone(&searches);
+            entry.connect_search_changed(move |_| seen.set(seen.get() + 1));
+            let mut position = 0;
+            field.insert_text(&"word ".repeat(10_000), &mut position);
+            for key in ["x", "y", "z"] {
+                field.insert_text(key, &mut position);
+            }
+            assert_eq!(searches.get(), 0, "nothing is searched before the delay");
+            assert!(crate::testing::settle_until(
+                || searches.get() > 0,
+                Duration::from_secs(5)
+            ));
+            // Nothing else is waiting to run.
+            let more =
+                crate::testing::settle_until(|| searches.get() > 1, Duration::from_millis(400));
+            assert!(!more, "{} searches", searches.get());
+            assert_eq!(page.ids().len(), 0);
+        });
+    }
+
     fn count_rows(widget: &gtk::Widget) -> usize {
-        let mut n = usize::from(widget.is::<BrowserRow>());
+        let mut n = usize::from(widget.is::<CardRow>());
         let mut child = widget.first_child();
         while let Some(c) = child {
             n += count_rows(&c);

@@ -10,8 +10,11 @@ mod state;
 mod testing;
 mod transfer;
 mod ui;
+#[cfg(test)]
+mod ui_files;
 mod widgets;
 mod window;
+mod window_state;
 
 use adw::prelude::*;
 use gtk::{gio, glib};
@@ -27,6 +30,15 @@ use crate::window::RappelWindow;
 compile_error!(
     "Rappel needs panic = \"unwind\": the RaTeX catch_unwind guards (ADR 0023) rely on it"
 );
+
+/// The application's accelerators. `app.shortcuts` (Ctrl+?) is set up by
+/// `AdwApplication` itself from `data/shortcuts-dialog.blp`, which lists
+/// these too (a test in `dialogs/shortcuts.rs` checks it).
+const ACCELS: [(&str, &str); 3] = [
+    ("win.new", "<Control>n"),
+    ("win.search", "<Control>f"),
+    ("win.preferences", "<Control>comma"),
+];
 
 fn main() -> glib::ExitCode {
     tracing_subscriber::fmt()
@@ -51,10 +63,14 @@ fn main() -> glib::ExitCode {
     // GtkSourceView (the card editor) needs GTK initialised first. `startup`
     // is a GApplication RUN_FIRST signal, so GtkApplication's own handler,
     // which initialises GTK, runs before this one (gio's GApplication docs).
-    app.connect_startup(|_| sourceview5::init());
-    app.set_accels_for_action("win.new", &["<Control>n"]);
-    app.set_accels_for_action("win.search", &["<Control>f"]);
-    app.set_accels_for_action("win.preferences", &["<Control>comma"]);
+    app.connect_startup(|_| {
+        sourceview5::init();
+        // Before any layout is built (`widgets::register_types`).
+        widgets::register_types();
+    });
+    for (action, accel) in ACCELS {
+        app.set_accels_for_action(action, &[accel]);
+    }
     app.connect_activate(|app| {
         if let Some(window) = app.active_window() {
             window.present();
@@ -73,4 +89,28 @@ fn main() -> glib::ExitCode {
 
     tracing::debug!("starting {}", rappel_core::APP_NAME);
     app.run()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    /// The stylesheet parses without an error: GTK drops a rule it cannot
+    /// parse and only warns, so a typo would silently lose a style.
+    #[test]
+    fn the_stylesheet_parses() {
+        let errors = crate::testing::with_gtk(|| {
+            let provider = gtk::CssProvider::new();
+            let errors = Rc::new(RefCell::new(Vec::new()));
+            let seen = Rc::clone(&errors);
+            provider.connect_parsing_error(move |_, section, error| {
+                seen.borrow_mut()
+                    .push(format!("{}: {error}", section.to_str()));
+            });
+            provider.load_from_string(include_str!("../data/style.css"));
+            errors.take()
+        });
+        assert!(errors.is_empty(), "{errors:#?}");
+    }
 }

@@ -36,7 +36,7 @@ use rusqlite::{Connection, OpenFlags};
 use super::backup::{BackupInfo, SQLITE_HEADER, parse_backup_name, utc_stamp};
 use super::migrations::{MIGRATIONS, Migration, latest, migrate};
 use super::{
-    BACKUP_DIR_NAME, DB_FILE_NAME, FILE_MODE, SIDECAR_SUFFIXES, Store, check_integrity,
+    BACKUP_DIR_NAME, DB_FILE_NAME, FILE_MODE, Protect, SIDECAR_SUFFIXES, Store, check_integrity,
     check_version, exists, sidecar_paths,
 };
 use crate::data_dir::ensure_data_dir;
@@ -53,6 +53,10 @@ pub struct Restored {
     /// suffix. `None` if there was nothing to move. If only leftover
     /// sidecar files were moved, this main file does not exist.
     pub replaced: Option<PathBuf>,
+    /// Where [`start_fresh`] moved a waiting restore copy that could not be
+    /// used (damaged, too new, not Rappel's): `rappel.sqlite3.restore.refused-
+    /// YYYYMMDD-HHMMSS`. `None` otherwise.
+    pub set_aside: Option<PathBuf>,
 }
 
 /// Restores `backup` (from [`super::list_backups`]) as the database in
@@ -95,12 +99,19 @@ pub fn restore_backup(
 /// (see [`Restored::replaced`]). Nothing is deleted. Then an empty
 /// database is created and opened.
 ///
+/// A copy an interrupted restore left waiting is checked first, as
+/// [`finish_restore`] would check it. If it can be used, starting over is
+/// refused (below). If it cannot (it is damaged, too new or not Rappel's),
+/// it is renamed to `rappel.sqlite3.restore.refused-YYYYMMDD-HHMMSS`, never
+/// deleted or overwritten, and [`Restored::set_aside`] says where: otherwise
+/// a damaged copy with no backup left no way on (ADR 0050, row 35).
+///
 /// # Errors
 /// - [`Error::InterruptedRestore`] if a validated copy from an interrupted
-///   restore is waiting to be installed: that copy is the user's data, and
-///   starting over would hide it. Nothing was changed.
+///   restore is waiting to be installed, and still checks: that copy is the
+///   user's data, and starting over would hide it. Nothing was changed.
 /// - [`Error::BackupsAvailable`] if `<data_dir>/backups/` holds backups:
-///   restore one instead. Nothing was changed.
+///   restore one instead. Nothing was changed, a refused copy included.
 /// - IO errors while moving files, and any error from [`Store::open`]. If
 ///   the old files were already moved aside, they stay under their
 ///   `replaced-…` name.
@@ -174,26 +185,103 @@ fn finish_restore_with(data_dir: &Path, now_ms: i64, migrations: &[Migration]) -
     }
     install(&partial, &db_path)?;
     tracing::info!("interrupted restore finished");
-    let store = Store::open_with(
+    // The backup the copy came from is not known, and may be the oldest:
+    // this open prunes nothing (#50).
+    let store = Store::open_protecting(
         &db_path,
         &data_dir.join(BACKUP_DIR_NAME),
         now_ms,
         migrations,
+        Protect::Everything,
     )?;
-    Ok(Restored { store, replaced })
+    Ok(Restored {
+        store,
+        replaced,
+        set_aside: None,
+    })
+}
+
+/// Whether `err`, from checking a restore copy, is about the copy's content,
+/// so the copy can never be installed: it is damaged, not an SQLite file,
+/// not a Rappel database, in WAL mode, which no backup is, or has a
+/// negative version, which no Rappel writes. Any other error (a full disk,
+/// an IO error, too little memory, a copy made by a newer Rappel) says
+/// nothing against the copy, so it is kept where it is (ADR 0050, row 35).
+#[must_use]
+pub fn is_unusable_copy(err: &Error) -> bool {
+    match err {
+        Error::IntegrityCheckFailed { .. }
+        | Error::NotARappelDatabase
+        | Error::WalModeCopy { .. } => true,
+        Error::UnsupportedVersion { found, .. } => *found < 0,
+        Error::Sqlite(rusqlite::Error::SqliteFailure(failure, _)) => matches!(
+            failure.code,
+            rusqlite::ErrorCode::NotADatabase | rusqlite::ErrorCode::DatabaseCorrupt
+        ),
+        _ => false,
+    }
 }
 
 /// [`start_fresh`] with every input explicit, for tests.
 fn start_fresh_with(data_dir: &Path, now_ms: i64, migrations: &[Migration]) -> Result<Restored> {
+    start_fresh_checking(data_dir, now_ms, migrations, &check_copy)
+}
+
+/// A check of a restore copy, as [`check_copy`]; injected by tests.
+type CopyCheck<'a> = &'a dyn Fn(&Path, &[Migration]) -> Result<()>;
+
+/// [`start_fresh_with`] with the copy's check injected, so a test can make
+/// it fail as a full disk would.
+fn start_fresh_checking(
+    data_dir: &Path,
+    now_ms: i64,
+    migrations: &[Migration],
+    check: CopyCheck<'_>,
+) -> Result<Restored> {
     let partial = restore_partial_path(data_dir);
-    if exists(&partial)? {
-        return Err(Error::InterruptedRestore(partial));
+    // Only a regular file is a waiting copy, as for `finish_restore`.
+    // Anything else at that name (a folder, a link) is neither checked nor
+    // moved, and refuses as before: the open would refuse an empty database
+    // beside it anyway.
+    let waiting = match fs::symlink_metadata(&partial) {
+        Ok(meta) if meta.file_type().is_file() => true,
+        Ok(_) => return Err(Error::InterruptedRestore(partial)),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => false,
+        Err(source) => {
+            return Err(Error::Io {
+                path: partial,
+                source,
+            });
+        }
+    };
+    if waiting {
+        // Checked on a scratch copy, as `finish_restore` checks it: one that
+        // can still be installed is the user's data, and one whose check
+        // failed for another reason than its content may be too.
+        let checking = restore_checking_path(data_dir);
+        copy_private(&partial, &checking).inspect_err(|_| remove_copy(&checking))?;
+        let checked = check(&checking, migrations);
+        remove_copy(&checking);
+        match checked {
+            Ok(()) => return Err(Error::InterruptedRestore(partial)),
+            Err(err) if is_unusable_copy(&err) => {
+                tracing::warn!("the waiting restore copy cannot be used: {err}");
+            }
+            Err(err) => return Err(err),
+        }
     }
     let backups = super::list_backups(data_dir)?.len();
     if backups > 0 {
         return Err(Error::BackupsAvailable(backups));
     }
     ensure_data_dir(data_dir)?;
+    let set_aside = if waiting {
+        let target = set_aside_copy(data_dir, &partial, now_ms)?;
+        tracing::info!(path = %target.display(), "unusable restore copy set aside");
+        Some(target)
+    } else {
+        None
+    };
     let db_path = data_dir.join(DB_FILE_NAME);
     let replaced = move_aside(&db_path, now_ms)?;
     if let Some(path) = &replaced {
@@ -206,7 +294,11 @@ fn start_fresh_with(data_dir: &Path, now_ms: i64, migrations: &[Migration]) -> R
         migrations,
     )?;
     tracing::info!("started with an empty database");
-    Ok(Restored { store, replaced })
+    Ok(Restored {
+        store,
+        replaced,
+        set_aside,
+    })
 }
 
 /// Path of the validated copy waiting to be installed.
@@ -267,9 +359,13 @@ fn restore_with(
         &data_dir.join(BACKUP_DIR_NAME),
         now_ms,
         migrations,
-        Some(backup),
+        Protect::Backup(backup),
     )?;
-    Ok(Restored { store, replaced })
+    Ok(Restored {
+        store,
+        replaced,
+        set_aside: None,
+    })
 }
 
 /// The backup must be a regular file with a backup name directly inside
@@ -411,10 +507,9 @@ fn require_rollback_journal(path: &Path) -> Result<()> {
     if &header[..16] != SQLITE_HEADER || (header[18] == 1 && header[19] == 1) {
         Ok(())
     } else {
-        Err(io_err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "the file is in WAL mode, which backups never are",
-        )))
+        Err(Error::WalModeCopy {
+            path: path.to_path_buf(),
+        })
     }
 }
 
@@ -648,8 +743,59 @@ fn remove_moving_aside(db_path: &Path) -> Result<()> {
 /// `<db>.replaced-<stamp>`, or `<db>.replaced-<stamp>-N` with the smallest
 /// N ≥ 2, such that neither it nor any of its sidecar names exist.
 fn free_stem(db_path: &Path, now_ms: i64) -> Result<PathBuf> {
-    let mut base = db_path.as_os_str().to_owned();
-    base.push(".replaced-");
+    free_name(db_path, ".replaced-", now_ms)
+}
+
+/// Moves the unusable copy `partial` to a free
+/// `rappel.sqlite3.restore.refused-<stamp>[-N]`, never over a file. A hard
+/// link fails if the name was taken in the meantime, and then the next free
+/// name is tried; the copy's old name is removed only once the new one
+/// exists. Where the file system refuses hard links (`Unsupported` or
+/// `PermissionDenied`, as some do), it falls back to a rename to the free
+/// name, which could only replace a file created there between the check
+/// and the rename; any other error is returned.
+fn set_aside_copy(data_dir: &Path, partial: &Path, now_ms: i64) -> Result<PathBuf> {
+    let stem = data_dir.join(format!("{DB_FILE_NAME}.restore"));
+    let io_err = |source| Error::Io {
+        path: partial.to_path_buf(),
+        source,
+    };
+    for _ in 0..100 {
+        let target = free_name(&stem, ".refused-", now_ms)?;
+        match fs::hard_link(partial, &target) {
+            Ok(()) => {
+                fs::remove_file(partial).map_err(io_err)?;
+                sync_parent(&target)?;
+                return Ok(target);
+            }
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {}
+            // Only where the file system refuses hard links; any other
+            // error is returned as it is.
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    io::ErrorKind::Unsupported | io::ErrorKind::PermissionDenied
+                ) =>
+            {
+                tracing::debug!("no hard link for the restore copy, renaming it: {err}");
+                fs::rename(partial, &target).map_err(io_err)?;
+                sync_parent(&target)?;
+                return Ok(target);
+            }
+            Err(err) => return Err(io_err(err)),
+        }
+    }
+    Err(io_err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "no free name to set the restore copy aside",
+    )))
+}
+
+/// `<path><infix><stamp>`, or `<path><infix><stamp>-N` with the smallest
+/// N ≥ 2, such that neither it nor any of its sidecar names exist.
+fn free_name(path: &Path, infix: &str, now_ms: i64) -> Result<PathBuf> {
+    let mut base = path.as_os_str().to_owned();
+    base.push(infix);
     base.push(utc_stamp(now_ms));
     let mut candidate = PathBuf::from(&base);
     let mut counter = 2;

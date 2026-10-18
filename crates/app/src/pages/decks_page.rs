@@ -1,6 +1,18 @@
 //! The root page: the list of decks, or an empty state, with create,
 //! rename and delete (undone from a toast). Activating a deck opens its
 //! page. Layout in `data/decks_page.blp`.
+//!
+//! Each row says what its deck has to study, or when it next will
+//! ("Next review in 3 h", `widgets::deck_row::text`). Those texts age, so
+//! the list is read again in place (the rows and the focus stay) when the
+//! page is shown, when the window becomes active (after a suspend the
+//! timer below is late: `GLib` timeouts use the monotonic clock), and by a
+//! timer at the next change, at most a minute, ten minutes or an hour
+//! away (`refresh_delay_ms`, ADR 0041).
+
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use adw::prelude::*;
 use adw::subclass::prelude::*;
@@ -14,6 +26,7 @@ use crate::ui::focus::index_after_removal;
 use crate::ui::nav;
 use crate::ui::toast::{show_error, show_toast_from, undo_toast};
 use crate::widgets::DeckRow;
+use crate::widgets::deck_row::text::refresh_delay_ms;
 
 mod imp {
     use std::cell::{Cell, OnceCell, RefCell};
@@ -23,7 +36,9 @@ mod imp {
     use gtk::glib;
 
     use crate::state::AppState;
+    use crate::ui::debounce::Debounce;
     use crate::ui::rows;
+    use crate::ui::toast::ErrorSlot;
 
     #[derive(Debug, Default, gtk::CompositeTemplate)]
     #[template(resource = "/io/github/rsmirke/Rappel/decks_page.ui")]
@@ -41,6 +56,13 @@ mod imp {
         pub asking: Cell<bool>,
         /// The deck whose page was opened last, focused when coming back.
         pub opened: RefCell<Option<String>>,
+        /// Reads the decks again when a row's text would change.
+        pub refresh_timer: Debounce,
+        /// The last "could not be read" toast of a reload.
+        pub read_errors: ErrorSlot,
+        /// The window's `is-active` is watched (connected once, at the
+        /// first realize).
+        pub watching_window: Cell<bool>,
     }
 
     #[glib::object_subclass]
@@ -79,12 +101,16 @@ mod imp {
                     }
                 }
             ));
-            // Back from a deck: its counts may have changed.
-            page.connect_shown(|page| {
-                if let Some(id) = page.imp().opened.take() {
-                    page.reload_or_toast(super::Focus::Deck(&id));
-                }
+            // Back from a deck: its counts may have changed, and every
+            // row's "Next review in …" may be out of date. The focus is set
+            // here, not before the pop: AdwNavigationView focuses the page
+            // when its transition ends, which is when `shown` is emitted
+            // (CLAUDE.md, "Focus").
+            page.connect_shown(|page| match page.imp().opened.take() {
+                Some(id) => page.reload_or_toast(super::Focus::Deck(&id)),
+                None => page.reload_or_toast(super::Focus::Keep),
             });
+            page.connect_realize(super::DecksPage::watch_window);
         }
     }
     impl WidgetImpl for DecksPage {}
@@ -130,6 +156,59 @@ impl DecksPage {
         self.reload_or_toast(Focus::Keep);
     }
 
+    /// Reads the decks again when the window becomes active, while this
+    /// page shows: after a suspend or a long time in the background, the
+    /// timer has not yet caught up (see the module docs).
+    fn watch_window(&self) {
+        let imp = self.imp();
+        if imp.watching_window.get() {
+            return;
+        }
+        let Some(window) = self.root().and_downcast::<gtk::Window>() else {
+            return;
+        };
+        imp.watching_window.set(true);
+        window.connect_is_active_notify(glib::clone!(
+            #[weak(rename_to = page)]
+            self,
+            move |window| {
+                if window.is_active() && page.is_on_top() {
+                    page.refresh();
+                }
+            }
+        ));
+    }
+
+    /// Whether this page is the one the navigation view shows.
+    fn is_on_top(&self) -> bool {
+        nav::navigation_view(self)
+            .and_then(|view| view.visible_page())
+            .is_some_and(|visible| visible == *self.upcast_ref::<adw::NavigationPage>())
+    }
+
+    /// Reads the decks again after `delay_ms`, replacing a pending read.
+    /// Under another page it does nothing: `shown` reads them on the way
+    /// back. Holds the page weakly: a closed window ends it.
+    fn arm_refresh(&self, delay_ms: u64) {
+        let page = self.downgrade();
+        self.imp()
+            .refresh_timer
+            .restart(Duration::from_millis(delay_ms), move || {
+                if let Some(page) = page.upgrade()
+                    && page.is_on_top()
+                {
+                    page.refresh();
+                }
+            });
+    }
+
+    /// At startup: pushes the page of the deck that was open when the
+    /// window last closed. A deck deleted since leaves the deck list showing
+    /// (`open` ignores `DeckNotFound`).
+    pub fn reopen(&self, id: &str) {
+        self.open(id);
+    }
+
     /// Pushes the page of deck `id`.
     fn open(&self, id: &str) {
         let Some(state) = self.imp().state() else {
@@ -148,17 +227,19 @@ impl DecksPage {
         let Some(view) = nav::navigation_view(self) else {
             return;
         };
-        // Key repeat on a row (Enter held) can activate it again before the
-        // push shows; never stack a second deck page (#20). A mouse double
-        // click activates once: GtkListBox activates only on n_press == 1.
-        if view.visible_page().is_some_and(|p| p.is::<DeckPage>()) {
-            return;
-        }
-        match DeckPage::new(state.clone(), deck) {
-            Ok(page) => {
-                self.imp().opened.replace(Some(id.to_owned()));
-                view.push(&page);
-            }
+        // A mouse double click activates a row once: GtkListBox activates
+        // only on n_press == 1. Key repeat is what the helper guards.
+        let started = Instant::now();
+        let mut built_ms = 0;
+        let pushed = nav::push_unless_on_top(&view, || {
+            let page = DeckPage::new(state.clone(), deck)?;
+            built_ms = started.elapsed().as_millis();
+            self.imp().opened.replace(Some(id.to_owned()));
+            Ok::<_, rappel_core::Error>(page)
+        });
+        match pushed {
+            Ok(true) => log_first_frame(&view, started, built_ms),
+            Ok(false) => {}
             Err(err) => self.error_toast(&format!("The cards could not be read: {err}")),
         }
     }
@@ -171,13 +252,8 @@ impl DecksPage {
         let Some(view) = nav::navigation_view(self) else {
             return;
         };
-        // Key repeat must not stack a second page (see `open`).
-        if view.visible_page().is_some_and(|p| p.is::<StatsPage>()) {
-            return;
-        }
-        match StatsPage::new(state, None) {
-            Ok(page) => view.push(&page),
-            Err(err) => self.error_toast(&format!("The statistics could not be read: {err}")),
+        if let Err(err) = nav::push_unless_on_top(&view, || StatsPage::new(state, None)) {
+            self.error_toast(&format!("The statistics could not be read: {err}"));
         }
     }
 
@@ -295,17 +371,49 @@ impl DecksPage {
         }
     }
 
-    /// Rebuilds the list from the store and moves the focus.
+    /// Reads the decks and shows them, then moves the focus. With
+    /// [`Focus::Keep`] and the same decks in the same order, the rows are
+    /// updated in place, so a refresh never takes the focus from a row;
+    /// otherwise the list is rebuilt and a focused deck keeps the focus.
     fn reload(&self, focus: Focus<'_>) -> rappel_core::Result<()> {
         let imp = self.imp();
         let Some(state) = imp.state() else {
             return Ok(());
         };
-        let decks = state.list_decks()?;
+        let now = rappel_core::time::now_ms();
+        let decks = state.list_decks(now)?;
+        let next_day = state.next_day_start(now)?;
+        self.arm_refresh(refresh_delay_ms(&decks, now, next_day));
+
+        let rows = self.rows();
+        let same_decks = rows.len() == decks.len()
+            && rows
+                .iter()
+                .zip(&decks)
+                .all(|(row, summary)| row.deck_id() == summary.deck.id);
+        if matches!(focus, Focus::Keep) && same_decks {
+            for (row, summary) in rows.iter().zip(&decks) {
+                row.update(summary, now, next_day);
+            }
+            imp.content_stack
+                .set_visible_child_name(if decks.is_empty() { "empty" } else { "list" });
+            return Ok(());
+        }
+        // Rebuilt under `Keep` (decks added or removed meanwhile, e.g. by
+        // an import): the deck that had the focus keeps it.
+        let focused = rows
+            .iter()
+            .find(|row| row.has_focus() || row.focus_child().is_some())
+            .map(DeckRow::deck_id);
+        let focus = match (focus, focused.as_deref()) {
+            (Focus::Keep, Some(id)) => Focus::Deck(id),
+            (focus, _) => focus,
+        };
+
         imp.deck_list.remove_all();
         let mut focus_row: Option<DeckRow> = None;
         for (i, summary) in decks.iter().enumerate() {
-            let row = DeckRow::new(summary);
+            let row = DeckRow::new(summary, now, next_day);
             let wanted = match focus {
                 Focus::Keep => false,
                 Focus::Deck(id) => summary.deck.id == id,
@@ -330,13 +438,69 @@ impl DecksPage {
         Ok(())
     }
 
+    /// The rows of the list, in order.
+    fn rows(&self) -> Vec<DeckRow> {
+        let list = &self.imp().deck_list;
+        (0..)
+            .map_while(|i| list.row_at_index(i))
+            .filter_map(|row| row.downcast::<DeckRow>().ok())
+            .collect()
+    }
+
+    /// [`Self::reload`], with a failure in the page's [`ErrorSlot`]: the
+    /// list is read again on every activation of the window and by a
+    /// timer, so a lasting failure replaces its toast instead of piling
+    /// them up, and a later success takes it away.
     fn reload_or_toast(&self, focus: Focus<'_>) {
-        if let Err(err) = self.reload(focus) {
-            self.error_toast(&format!("The decks could not be read: {err}"));
+        match self.reload(focus) {
+            // A "could not be read" toast from an earlier try is stale now.
+            Ok(()) => self.imp().read_errors.clear(),
+            Err(err) => self.imp().read_errors.show(
+                self,
+                "reading the decks",
+                &format!("The decks could not be read: {err}"),
+            ),
         }
     }
 
     fn error_toast(&self, message: &str) {
         show_error(self, "a deck operation", message);
     }
+}
+
+/// How late the first frame after a deck's push may come and still be
+/// logged as its opening time.
+const FIRST_FRAME_LOG_LIMIT: Duration = Duration::from_secs(5);
+
+/// Logs (at debug level) how long opening a deck took: building its page,
+/// and until the first frame painted after the push (issue #42: a deck of
+/// 5,000 cards must open fast). `after-paint` is emitted by the frame clock
+/// once per frame, after the frame is drawn (`GdkFrameClock` docs, "Frame
+/// phases"); the handler disconnects itself after the first one, and logs
+/// nothing if that frame comes more than [`FIRST_FRAME_LOG_LIMIT`] later.
+fn log_first_frame(view: &adw::NavigationView, started: Instant, built_ms: u128) {
+    let Some(clock) = view.frame_clock() else {
+        return;
+    };
+    let handler: Rc<RefCell<Option<glib::SignalHandlerId>>> = Rc::default();
+    let id = clock.connect_after_paint(glib::clone!(
+        #[strong]
+        handler,
+        move |clock| {
+            // A frame long after the push (the window was hidden, say) says
+            // nothing about opening the deck: disconnect without a log.
+            let elapsed = started.elapsed();
+            if elapsed < FIRST_FRAME_LOG_LIMIT {
+                tracing::debug!(
+                    built_ms,
+                    first_frame_ms = elapsed.as_millis(),
+                    "deck page opened"
+                );
+            }
+            if let Some(id) = handler.take() {
+                clock.disconnect(id);
+            }
+        }
+    ));
+    handler.replace(Some(id));
 }

@@ -3,7 +3,10 @@ using Adw 1;
 
 // Card Information (SPEC §4.7, #39): dates, counts, memory figures and the
 // history of one card. Values and history rows are set in
-// dialogs/card_info.rs; card text is untrusted, so markup is off.
+// dialogs/card_info.rs; card text is untrusted, so markup is off. Rows are
+// libadwaita `property` rows (the title above its value, as in Files'
+// properties); those holding figures and dates are `numeric`, so the digits
+// line up.
 Adw.Dialog card_info_dialog {
   title: _("Card Information");
   content-width: 480;
@@ -27,9 +30,14 @@ Adw.Dialog card_info_dialog {
           orientation: vertical;
           spacing: 24;
 
+          // At most three lines: a long front (a formula's source) ends
+          // with "…" (GtkLabel `lines` needs `ellipsize`).
           Gtk.Label front_label {
             use-markup: false;
             wrap: true;
+            wrap-mode: word_char;
+            lines: 3;
+            ellipsize: end;
             xalign: 0;
 
             styles [
@@ -47,6 +55,7 @@ Adw.Dialog card_info_dialog {
 
               styles [
                 "property",
+                "numeric",
               ]
             }
 
@@ -57,6 +66,7 @@ Adw.Dialog card_info_dialog {
 
               styles [
                 "property",
+                "numeric",
               ]
             }
           }
@@ -81,6 +91,7 @@ Adw.Dialog card_info_dialog {
 
               styles [
                 "property",
+                "numeric",
               ]
             }
 
@@ -90,6 +101,7 @@ Adw.Dialog card_info_dialog {
 
               styles [
                 "property",
+                "numeric",
               ]
             }
 
@@ -99,6 +111,7 @@ Adw.Dialog card_info_dialog {
 
               styles [
                 "property",
+                "numeric",
               ]
             }
 
@@ -108,6 +121,7 @@ Adw.Dialog card_info_dialog {
 
               styles [
                 "property",
+                "numeric",
               ]
             }
 
@@ -117,6 +131,7 @@ Adw.Dialog card_info_dialog {
 
               styles [
                 "property",
+                "numeric",
               ]
             }
 
@@ -126,6 +141,7 @@ Adw.Dialog card_info_dialog {
 
               styles [
                 "property",
+                "numeric",
               ]
             }
 
@@ -135,6 +151,7 @@ Adw.Dialog card_info_dialog {
 
               styles [
                 "property",
+                "numeric",
               ]
             }
           }
@@ -161,7 +178,7 @@ Adw.Dialog card_info_dialog {
             wrap: true;
 
             styles [
-              "dim-label",
+              "dimmed",
               "caption",
             ]
           }

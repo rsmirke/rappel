@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-10-16
-- Amends: SPEC §4.1 (one JSON file with base64 media)
+- Amends: SPEC §4.1 (one JSON file with base64 media), ADR 0027 (format version 2 carries the stored settings; an import applies them only into a database without decks)
 - Closes: #12
 - Amended by: ADR 0027 (settings join the format with version 2, not version 1)
 - Amended: 2026-10-16, deleted rows are revived from the file instead of being conflicts (see Merge rules)

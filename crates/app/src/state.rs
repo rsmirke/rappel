@@ -14,7 +14,7 @@ use rappel_core::interchange::{ExportSummary, ImportPlan, ImportReport};
 use rappel_core::scheduling::StudyInput;
 use rappel_core::stats::{CardInfo, DayGrid, Stats};
 use rappel_core::storage::{
-    self, BackupInfo, BrowseQuery, BrowseRow, Moved, OpenWarning, Restored, Scope, Store,
+    self, BackupInfo, BrowseQuery, BrowseRow, Moved, OpenWarning, Restored, Scope, Store, TagsAdded,
 };
 
 use crate::clock::{local_day_bounds_ms, local_day_start_ms, local_next_day_start_ms};
@@ -142,10 +142,9 @@ impl AppState {
         &self.0.data_dir
     }
 
-    /// The live decks with what each has to study now, counted like the
-    /// deck page (see [`Store::list_decks`]).
-    pub fn list_decks(&self) -> rappel_core::Result<Vec<DeckSummary>> {
-        let now = rappel_core::time::now_ms();
+    /// The live decks with what each has to study at `now`, counted like
+    /// the deck page (see [`Store::list_decks`]).
+    pub fn list_decks(&self, now: i64) -> rappel_core::Result<Vec<DeckSummary>> {
         let store = self.0.store.borrow();
         let hour = store.settings()?.day_start_hour;
         store.list_decks(now, local_day_start_ms(now, hour))
@@ -410,14 +409,23 @@ impl AppState {
         self.0.store.borrow_mut().unmove_cards(moved)
     }
 
-    /// Puts a tag, created if need be, on cards (see
-    /// [`Store::add_tag_to_cards`]).
-    pub fn add_tag_to_cards(
+    /// Puts tags, created if need be, on cards, leaving out those that would
+    /// have more than `max_per_card` (see [`Store::add_tags_to_cards`]).
+    pub fn add_tags_to_cards(
         &self,
         ids: &[String],
-        name: &str,
-    ) -> rappel_core::Result<(Tag, Vec<String>)> {
-        self.0.store.borrow_mut().add_tag_to_cards(ids, name)
+        names: &[String],
+        max_per_card: usize,
+    ) -> rappel_core::Result<TagsAdded> {
+        self.0
+            .store
+            .borrow_mut()
+            .add_tags_to_cards(ids, names, max_per_card)
+    }
+
+    /// Undoes [`Self::add_tags_to_cards`] (see [`Store::release_tags`]).
+    pub fn release_tags(&self, links: &[(String, String)]) -> rappel_core::Result<usize> {
+        self.0.store.borrow_mut().release_tags(links)
     }
 
     /// Takes a tag off cards (see [`Store::remove_tag_from_cards`]).
@@ -427,19 +435,6 @@ impl AppState {
         tag_id: &str,
     ) -> rappel_core::Result<Vec<String>> {
         self.0.store.borrow_mut().remove_tag_from_cards(ids, tag_id)
-    }
-
-    /// Undoes [`Self::add_tag_to_cards`] (see
-    /// [`Store::release_tag_from_cards`]).
-    pub fn release_tag_from_cards(
-        &self,
-        card_ids: &[String],
-        tag_id: &str,
-    ) -> rappel_core::Result<usize> {
-        self.0
-            .store
-            .borrow_mut()
-            .release_tag_from_cards(card_ids, tag_id)
     }
 
     /// Undoes [`Self::remove_tag_from_cards`] (see
@@ -493,8 +488,7 @@ mod tests {
 
     #[test]
     fn the_statistics_cover_thirty_past_days_ending_today_and_fourteen_ahead() {
-        let tmp = tempfile::tempdir().unwrap();
-        let state = AppState::open(tmp.path().join("data")).unwrap();
+        let (_tmp, state) = crate::testing::temporary_state();
         let now = rappel_core::time::now_ms();
         let data = state.stats(None, now).unwrap();
         assert_eq!(data.past_starts.len(), STATS_PAST_DAYS);

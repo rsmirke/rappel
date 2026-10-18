@@ -353,8 +353,10 @@ pub(crate) fn check_rows(conn: &Connection, pragma: &str) -> rusqlite::Result<Ve
 ///    days (today included) that has one;
 /// 3. it is in `protect` (the backup just made, the backup just restored);
 /// 4. it is dated after `now_ms` (the clock went backwards), and is the
-///    newest of those: one such backup is kept, so a clock that was far
-///    ahead cannot crowd out real days;
+///    newest of its UTC day, for each of the [`KEEP_DAYS`] latest such days:
+///    the days a clock that ran ahead made backups on keep one each, as
+///    past days do, and however far ahead it was they are a bounded number
+///    beside the real days (#50; before, only the newest was kept);
 /// 5. it is the newest backup that is not dated in the future, whatever its
 ///    age: after a long pause the last copy before it is never pruned;
 /// 6. its name holds no real date, so it is not understood and not ours to
@@ -363,7 +365,7 @@ fn backups_to_keep(names: &[String], now_ms: i64, protect: &[&str]) -> HashSet<S
     let today = now_ms.div_euclid(DAY_MS);
     let mut keep: HashSet<String> = protect.iter().map(|&n| n.to_owned()).collect();
     let mut newest_of_day: BTreeMap<i64, &String> = BTreeMap::new();
-    let mut newest_future: Option<&String> = None;
+    let mut newest_of_future_day: BTreeMap<i64, &String> = BTreeMap::new();
     // Oldest first, so a later name replaces an earlier one of its day.
     for name in names {
         let Some(t) = parse_backup_name(name).and_then(|(stamp, _)| stamp_ms(stamp)) else {
@@ -371,7 +373,7 @@ fn backups_to_keep(names: &[String], now_ms: i64, protect: &[&str]) -> HashSet<S
             continue;
         };
         if t > now_ms {
-            newest_future = Some(name);
+            newest_of_future_day.insert(t.div_euclid(DAY_MS), name);
         } else {
             if now_ms - t < DAY_MS {
                 keep.insert(name.clone());
@@ -379,7 +381,13 @@ fn backups_to_keep(names: &[String], now_ms: i64, protect: &[&str]) -> HashSet<S
             newest_of_day.insert(t.div_euclid(DAY_MS), name);
         }
     }
-    keep.extend(newest_future.cloned());
+    keep.extend(
+        newest_of_future_day
+            .values()
+            .rev()
+            .take(usize::try_from(KEEP_DAYS).unwrap_or(usize::MAX))
+            .map(|&n| n.clone()),
+    );
     keep.extend(newest_of_day.values().next_back().map(|&n| n.clone()));
     keep.extend(
         newest_of_day
@@ -570,24 +578,27 @@ mod tests {
     }
 
     #[test]
-    fn prune_keeps_one_future_backup_and_the_protected_one() {
+    fn prune_keeps_fourteen_future_days_and_the_protected_one() {
         let tmp = tempfile::tempdir().unwrap();
-        // 15 backups from a clock that was years ahead.
-        for day in 1..=15 {
+        // 16 days of backups from a clock that was years ahead, two on the
+        // last of them.
+        for day in 1..=16 {
             touch(tmp.path(), &format!("rappel-203001{day:02}-120000.sqlite3"));
         }
+        touch(tmp.path(), "rappel-20300116-080000.sqlite3");
         let fresh = tmp.path().join("rappel-20261015-123456.sqlite3");
         touch(tmp.path(), "rappel-20261015-123456.sqlite3");
 
         prune_backups(tmp.path(), NOW, &[&fresh]).unwrap();
 
-        assert_eq!(
-            names(tmp.path()),
-            [
-                "rappel-20261015-123456.sqlite3",
-                "rappel-20300115-120000.sqlite3"
-            ]
-        );
+        // The newest of each of the 14 latest future days (#50; before,
+        // only Jan 16 12:00 was kept), and the protected one.
+        let mut expected: Vec<String> = (3..=16)
+            .map(|day| format!("rappel-203001{day:02}-120000.sqlite3"))
+            .collect();
+        expected.push("rappel-20261015-123456.sqlite3".into());
+        expected.sort();
+        assert_eq!(names(tmp.path()), expected);
     }
 
     #[test]
@@ -644,9 +655,44 @@ mod tests {
         use std::collections::BTreeSet;
 
         /// Backup times from 40 days before `NOW` to 5 days after it, a few
-        /// of them within seconds of each other.
+        /// of them within seconds of each other, and some from a clock that
+        /// ran up to 40 days ahead.
         fn times() -> impl Strategy<Value = Vec<i64>> {
-            prop::collection::vec(NOW - 40 * DAY_MS..NOW + 5 * DAY_MS, 0..60)
+            let time = prop_oneof![
+                4 => NOW - 40 * DAY_MS..NOW + 5 * DAY_MS,
+                1 => NOW..NOW + 40 * DAY_MS,
+            ];
+            prop::collection::vec(time, 0..60)
+        }
+
+        /// The rule before #50, which kept only the newest future backup.
+        /// The rule now must keep everything it kept: a retention change
+        /// may only ever keep more.
+        fn kept_before_50(names: &[String], now_ms: i64, protect: &[&str]) -> HashSet<String> {
+            let today = now_ms.div_euclid(DAY_MS);
+            let mut keep: HashSet<String> = protect.iter().map(|&n| n.to_owned()).collect();
+            let mut newest_of_day: BTreeMap<i64, &String> = BTreeMap::new();
+            let mut newest_future: Option<&String> = None;
+            for name in names {
+                let t = stamp_ms(parse_backup_name(name).unwrap().0).unwrap();
+                if t > now_ms {
+                    newest_future = Some(name);
+                } else {
+                    if now_ms - t < DAY_MS {
+                        keep.insert(name.clone());
+                    }
+                    newest_of_day.insert(t.div_euclid(DAY_MS), name);
+                }
+            }
+            keep.extend(newest_future.cloned());
+            keep.extend(newest_of_day.values().next_back().map(|&n| n.clone()));
+            keep.extend(
+                newest_of_day
+                    .into_iter()
+                    .filter(|&(day, _)| today - day < KEEP_DAYS)
+                    .map(|(_, name)| name.clone()),
+            );
+            keep
         }
 
         fn sorted_names(times: &[i64]) -> Vec<String> {
@@ -675,8 +721,12 @@ mod tests {
                     prop_assert!(keep.contains(*p));
                 }
 
+                // Everything the rule before #50 kept is kept.
+                let before = kept_before_50(&names, NOW, &protect);
+                prop_assert!(before.is_subset(&keep), "{:?}", before.difference(&keep));
+
                 // Never more than 14 days + the last 24 h + protected + the
-                // newest past one + one future backup.
+                // newest past one + 14 future days.
                 let recent = names
                     .iter()
                     .filter(|n| {
@@ -684,7 +734,7 @@ mod tests {
                         t <= NOW && NOW - t < DAY_MS
                     })
                     .count();
-                prop_assert!(keep.len() <= usize::try_from(KEEP_DAYS).unwrap() + recent + 3);
+                prop_assert!(keep.len() <= 2 * usize::try_from(KEEP_DAYS).unwrap() + recent + 2);
 
                 // Each of the last 14 days with a backup keeps one.
                 for day in 0..KEEP_DAYS {
@@ -698,6 +748,23 @@ mod tests {
                         t <= NOW && t.div_euclid(DAY_MS) == d
                     });
                     prop_assert_eq!(has, kept);
+                }
+
+                // Each of the 14 latest future days with a backup keeps one.
+                let mut future_days: Vec<i64> = names
+                    .iter()
+                    .map(|n| stamp_ms(parse_backup_name(n).unwrap().0).unwrap())
+                    .filter(|&t| t > NOW)
+                    .map(|t| t.div_euclid(DAY_MS))
+                    .collect();
+                future_days.sort_unstable();
+                future_days.dedup();
+                for &d in future_days.iter().rev().take(usize::try_from(KEEP_DAYS).unwrap()) {
+                    let kept = keep.iter().any(|n| {
+                        let t = stamp_ms(parse_backup_name(n).unwrap().0).unwrap();
+                        t > NOW && t.div_euclid(DAY_MS) == d
+                    });
+                    prop_assert!(kept, "future day {}", d);
                 }
 
                 // Pruning twice changes nothing more.

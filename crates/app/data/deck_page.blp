@@ -5,100 +5,148 @@ using Adw 1;
 // the subtitle (what there is to study) are set in pages/deck_page.rs;
 // NavigationPage:title and AdwWindowTitle are plain text.
 template $RappelDeckPage: Adw.NavigationPage {
-  child: Adw.ToolbarView {
-    [top]
-    Adw.HeaderBar {
-      title-widget: Adw.WindowTitle window_title {};
+  // At most three controls per header side (brief): on a narrow window
+  // the deck page header (Back, New Card, title, Study, menu and the
+  // window buttons) does not fit, so Study moves to a bottom bar, as the
+  // HIG's adaptive header bars do. The bin's size request is the
+  // window's minimum (data/window.blp); AdwBreakpointBin needs one.
+  child: Adw.BreakpointBin {
+    width-request: 360;
+    height-request: 294;
 
-      [start]
-      Gtk.Button {
-        icon-name: "list-add-symbolic";
-        action-name: "deck.new-card";
-        tooltip-text: _("New Card");
+    Adw.Breakpoint breakpoint {
+      condition ("max-width: 400sp")
 
-        accessibility {
-          label: _("New Card");
-        }
-      }
-
-      [end]
-      Gtk.MenuButton {
-        icon-name: "view-more-symbolic";
-        menu-model: deck_menu;
-        tooltip-text: _("Deck Menu");
-
-        accessibility {
-          label: _("Deck Menu");
-        }
-      }
-
-      // Disabled when nothing is due and no new card is left for today.
-      [end]
-      Gtk.Button {
-        label: _("_Study");
-        use-underline: true;
-        action-name: "deck.study";
-
-        styles [
-          "suggested-action",
-        ]
+      // Only one Study button has the Alt+S mnemonic at a time: while the
+      // bar slides away after the breakpoint unapplies, both buttons are
+      // mapped, and two equal mnemonics would only cycle the focus
+      // (GtkWindow mnemonics). The setters revert at once on unapply, so
+      // the bar loses its mnemonic as the header button comes back.
+      setters {
+        header_study_button.visible: false;
+        bar_study_button.label: _("_Study");
+        bar_study_button.use-underline: true;
       }
     }
 
-    content: Gtk.Stack content_stack {
-      Gtk.StackPage {
-        name: "empty";
+    child: Adw.ToolbarView {
+      [top]
+      Adw.HeaderBar {
+        title-widget: Adw.WindowTitle window_title {};
 
-        child: Adw.StatusPage {
-          icon-name: "document-new-symbolic";
-          title: _("No Cards Yet");
-          description: _("Add a card to start learning");
+        [start]
+        Gtk.Button {
+          icon-name: "list-add-symbolic";
+          action-name: "deck.new-card";
+          tooltip-text: _("New Card");
 
-          child: Gtk.Button empty_add_button {
-            label: _("_Add Card");
-            use-underline: true;
-            action-name: "deck.new-card";
-            halign: center;
+          accessibility {
+            label: _("New Card");
+          }
+        }
 
-            styles [
-              "pill",
-              "suggested-action",
-            ]
-          };
-        };
-      }
+        [end]
+        Gtk.MenuButton {
+          icon-name: "view-more-symbolic";
+          menu-model: deck_menu;
+          tooltip-text: _("Deck Menu");
 
-      Gtk.StackPage {
-        name: "list";
+          accessibility {
+            label: _("Deck Menu");
+          }
+        }
 
-        // A GtkListView with a model, not a boxed list: it only creates
-        // rows for what is on screen, so thousands of cards stay smooth
-        // (ADR 0013). `.boxed-list` styles only GtkListBox; these are the
-        // list styles libadwaita has for a list view.
-        child: Gtk.ScrolledWindow {
-          hscrollbar-policy: never;
+        // Disabled when nothing is due and no new card is left for today.
+        // On a narrow window it moves to the bottom bar.
+        [end]
+        Gtk.Button header_study_button {
+          label: _("_Study");
+          use-underline: true;
+          action-name: "deck.study";
 
           styles [
-            "view",
+            "suggested-action",
           ]
+        }
+      }
 
-          child: Adw.ClampScrollable {
-            maximum-size: 600;
+      content: Gtk.Stack content_stack {
+        Gtk.StackPage {
+          name: "empty";
 
-            child: Gtk.ListView card_list {
-              single-click-activate: true;
+          child: Adw.StatusPage {
+            icon-name: "document-new-symbolic";
+            title: _("No Cards Yet");
+            description: _("Add a card to start learning");
 
-              accessibility {
-                label: _("Cards");
-              }
+            child: Gtk.Button empty_add_button {
+              label: _("_Add Card");
+              use-underline: true;
+              action-name: "deck.new-card";
+              halign: center;
 
               styles [
-                "rich-list",
-                "separators",
+                "pill",
+                "suggested-action",
               ]
             };
           };
-        };
+        }
+
+        Gtk.StackPage {
+          name: "list";
+
+          // A GtkListView with a model, not a boxed list: it only creates
+          // rows for what is on screen, so thousands of cards stay smooth
+          // (ADR 0013). `.boxed-list` styles only GtkListBox; these are the
+          // list styles libadwaita has for a list view.
+          child: Gtk.ScrolledWindow {
+            hscrollbar-policy: never;
+
+            styles [
+              "view",
+            ]
+
+            child: Adw.ClampScrollable {
+              maximum-size: 600;
+
+              child: Gtk.ListView card_list {
+                single-click-activate: true;
+
+                accessibility {
+                  label: _("Cards");
+                }
+
+                // Not `rich-list`: the rows lay themselves out like
+                // libadwaita's action rows, with the margins of their
+                // `box.header` (data/card_row.blp).
+                styles [
+                  "separators",
+                ]
+              };
+            };
+          };
+        }
+      };
+
+      // The narrow window's Study button (see the breakpoint above). Shown
+      // by pages/deck_page.rs only while the window is narrow and the deck
+      // has cards (`study_bar_shown`): an empty deck's status page has its
+      // own action and stands alone.
+      [bottom]
+      Gtk.ActionBar study_bar {
+        revealed: false;
+
+        [center]
+        Gtk.Button bar_study_button {
+          label: _("Study");
+          action-name: "deck.study";
+
+          styles [
+            "pill",
+            "suggested-action",
+          ]
+        }
       }
     };
   };

@@ -3,6 +3,7 @@
 - Status: Accepted
 - Date: 2026-10-17
 - Amends: SPEC §4.6 (the page), §4.5 (Suspend in the deck page's card menu)
+- Amended by: ADR 0044 (typing in the list searches, filters on one line, the deck page's rows, the selection-mode header, the empty states)
 - Refers to: ADR 0013 (the virtualised card list), ADR 0030 (Undo that finds the world changed), ADR 0034 (the browser comes first), ADR 0035 (the index, suspension and bulk writes in core)
 
 ## Context

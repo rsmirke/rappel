@@ -9,7 +9,7 @@ A native GNOME flashcard app. Two grades only (Fail and Pass), Markdown cards wi
 You need:
 
 - Rust 1.92 or newer (`rustup`)
-- GTK ≥ 4.14, libadwaita ≥ 1.6 and GtkSourceView ≥ 5.10 development files, and
+- GTK ≥ 4.20, libadwaita ≥ 1.8 (ADR 0039) and GtkSourceView ≥ 5.10 development files, and
   GtkSourceView's introspection data (Blueprint needs it)
   (Fedora: `gtk4-devel libadwaita-devel gtksourceview5-devel`;
   Debian/Ubuntu: `libgtk-4-dev libadwaita-1-dev libgtksourceview-5-dev gir1.2-gtksource-5`)
@@ -25,6 +25,8 @@ scripts/install-hooks.sh                   # once per clone: run checks before e
 ```
 
 Some tests start GTK, so `scripts/check.sh` needs a display: a desktop session, or `xvfb-run -a scripts/check.sh` without one (as CI does).
+
+Cargo rebuilds the UI when a file in `crates/app/data/` changes, judging by the files' modification times. A file copied in with an older time (`cp -p`, `rsync -a`, unpacking an archive) is not noticed; if the app then stops at start with "Unable to retrieve child object …", run `cargo clean -p rappel` (ADR 0047).
 
 To try the app on scratch data instead of your own (60 cards, 30 of them due now):
 

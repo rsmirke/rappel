@@ -1,5 +1,6 @@
 //! The card editor: front and back as Markdown in `GtkSourceView`, with a
-//! live preview. Layout in `data/card_editor.blp` (ADR 0013, ADR 0022).
+//! live preview. Layout in `data/card_editor.blp` (ADR 0013, ADR 0022, ADR
+//! 0043).
 //!
 //! - Ctrl+Enter saves and closes; Ctrl+Shift+Enter saves and starts a new
 //!   card in the same deck, with the focus in the front field. Both are
@@ -7,22 +8,22 @@
 //! - Ctrl+B / Ctrl+I wrap the selection of the focused side in bold /
 //!   italic markers ([`format::wrap`]), as one undoable step.
 //! - The preview renders both sides as the review page does, once typing
-//!   pauses ([`PREVIEW_DELAY`]), and only while it is shown.
+//!   pauses ([`PREVIEW_DELAY`]), and only while it is shown: beside the text
+//!   when the dialog is wide, instead of it when the Edit / Preview toggle
+//!   of a narrow dialog says so ([`layout::panes`]).
 //! - The highlighting follows the light or dark style.
 //! - A blank front disables saving, and so does a side over the store's
 //!   length limit, explained under that side (the store's own rules).
 //! - Closing with unsaved changes asks first, whether by Escape, Cancel or
 //!   closing the window (`RappelWindow` calls [`CardEditor::confirm_discard`]).
 //! - A store error keeps the dialog open with the text as typed.
-//! - The Tags field under Back is a comma-separated list; the card and its
-//!   tags are saved in one write. Invalid names show an error under the
-//!   field and disable saving. Ctrl+Shift+Enter keeps the tags for the next
-//!   card. Suggestions are in `suggest.rs`, the decisions in `tags.rs`
-//!   (ADR 0031).
+//! - The Tags field under Back is a [`TagEntry`](crate::widgets::TagEntry): pills, and the name being
+//!   typed. The card and its tags are saved in one write. An invalid name
+//!   shows an error under the field and disables saving. Ctrl+Shift+Enter
+//!   keeps the tags for the next card (ADR 0031).
 
 mod format;
-mod suggest;
-mod tags;
+mod layout;
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -32,7 +33,7 @@ use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::glib;
 use rappel_core::content;
-use rappel_core::domain::{Card, CardSide, MAX_CARD_SIDE_BYTES, Tag, TaggedCard, card_side_fits};
+use rappel_core::domain::{Card, CardSide, MAX_CARD_SIDE_BYTES, TaggedCard, card_side_fits};
 use sourceview5::prelude::*;
 
 use crate::render::{back_shown, clear, fill, shown_part};
@@ -40,13 +41,28 @@ use crate::state::AppState;
 use crate::ui::callback::Callback;
 use crate::ui::text::group_digits;
 use crate::ui::toast::{info_toast, show_error};
-use crate::ui::{dialog, init_once};
-use crate::widgets::TagSuggestions;
+use crate::ui::{breakpoint, dialog, init_once};
+use crate::widgets::tag_entry::field::{self as tags, TagsCheck};
+
+use self::layout::Mode;
 
 /// How long typing must pause before the preview is rendered again. Short
 /// enough to feel live, long enough that a 1 MiB card is not parsed and
 /// rendered on every key.
 const PREVIEW_DELAY: Duration = Duration::from_millis(250);
+
+/// The save keys, and whether each starts a new card after saving. The
+/// Keyboard Shortcuts dialog lists them (a test checks it).
+pub(crate) const SAVE_KEYS: [(&str, bool); 4] = [
+    ("<Control>Return", false),
+    ("<Control>KP_Enter", false),
+    ("<Control><Shift>Return", true),
+    ("<Control><Shift>KP_Enter", true),
+];
+
+/// The formatting keys and the marker each wraps the selection in.
+pub(crate) const FORMAT_KEYS: [(&str, &str); 2] =
+    [("<Control>b", format::BOLD), ("<Control>i", format::ITALIC)];
 
 /// What a save did, for the deck page to update its list.
 #[derive(Debug, Clone)]
@@ -87,19 +103,27 @@ mod imp {
         #[template_child]
         pub back_error: TemplateChild<gtk::Label>,
         #[template_child]
-        pub tags_entry: TemplateChild<gtk::Entry>,
+        pub tag_entry: TemplateChild<crate::widgets::TagEntry>,
         #[template_child]
-        pub tags_error: TemplateChild<gtk::Label>,
+        pub breakpoint: TemplateChild<adw::Breakpoint>,
         #[template_child]
-        pub preview_button: TemplateChild<gtk::ToggleButton>,
+        pub edit_pane: TemplateChild<gtk::ScrolledWindow>,
+        #[template_child]
+        pub pane_separator: TemplateChild<gtk::Separator>,
+        #[template_child]
+        pub preview_pane: TemplateChild<gtk::ScrolledWindow>,
+        #[template_child]
+        pub mode_toggles: TemplateChild<adw::ToggleGroup>,
+        #[template_child]
+        pub mode_bar: TemplateChild<gtk::ActionBar>,
+        #[template_child]
+        pub preview_group: TemplateChild<adw::PreferencesGroup>,
         #[template_child]
         pub preview_front: TemplateChild<gtk::Box>,
         #[template_child]
         pub preview_back_separator: TemplateChild<gtk::Separator>,
         #[template_child]
         pub preview_back: TemplateChild<gtk::Box>,
-        #[template_child]
-        pub preview_note: TemplateChild<gtk::Label>,
         /// The preview refresh waiting for typing to pause.
         pub preview: Debounce,
         /// Our `notify::dark` handler on the style manager, a singleton
@@ -116,19 +140,8 @@ mod imp {
         /// Whether the card's tags could be read. If not, the field is
         /// disabled and a save leaves the tags as they are.
         pub tags_loaded: Cell<bool>,
-        /// Every tag, for the suggestions.
-        pub all_tags: RefCell<Vec<super::Tag>>,
-        /// The suggestions under the tags field, parented to it.
-        pub suggestions: OnceCell<crate::widgets::TagSuggestions>,
-        /// The tags the suggestions list shows now, and the highlighted one.
-        pub suggested: RefCell<Vec<super::Tag>>,
-        pub highlighted: Cell<Option<usize>>,
-        /// The editor is putting text in the tags field itself (a loaded
-        /// card, an accepted suggestion): that is not typing.
-        pub filling: Cell<bool>,
-        /// The field's text changed and its cursor has not been seen
-        /// moving since (see `suggest.rs`).
-        pub edited: Cell<bool>,
+        /// The breakpoint applies: one pane at a time.
+        pub narrow: Cell<bool>,
         pub on_saved: OnceCell<Callback<OnSaved>>,
         /// The "Discard Changes?" question is showing; it is not asked twice.
         pub asking_discard: Cell<bool>,
@@ -158,6 +171,7 @@ mod imp {
             // before it is parsed.
             sourceview5::View::ensure_type();
             sourceview5::Buffer::ensure_type();
+            crate::widgets::TagEntry::ensure_type();
             klass.bind_template();
             klass.install_action("editor.save", None, |editor, _, _| {
                 editor.save(false);
@@ -182,11 +196,6 @@ mod imp {
         }
 
         fn dispose(&self) {
-            // A popover parented to a widget must be unparented before that
-            // widget is finalised.
-            if let Some(suggestions) = self.suggestions.get() {
-                suggestions.unparent();
-            }
             self.preview.cancel();
             if let Some(handler) = self.dark_handler.take() {
                 adw::StyleManager::default().disconnect(handler);
@@ -220,10 +229,14 @@ impl CardEditor {
         editor.reload_all_tags();
         if let Some(card) = card {
             let tags = editor.read_card_tags(&card.id);
-            editor.load(Some(&card.id), &card.front_md, &card.back_md, &tags);
+            editor.load(
+                Some(&card.id),
+                &card.front_md,
+                &card.back_md,
+                tags.as_deref(),
+            );
         } else {
-            imp.tags_loaded.set(true);
-            editor.load(None, "", "", "");
+            editor.load(None, "", "", Some(&[]));
         }
         editor
     }
@@ -263,7 +276,7 @@ impl CardEditor {
         self.setup_shortcuts();
         self.setup_views();
         self.setup_tags();
-        self.setup_preview();
+        self.setup_layout();
         self.connect_close_attempt(Self::ask_discard);
     }
 
@@ -272,12 +285,7 @@ impl CardEditor {
         // Capture phase: the text views would otherwise take the Enter.
         let shortcuts = gtk::ShortcutController::new();
         shortcuts.set_propagation_phase(gtk::PropagationPhase::Capture);
-        for (trigger, and_new) in [
-            ("<Control>Return", false),
-            ("<Control>KP_Enter", false),
-            ("<Control><Shift>Return", true),
-            ("<Control><Shift>KP_Enter", true),
-        ] {
+        for (trigger, and_new) in SAVE_KEYS {
             // Always handled, even with a blank front, so the key never
             // falls through to the text view as a new line.
             let action = gtk::CallbackAction::new(move |widget, _| {
@@ -291,7 +299,7 @@ impl CardEditor {
                 Some(action),
             ));
         }
-        for (trigger, marker) in [("<Control>b", format::BOLD), ("<Control>i", format::ITALIC)] {
+        for (trigger, marker) in FORMAT_KEYS {
             let action = gtk::CallbackAction::new(move |widget, _| {
                 let editor = widget.downcast_ref::<Self>();
                 match editor.and_then(Self::focused_buffer) {
@@ -343,15 +351,148 @@ impl CardEditor {
         imp.dark_handler.replace(Some(handler));
     }
 
-    /// The Preview button shows or hides the preview.
-    fn setup_preview(&self) {
-        self.imp()
-            .preview_button
-            .connect_active_notify(glib::clone!(
+    /// Changes of the tags field count as edits.
+    fn setup_tags(&self) {
+        self.imp().tag_entry.set_on_changed(glib::clone!(
+            #[weak(rename_to = editor)]
+            self,
+            move || editor.update_actions()
+        ));
+    }
+
+    /// Reads every tag again, for the suggestions. A failure only means no
+    /// suggestions.
+    fn reload_all_tags(&self) {
+        let imp = self.imp();
+        let Some(state) = imp.state.get() else {
+            return;
+        };
+        let all = state.tags().unwrap_or_else(|err| {
+            tracing::warn!("the tags could not be read for suggestions: {err}");
+            Vec::new()
+        });
+        imp.tag_entry.set_all_tags(all);
+    }
+
+    /// The tags of card `card_id`, or `None` if they cannot be read: the
+    /// field is then disabled and says why, and a save leaves the card's
+    /// tags alone.
+    fn read_card_tags(&self, card_id: &str) -> Option<Vec<String>> {
+        let imp = self.imp();
+        let read = match imp.state.get() {
+            Some(state) => state.card_tags(card_id).map_err(|err| err.to_string()),
+            // Cannot happen: `new` sets the state before reading. Treated
+            // like a failed read, so a save never wipes the tags.
+            None => Err("the editor has no data".to_owned()),
+        };
+        match read {
+            Ok(card_tags) => Some(card_tags.into_iter().map(|tag| tag.name).collect()),
+            Err(err) => {
+                imp.tag_entry
+                    .set_unavailable("The tags could not be read, so they are left as they are.");
+                let message = format!("The card's tags could not be read: {err}");
+                show_error(&*imp.toast_overlay, "reading a card's tags", &message);
+                None
+            }
+        }
+    }
+
+    /// The field's names, or what is wrong with them. A disabled field
+    /// (tags not loaded) has nothing to check.
+    fn tags_check(&self) -> TagsCheck {
+        let imp = self.imp();
+        if imp.tags_loaded.get() {
+            imp.tag_entry.check()
+        } else {
+            TagsCheck {
+                names: Vec::new(),
+                error: None,
+            }
+        }
+    }
+
+    /// The breakpoint and the Edit / Preview toggle decide which panes
+    /// show. The breakpoint's `apply` and `unapply` run after its setters
+    /// (`AdwBreakpoint::apply` docs).
+    fn setup_layout(&self) {
+        let imp = self.imp();
+        breakpoint::follow(
+            &imp.breakpoint,
+            glib::clone!(
                 #[weak(rename_to = editor)]
                 self,
-                move |_| editor.refresh_preview()
-            ));
+                move |narrow| editor.set_narrow(narrow)
+            ),
+        );
+        imp.mode_toggles.connect_active_name_notify(glib::clone!(
+            #[weak(rename_to = editor)]
+            self,
+            move |_| editor.mode_changed()
+        ));
+        self.apply_layout();
+    }
+
+    fn mode(&self) -> Mode {
+        Mode::from_name(self.imp().mode_toggles.active_name().as_deref())
+    }
+
+    fn set_narrow(&self, narrow: bool) {
+        self.imp().narrow.set(narrow);
+        self.apply_layout_keeping_focus();
+    }
+
+    /// Shows the panes `layout::panes` picks, and renders the preview if it
+    /// is one of them (or frees it if not).
+    fn apply_layout(&self) {
+        let imp = self.imp();
+        let panes = layout::panes(imp.narrow.get(), self.mode());
+        imp.edit_pane.set_visible(panes.edit);
+        imp.preview_pane.set_visible(panes.preview);
+        imp.pane_separator.set_visible(panes.separator);
+        self.refresh_preview();
+    }
+
+    /// The toggle changed: show the other pane.
+    fn mode_changed(&self) {
+        self.apply_layout_keeping_focus();
+    }
+
+    /// Applies the layout, then moves the focus if it would be left where
+    /// keys go nowhere (`layout::focus_after`). Where the focus is, is read
+    /// before the panes change. On a breakpoint change the setters have
+    /// already shown or hidden the toggle's bar (`AdwBreakpoint::apply`
+    /// runs after them), so a focus on the hidden toggle reads as on the
+    /// toggle with no bar, or as lost if GTK has moved it already.
+    fn apply_layout_keeping_focus(&self) {
+        let imp = self.imp();
+        let place = self.focus_place();
+        self.apply_layout();
+        let panes = layout::panes(imp.narrow.get(), self.mode());
+        match layout::focus_after(place, panes, imp.mode_bar.is_visible()) {
+            Some(layout::Target::Front) => {
+                imp.front_view.grab_focus();
+            }
+            Some(layout::Target::Toggle) => {
+                imp.mode_toggles.child_focus(gtk::DirectionType::TabForward);
+            }
+            None => {}
+        }
+    }
+
+    fn focus_place(&self) -> layout::Place {
+        let imp = self.imp();
+        match self.focus() {
+            None => layout::Place::Lost,
+            Some(focus) if !focus.is_mapped() || !focus.is_focusable() => layout::Place::Lost,
+            Some(focus) if focus.is_ancestor(&*imp.edit_pane) => layout::Place::Edit,
+            Some(focus) if focus.is_ancestor(&*imp.mode_bar) => layout::Place::Toggle,
+            Some(_) => layout::Place::Other,
+        }
+    }
+
+    /// Whether the preview is on screen.
+    fn preview_shown(&self) -> bool {
+        layout::panes(self.imp().narrow.get(), self.mode()).preview
     }
 
     /// The buffer of the side that has the keyboard focus, if any.
@@ -382,7 +523,7 @@ impl CardEditor {
 
     /// Renders the preview again once typing pauses.
     fn schedule_preview(&self) {
-        if !self.imp().preview_button.is_active() {
+        if !self.preview_shown() {
             return;
         }
         self.imp().preview.restart(
@@ -400,7 +541,7 @@ impl CardEditor {
     fn refresh_preview(&self) {
         let imp = self.imp();
         imp.preview.cancel();
-        if !imp.preview_button.is_active() {
+        if !self.preview_shown() {
             clear(&imp.preview_front);
             clear(&imp.preview_back);
             return;
@@ -419,7 +560,9 @@ impl CardEditor {
         }
         imp.preview_back_separator.set_visible(shown);
         imp.preview_back.set_visible(shown);
-        imp.preview_note.set_visible(front_cut || back_cut);
+        imp.preview_group.set_description(
+            (front_cut || back_cut).then_some("This card is long: only its start is previewed."),
+        );
         tracing::debug!(
             bytes = front_md.len() + back_md.len(),
             elapsed_ms = started.elapsed().as_millis(),
@@ -427,9 +570,10 @@ impl CardEditor {
         );
     }
 
-    /// Shows `front` and `back` as the saved state of card `card_id`.
-    /// `tags` is the tags field's text, which counts as saved too.
-    fn load(&self, card_id: Option<&str>, front: &str, back: &str, tags: &str) {
+    /// Shows `front` and `back` as the saved state of card `card_id`, with
+    /// `tags`, which count as saved too; `None` when they could not be read
+    /// (the field is disabled already, `read_card_tags`).
+    fn load(&self, card_id: Option<&str>, front: &str, back: &str, tags: Option<&[String]>) {
         let imp = self.imp();
         self.set_title(if card_id.is_some() {
             "Edit Card"
@@ -445,12 +589,12 @@ impl CardEditor {
             buffer.set_text(text);
             buffer.end_irreversible_action();
         }
+        imp.tags_loaded.set(tags.is_some());
         imp.saved_tag_keys
-            .replace(tags::tag_keys(&tags::check_tags(tags).names));
-        imp.filling.set(true);
-        imp.tags_entry.set_text(tags);
-        imp.tags_entry.set_position(-1);
-        imp.filling.set(false);
+            .replace(tags::tag_keys(tags.unwrap_or_default()));
+        if let Some(tags) = tags {
+            imp.tag_entry.set_tags(tags);
+        }
         self.update_actions();
         self.refresh_preview();
     }
@@ -474,11 +618,7 @@ impl CardEditor {
         self.action_set_enabled("editor.save-and-new", can_save);
         show_field_error(&*imp.front_view, &imp.front_error, check.front_error);
         show_field_error(&*imp.back_view, &imp.back_error, check.back_error);
-        // While the tags could not be read, the error says so (it is set by
-        // `read_card_tags`); there is nothing to check.
-        if imp.tags_loaded.get() {
-            show_field_error(&*imp.tags_entry, &imp.tags_error, tags.error.clone());
-        }
+        // The tags field shows its own error.
         // With unsaved changes, closing emits `close-attempt` instead. A
         // tags field that holds an error is a change.
         let tags_same = !imp.tags_loaded.get()
@@ -548,13 +688,12 @@ impl CardEditor {
     fn after_save(&self, and_new: bool, kept: &[String]) {
         if and_new {
             let imp = self.imp();
-            imp.tags_loaded.set(true);
-            imp.tags_entry.set_sensitive(true);
-            // Focus first: filling the field while it has the focus would
-            // open the suggestions for the last name.
+            // The next card starts in the text, also on a narrow dialog
+            // showing the preview.
+            imp.mode_toggles.set_active_name(Some(Mode::EDIT));
             imp.front_view.grab_focus();
-            self.load(None, "", "", &kept.join(", "));
-            self.imp().front_view.grab_focus();
+            self.load(None, "", "", Some(kept));
+            imp.front_view.grab_focus();
         } else {
             self.force_close();
         }
@@ -591,9 +730,9 @@ impl CardEditor {
         if asking.replace(true) {
             return false;
         }
-        let discard = match dialog::alert("discard_dialog.ui", "discard_dialog") {
-            Some(dialog) => dialog.choose_future(Some(self)).await == "discard",
-            None => false,
+        let discard = match dialog::DISCARD_CHANGES.load() {
+            Ok(dialog) => dialog.choose_future(Some(self)).await == "discard",
+            Err(_) => false,
         };
         asking.set(false);
         discard
@@ -741,10 +880,7 @@ mod tests {
         CardEditor,
         Rc<std::cell::RefCell<Vec<Saved>>>,
     ) {
-        adw::init().unwrap();
-        gtk::gio::resources_register_include!("rappel.gresource").unwrap();
-        let tmp = tempfile::tempdir().unwrap();
-        let state = AppState::open(tmp.path().join("data")).unwrap();
+        let (tmp, state) = crate::testing::temporary_state();
         let deck = state.create_deck("Deck").unwrap();
         let card = existing.map(|(front, tags)| {
             let names: Vec<String> = tags.iter().map(|t| (*t).to_owned()).collect();
@@ -763,13 +899,14 @@ mod tests {
 
     fn type_into(editor: &CardEditor, front: &str, tags: &str) {
         editor.imp().front_buffer.set_text(front);
-        editor.imp().tags_entry.set_text(tags);
+        editor.imp().tag_entry.type_text(tags);
     }
 
     #[test]
     fn a_card_is_saved_with_its_tags_and_the_next_one_keeps_them() {
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let (_tmp, state, deck, editor, saved) = editor_over(None);
+            // Two names made pills by their commas, and spaces typed after.
             type_into(&editor, "2 + 2", " maths ,Alg\u{E8}bre, ");
             editor.save(true);
 
@@ -781,38 +918,59 @@ mod tests {
             // The next card starts with the same tags, as saved state: no
             // "Discard Changes?" for an untouched editor.
             let imp = editor.imp();
-            assert_eq!(imp.tags_entry.text(), "Alg\u{E8}bre, maths");
+            assert_eq!(imp.tag_entry.pill_names(), ["Alg\u{E8}bre", "maths"]);
+            assert_eq!(imp.tag_entry.typed(), "");
             assert_eq!(imp.front_buffer.char_count(), 0);
             assert!(editor.can_close());
-            // Another tag makes it a change; the front still blocks saving.
-            imp.tags_entry.set_text("maths, new");
+            // A name typed, not yet a pill, is a change; the front still
+            // blocks saving.
+            imp.tag_entry.type_text("new");
             assert!(!editor.can_close());
             editor.save(false);
             assert_eq!(state.list_tagged_cards(&deck).unwrap().len(), 1);
-            // The new tag is suggested from now on.
-            assert!(imp.all_tags.borrow().iter().any(|t| t.name == "maths"));
+            // The new tags are suggested from now on: without the pill,
+            // "mat" finds "maths".
+            imp.tag_entry.set_tags(&[]);
+            imp.tag_entry.type_text("mat");
+            let found: Vec<String> = imp
+                .tag_entry
+                .suggest_for_test()
+                .into_iter()
+                .map(|t| t.name)
+                .collect();
+            assert_eq!(found, ["maths"]);
+        });
+    }
+
+    #[test]
+    fn a_name_typed_without_a_comma_is_saved_too() {
+        crate::testing::with_widgets(|| {
+            let (_tmp, state, deck, editor, _saved) = editor_over(None);
+            type_into(&editor, "front", "maths, geo");
+            editor.save(false);
+            let cards = state.list_tagged_cards(&deck).unwrap();
+            let names: Vec<&str> = cards[0].tags.iter().map(|t| t.name.as_str()).collect();
+            assert_eq!(names, ["geo", "maths"]);
         });
     }
 
     #[test]
     fn an_invalid_tag_shows_an_error_and_blocks_saving() {
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let (_tmp, state, deck, editor, _saved) = editor_over(None);
             let imp = editor.imp();
-            type_into(&editor, "front", "a,,b");
-            assert!(imp.tags_error.is_visible());
+            type_into(&editor, "front", &"x".repeat(300));
             assert_eq!(
-                imp.tags_error.label(),
-                "Tag 2 is empty: remove the extra comma"
+                imp.tag_entry.shown_error().as_deref(),
+                Some("This tag is too long (the limit is 256 bytes)")
             );
             // Pressing the key anyway writes nothing.
             editor.save(false);
             assert_eq!(state.list_tagged_cards(&deck).unwrap(), []);
+            assert!(!editor.can_close());
 
-            type_into(&editor, "front", &"x".repeat(300));
-            assert!(imp.tags_error.label().starts_with("Tag 1 is too long"));
             type_into(&editor, "front", "ok");
-            assert!(!imp.tags_error.is_visible());
+            assert_eq!(imp.tag_entry.shown_error(), None);
             editor.save(false);
             assert_eq!(state.list_tagged_cards(&deck).unwrap().len(), 1);
         });
@@ -820,17 +978,18 @@ mod tests {
 
     #[test]
     fn editing_a_card_loads_its_tags_and_unlinks_the_ones_removed() {
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let (_tmp, state, deck, editor, saved) = editor_over(Some(("front", &["a", "b"])));
             let imp = editor.imp();
-            assert_eq!(imp.tags_entry.text(), "a, b");
+            assert_eq!(imp.tag_entry.pill_names(), ["a", "b"]);
             assert!(editor.can_close());
-            // Spacing, case and order are not changes.
-            imp.tags_entry.set_text("B,a");
+            // Case and order are not changes: "a" removed and typed again.
+            imp.tag_entry.remove_for_test(0);
+            imp.tag_entry.type_text("A");
             assert!(editor.can_close());
 
             let before = state.list_tagged_cards(&deck).unwrap().remove(0);
-            imp.tags_entry.set_text("b");
+            imp.tag_entry.type_text("");
             assert!(!editor.can_close());
             editor.save(false);
             let after = state.list_tagged_cards(&deck).unwrap().remove(0);
@@ -845,41 +1004,115 @@ mod tests {
 
     #[test]
     fn unreadable_tags_disable_the_field_and_say_why_and_a_save_keeps_them() {
-        crate::testing::with_gtk(|| {
+        crate::testing::with_widgets(|| {
             let (_tmp, state, deck, editor, _saved) = editor_over(Some(("front", &["a"])));
             let imp = editor.imp();
             let card = state.list_tagged_cards(&deck).unwrap().remove(0);
             // A card that is gone cannot have its tags read.
             state.delete_card(&card.card.id).unwrap();
-            let text = editor.read_card_tags(&card.card.id);
-            editor.load(Some(&card.card.id), "front", "", &text);
-            assert!(!imp.tags_entry.is_sensitive());
-            assert!(imp.tags_error.is_visible());
+            let tags = editor.read_card_tags(&card.card.id);
+            assert_eq!(tags, None);
+            editor.load(Some(&card.card.id), "front", "", None);
+            assert!(!imp.tag_entry.is_available());
+            assert!(imp.tag_entry.shown_error().is_some());
             // Edits to the sides do not hide the explanation.
             imp.front_buffer.set_text("front 2");
-            assert!(imp.tags_error.is_visible());
+            assert!(imp.tag_entry.shown_error().is_some());
+            assert!(!editor.can_close());
         });
     }
 
     #[test]
-    fn accepting_a_suggestion_completes_the_name_being_typed() {
-        crate::testing::with_gtk(|| {
-            let (_tmp, _state, _deck, editor, _saved) = editor_over(Some(("front", &["algebra"])));
+    fn a_suggestion_becomes_a_pill_of_the_card() {
+        crate::testing::with_widgets(|| {
+            let (_tmp, _state, _deck, editor, _saved) =
+                editor_over(Some(("front", &["algebra", "maths"])));
             let imp = editor.imp();
-            imp.tags_entry.set_text("maths, alg");
-            imp.tags_entry.set_position(-1);
-            let found = tags::suggestions(&imp.all_tags.borrow(), "maths, alg", 10);
-            assert_eq!(found.len(), 1);
-            imp.suggested.replace(found);
-            editor.accept_suggestion(0);
-            assert_eq!(imp.tags_entry.text(), "maths, algebra, ");
-            assert_eq!(imp.tags_entry.position(), 16);
+            imp.tag_entry.remove_for_test(0);
+            assert!(!editor.can_close());
+            imp.tag_entry.type_text("alg");
+            assert_eq!(imp.tag_entry.suggest_for_test().len(), 1);
+            imp.tag_entry.accept_suggestion(0);
+            assert_eq!(imp.tag_entry.pill_names(), ["maths", "algebra"]);
+            assert!(editor.can_close());
+        });
+    }
+
+    #[test]
+    fn a_narrow_editor_shows_the_text_or_the_preview() {
+        crate::testing::with_widgets(|| {
+            let (_tmp, _state, _deck, editor, _saved) = editor_over(None);
+            let imp = editor.imp();
+            assert!(imp.edit_pane.is_visible() && imp.preview_pane.is_visible());
+            editor.set_narrow(true);
+            assert!(imp.edit_pane.is_visible() && !imp.preview_pane.is_visible());
+            imp.mode_toggles.set_active_name(Some(Mode::PREVIEW));
+            assert!(!imp.edit_pane.is_visible() && imp.preview_pane.is_visible());
+            // Wide again: both, whatever the toggle says.
+            editor.set_narrow(false);
+            assert!(imp.edit_pane.is_visible() && imp.preview_pane.is_visible());
+            // Save and add another starts the next card in the text.
+            editor.set_narrow(true);
+            imp.front_buffer.set_text("front");
+            editor.save(true);
+            assert_eq!(editor.mode(), Mode::Edit);
+            assert!(imp.edit_pane.is_visible());
+        });
+    }
+
+    #[test]
+    fn switching_panes_keeps_the_focus_where_keys_reach() {
+        use std::time::Duration;
+        crate::testing::with_widgets(|| {
+            let (_tmp, _state, _deck, editor, _saved) = editor_over(None);
+            let imp = editor.imp();
+            // Wide enough that the breakpoint stays off by itself.
+            let window = adw::Window::builder()
+                .default_width(1000)
+                .default_height(720)
+                .build();
+            window.present();
+            editor.present(Some(&window));
+            assert!(
+                crate::testing::settle_until(|| imp.front_view.is_mapped(), Duration::from_secs(5)),
+                "the editor did not show"
+            );
+            editor.set_focus(Some(&*imp.front_view));
+            let toggle_focused = || {
+                editor
+                    .focus()
+                    .is_some_and(|f| f.is_ancestor(&*imp.mode_toggles))
+            };
+
+            // Narrow, as the breakpoint would make it: its setter shows the
+            // bar, then `apply` sets narrow.
+            imp.mode_bar.set_visible(true);
+            editor.set_narrow(true);
+            assert!(crate::testing::settle_until(
+                || imp.mode_toggles.is_mapped(),
+                Duration::from_secs(5)
+            ));
+            assert_eq!(editor.focus().as_ref(), Some(imp.front_view.upcast_ref()));
+            // To the preview with the focus in the text: on the toggle.
+            imp.mode_toggles.set_active_name(Some(Mode::PREVIEW));
+            assert!(toggle_focused(), "focus: {:?}", editor.focus());
+            // Back to the text: the toggle keeps it (the user is there).
+            imp.mode_toggles.set_active_name(Some(Mode::EDIT));
+            assert!(toggle_focused());
+            // Wide again, the bar hidden by the setter: to the front.
+            imp.mode_bar.set_visible(false);
+            editor.set_narrow(false);
+            assert_eq!(editor.focus().as_ref(), Some(imp.front_view.upcast_ref()));
+            editor.force_close();
+            window.destroy();
         });
     }
 
     /// The longest time the main loop is blocked in one step over the next
-    /// `settle`, which is what a person feels as a frozen window. Stops
-    /// after 200 ms with nothing to do.
+    /// `settle`, which is what a person feels as a frozen window, as CPU
+    /// time of this thread, so a loaded machine does not lengthen it (ADR
+    /// 0049). Stops after 200 ms with nothing to do; `settle` only stops a
+    /// test that would never settle.
     fn longest_stall(settle: std::time::Duration) -> std::time::Duration {
         use std::time::{Duration, Instant};
         let context = glib::MainContext::default();
@@ -887,9 +1120,9 @@ mod tests {
         let mut idle_since = None;
         let mut longest = Duration::ZERO;
         while Instant::now() < end {
-            let start = Instant::now();
-            if context.iteration(false) {
-                longest = longest.max(start.elapsed());
+            let (step, worked) = crate::testing::cpu_time_of(|| context.iteration(false));
+            if worked {
+                longest = longest.max(step);
                 idle_since = None;
             } else {
                 let since = *idle_since.get_or_insert_with(Instant::now);
@@ -913,12 +1146,13 @@ mod tests {
     /// the middle.
     #[test]
     fn a_huge_one_paragraph_side_is_usable_in_the_text_field() {
-        use std::time::{Duration, Instant};
+        use crate::testing::{cpu_time_of, cpu_within};
+        use std::time::Duration;
         let sides = [
             ("words", "word ".repeat(MAX_CARD_SIDE_BYTES / 5)),
             ("no spaces", "x".repeat(MAX_CARD_SIDE_BYTES)),
         ];
-        let results = crate::testing::with_gtk(move || {
+        let results = crate::testing::with_widgets(move || {
             sides.map(|(what, side)| {
                 let buffer = sourceview5::Buffer::new(None);
                 buffer.set_language(
@@ -931,26 +1165,34 @@ mod tests {
                 view.set_monospace(true);
                 view.set_wrap_mode(gtk::WrapMode::WordChar);
 
-                let start = Instant::now();
-                buffer.set_text(&side);
-                let load = start.elapsed();
-                let start = Instant::now();
-                let _ = view.measure(gtk::Orientation::Horizontal, -1);
-                let _ = view.measure(gtk::Orientation::Vertical, 600);
-                let first = start.elapsed();
+                // CPU time of this thread, where GTK does the work, so a
+                // loaded machine does not fail the bounds (ADR 0049).
+                let (load, ()) = cpu_time_of(|| buffer.set_text(&side));
+                let (first, ()) = cpu_time_of(|| {
+                    let _ = view.measure(gtk::Orientation::Horizontal, -1);
+                    let _ = view.measure(gtk::Orientation::Vertical, 600);
+                });
                 let stall = longest_stall(Duration::from_secs(20));
 
                 let middle = buffer.iter_at_offset(buffer.char_count() / 2);
                 buffer.place_cursor(&middle);
-                let start = Instant::now();
-                buffer.insert_at_cursor("y");
-                let _ = view.measure(gtk::Orientation::Vertical, 600);
-                let typed = start.elapsed();
+                let (typed, ()) = cpu_time_of(|| {
+                    buffer.insert_at_cursor("y");
+                    let _ = view.measure(gtk::Orientation::Vertical, 600);
+                });
                 let stall_after = longest_stall(Duration::from_secs(20));
-                (what, load, first, stall, typed, stall_after)
+                // About 0.16 s and 3 ms here (release and debug alike: the
+                // time is in GTK); the bounds leave ten times that for slow
+                // machines. Checked on this thread, which did the work.
+                let verdict = cpu_within(load, Duration::from_secs(1))
+                    .and(cpu_within(first, Duration::from_secs(2)))
+                    .and(cpu_within(stall, Duration::from_secs(2)))
+                    .and(cpu_within(typed, Duration::from_secs(1)))
+                    .and(cpu_within(stall_after, Duration::from_secs(2)));
+                (what, load, first, stall, typed, stall_after, verdict)
             })
         });
-        for (what, load, first, stall, typed, stall_after) in results {
+        for (what, load, first, stall, typed, stall_after, verdict) in results {
             let print =
                 |step: &str, t| crate::testing::print_timing(&format!("1 MiB {what}: {step}"), t);
             print("load", load);
@@ -958,16 +1200,12 @@ mod tests {
             print("longest main-loop step while highlighting", stall);
             print("type one character and lay out", typed);
             print("longest main-loop step after typing", stall_after);
-            // About 0.16 s and 3 ms here (release and debug alike: the time is
-            // in GTK); the bounds leave ten times that for slow machines.
-            assert!(load < Duration::from_secs(1), "{what}: load {load:?}");
-            assert!(first < Duration::from_secs(2), "{what}: layout {first:?}");
-            assert!(stall < Duration::from_secs(2), "{what}: stall {stall:?}");
-            assert!(typed < Duration::from_secs(1), "{what}: typing {typed:?}");
-            assert!(
-                stall_after < Duration::from_secs(2),
-                "{what}: stall after typing {stall_after:?}"
-            );
+            if let Err(message) = verdict {
+                panic!(
+                    "{what}: load {load:?}, layout {first:?}, stall {stall:?}, \
+                     typing {typed:?}, stall after typing {stall_after:?}: {message}"
+                );
+            }
         }
     }
 }

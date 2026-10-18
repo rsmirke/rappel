@@ -3,6 +3,7 @@
 - Status: Accepted
 - Date: 2026-10-17
 - Amends: SPEC §4.4 (the field is comma-separated, not chips)
+- Amended by: ADR 0043 (the field is now pills with an entry after them; the suggestions and their keys are unchanged)
 
 ## Context
 

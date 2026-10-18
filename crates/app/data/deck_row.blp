@@ -1,25 +1,106 @@
 using Gtk 4.0;
 using Adw 1;
 
-// One deck in the deck list. Title and subtitle are set in
-// widgets/deck_row.rs; deck names are untrusted, so markup is off.
-template $RappelDeckRow: Adw.ActionRow {
-  use-markup: false;
-  title-lines: 1;
+// One deck in the deck list: its name, the line under it and a menu
+// (ADR 0041). Not an AdwActionRow: its subtitle is one label, and the due
+// count is drawn in the accent colour on its own. The boxes carry the
+// classes libadwaita styles in any row (`row > box.header > box.title`,
+// `row label.subtitle`), so it looks like an action row. Texts are set in
+// widgets/deck_row.rs as plain text: deck names are untrusted, and no
+// label here parses markup.
+template $RappelDeckRow: Gtk.ListBoxRow {
   // Activating the row opens the deck (ADR 0013).
   activatable: true;
 
-  [suffix]
-  Gtk.MenuButton menu_button {
-    icon-name: "view-more-symbolic";
-    tooltip-text: _("Deck Actions");
-    valign: center;
-    menu-model: deck_menu;
+  styles [
+    "deck-row",
+  ]
 
+  child: Gtk.Box {
     styles [
-      "flat",
+      "header",
     ]
-  }
+
+    Gtk.Box {
+      orientation: vertical;
+      hexpand: true;
+      valign: center;
+
+      styles [
+        "title",
+      ]
+
+      // A long name wraps onto a second line, then ends in "…"; the
+      // accessible label has it whole.
+      Gtk.Label name_label {
+        xalign: 0;
+        wrap: true;
+        wrap-mode: word_char;
+        lines: 2;
+        ellipsize: end;
+        use-markup: false;
+
+        // `heading` makes the name the row's primary element (the
+        // brief's "deck name prominent"); a libadwaita class, no own font.
+        // Not also `title`: libadwaita's `row > box.header > box.title >
+        // .title { font-weight: inherit; }` is more specific than
+        // `.heading` and would undo it.
+        styles [
+          "heading",
+        ]
+      }
+
+      Gtk.Box {
+        spacing: 6;
+
+        Gtk.Label due_label {
+          xalign: 0;
+          use-markup: false;
+
+          styles [
+            "subtitle",
+            "numeric",
+            "accent",
+            "deck-due",
+          ]
+        }
+
+        Gtk.Label separator_label {
+          label: "·";
+          // Only a visual divider; the row's label says the line in words.
+          accessible-role: presentation;
+
+          styles [
+            "subtitle",
+          ]
+        }
+
+        Gtk.Label other_label {
+          xalign: 0;
+          hexpand: true;
+          wrap: true;
+          wrap-mode: word_char;
+          use-markup: false;
+
+          styles [
+            "subtitle",
+            "numeric",
+          ]
+        }
+      }
+    }
+
+    Gtk.MenuButton menu_button {
+      icon-name: "view-more-symbolic";
+      tooltip-text: _("Deck Actions");
+      valign: center;
+      menu-model: deck_menu;
+
+      styles [
+        "flat",
+      ]
+    }
+  };
 }
 
 menu deck_menu {

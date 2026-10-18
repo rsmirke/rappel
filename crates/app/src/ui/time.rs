@@ -6,7 +6,10 @@ use gtk::glib;
 
 use super::text::{count, interval_text};
 
-const DAY_MS: i64 = 86_400_000;
+/// Lengths of time in milliseconds, the unit of every timestamp.
+pub const MINUTE_MS: i64 = 60_000;
+pub const HOUR_MS: i64 = 60 * MINUTE_MS;
+pub const DAY_MS: i64 = 24 * HOUR_MS;
 
 /// `ms` (UTC milliseconds) formatted by `GLib` in the local zone, or
 /// `None` when `GLib` cannot represent it.
@@ -72,6 +75,13 @@ mod tests {
         assert_eq!(relative_due(NOW - 3_600_000, NOW), "due now");
         assert_eq!(relative_due(NOW - DAY_MS, NOW), "overdue by 1 day");
         assert_eq!(relative_due(NOW - 2 * DAY_MS - 5, NOW), "overdue by 2 days");
+        // Far ends of the clock: no overflow.
+        assert_eq!(relative_due(i64::MAX, 0), "in 1000 years");
+        assert_eq!(relative_due(i64::MAX, i64::MIN), "in 1000 years");
+        assert_eq!(
+            relative_due(i64::MIN, i64::MAX),
+            "overdue by 106,751,991,167 days"
+        );
     }
 
     #[test]

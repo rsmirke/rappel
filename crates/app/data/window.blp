@@ -9,11 +9,14 @@ template $RappelWindow: Adw.ApplicationWindow {
   height-request: 294;
 
   content: Adw.ToastOverlay toast_overlay {
-    // One page per startup outcome; window.rs picks the visible one.
-    child: Gtk.Stack stack {
-      transition-type: crossfade;
+    // One page per startup outcome; window.rs picks the visible one. An
+    // AdwViewStack, so the crossfade (after a restore) is libadwaita's
+    // transition, as the brief's design rules ask. Like GtkStack's, it is
+    // skipped when gtk-enable-animations is off.
+    child: Adw.ViewStack stack {
+      enable-transitions: true;
 
-      Gtk.StackPage {
+      Adw.ViewStackPage {
         name: "main";
 
         // The deck list pushes deck pages onto this view.
@@ -22,7 +25,7 @@ template $RappelWindow: Adw.ApplicationWindow {
         };
       }
 
-      Gtk.StackPage {
+      Adw.ViewStackPage {
         name: "recovery";
 
         child: Adw.ToolbarView {
@@ -33,7 +36,7 @@ template $RappelWindow: Adw.ApplicationWindow {
         };
       }
 
-      Gtk.StackPage {
+      Adw.ViewStackPage {
         name: "too-new";
 
         child: Adw.ToolbarView {
@@ -51,14 +54,14 @@ template $RappelWindow: Adw.ApplicationWindow {
               justify: center;
 
               styles [
-                "dim-label",
+                "dimmed",
               ]
             };
           };
         };
       }
 
-      Gtk.StackPage {
+      Adw.ViewStackPage {
         name: "error";
 
         child: Adw.ToolbarView {
@@ -76,7 +79,7 @@ template $RappelWindow: Adw.ApplicationWindow {
               justify: center;
 
               styles [
-                "dim-label",
+                "dimmed",
               ]
             };
           };

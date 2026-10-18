@@ -1,0 +1,210 @@
+using Gtk 4.0;
+using Adw 1;
+
+// Keyboard Shortcuts (Ctrl+?, primary menu). AdwApplication finds this file
+// at `shortcuts-dialog.ui` under the resource base path and sets up
+// `app.shortcuts` and Ctrl+? itself (AdwApplication docs, "Shortcuts
+// Dialog"). It lists every shortcut the app has; a test in
+// `dialogs/shortcuts.rs` checks every key table in the code against it.
+Adw.ShortcutsDialog shortcuts_dialog {
+  Adw.ShortcutsSection {
+    title: _("General");
+
+    Adw.ShortcutsItem {
+      title: _("Main Menu");
+      subtitle: _("On the deck list");
+      accelerator: "F10";
+    }
+
+    Adw.ShortcutsItem {
+      title: _("Keyboard Shortcuts");
+      accelerator: "<Control>question";
+    }
+
+    Adw.ShortcutsItem {
+      title: _("Preferences");
+      accelerator: "<Control>comma";
+    }
+
+    Adw.ShortcutsItem {
+      title: _("Search All Cards");
+      accelerator: "<Control>f";
+    }
+
+    Adw.ShortcutsItem {
+      title: _("New Deck or Card");
+      accelerator: "<Control>n";
+    }
+
+    Adw.ShortcutsItem {
+      title: _("Go Back");
+      accelerator: "Escape <Alt>Left";
+    }
+  }
+
+  Adw.ShortcutsSection {
+    title: _("Studying");
+
+    Adw.ShortcutsItem {
+      title: _("Show Answer");
+      accelerator: "space Return";
+    }
+
+    Adw.ShortcutsItem {
+      title: _("Fail");
+      accelerator: "1";
+    }
+
+    Adw.ShortcutsItem {
+      title: _("Pass");
+      accelerator: "2 space";
+    }
+
+    Adw.ShortcutsItem {
+      title: _("Edit Card");
+      accelerator: "e";
+    }
+
+    Adw.ShortcutsItem {
+      title: _("Card Information");
+      accelerator: "i";
+    }
+
+    Adw.ShortcutsItem {
+      title: _("Suspend Card");
+      accelerator: "s";
+    }
+
+    Adw.ShortcutsItem {
+      title: _("Delete Card");
+      accelerator: "Delete";
+    }
+
+    Adw.ShortcutsItem {
+      title: _("Undo Last Answer");
+      accelerator: "<Control>z";
+    }
+  }
+
+  Adw.ShortcutsSection {
+    title: _("Card Editor");
+
+    Adw.ShortcutsItem {
+      title: _("Save");
+      accelerator: "<Control>Return";
+    }
+
+    Adw.ShortcutsItem {
+      title: _("Save and Add Another");
+      accelerator: "<Control><Shift>Return";
+    }
+
+    Adw.ShortcutsItem {
+      title: _("Bold");
+      accelerator: "<Control>b";
+    }
+
+    Adw.ShortcutsItem {
+      title: _("Italic");
+      accelerator: "<Control>i";
+    }
+
+    Adw.ShortcutsItem {
+      title: _("Edit or Preview");
+      subtitle: _("When the window is narrow");
+      accelerator: "<Alt>e <Alt>p";
+    }
+
+    Adw.ShortcutsItem {
+      title: _("Close");
+      accelerator: "Escape";
+    }
+  }
+
+  Adw.ShortcutsSection {
+    title: _("Tags");
+
+    Adw.ShortcutsItem {
+      title: _("Add Tag");
+      subtitle: _("The typed name, or the highlighted suggestion");
+      accelerator: "Return";
+    }
+
+    Adw.ShortcutsItem {
+      title: _("Previous or Next Suggestion");
+      subtitle: _("While tags are suggested");
+      accelerator: "Up Down";
+    }
+
+    Adw.ShortcutsItem {
+      title: _("Accept Suggestion");
+      subtitle: _("The highlighted one, or else the first");
+      accelerator: "Tab";
+    }
+
+    Adw.ShortcutsItem {
+      title: _("Close Suggestions");
+      subtitle: _("While tags are suggested");
+      accelerator: "Escape";
+    }
+
+    Adw.ShortcutsItem {
+      title: _("Go to the Last Tag");
+      subtitle: _("In an empty tag field");
+      accelerator: "BackSpace";
+    }
+
+    Adw.ShortcutsItem {
+      title: _("Remove Tag");
+      subtitle: _("On a tag’s remove button");
+      accelerator: "BackSpace Delete";
+    }
+  }
+
+  Adw.ShortcutsSection {
+    title: _("All Cards");
+
+    Adw.ShortcutsItem {
+      title: _("Go to the Card List");
+      subtitle: _("From the search field");
+      accelerator: "Down";
+    }
+
+    Adw.ShortcutsItem {
+      title: _("Open Card");
+      accelerator: "Return";
+    }
+
+    Adw.ShortcutsItem {
+      title: _("Select All");
+      accelerator: "<Control>a";
+    }
+
+    Adw.ShortcutsItem {
+      title: _("Select or Deselect Card");
+      subtitle: _("While selecting cards");
+      accelerator: "space";
+    }
+
+    Adw.ShortcutsItem {
+      title: _("Stop Selecting or Clear the Search");
+      accelerator: "Escape";
+    }
+  }
+
+  Adw.ShortcutsSection {
+    title: _("Statistics");
+
+    Adw.ShortcutsItem {
+      title: _("Previous or Next Day");
+      subtitle: _("On a chart");
+      accelerator: "Left Right";
+    }
+
+    Adw.ShortcutsItem {
+      title: _("First or Last Day");
+      subtitle: _("On a chart");
+      accelerator: "Home End";
+    }
+  }
+}

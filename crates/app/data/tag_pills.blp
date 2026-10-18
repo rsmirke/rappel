@@ -1,0 +1,20 @@
+using Gtk 4.0;
+using Adw 1;
+
+// A card's tags as small rounded pills (`.tag-pill` in data/style.css).
+// The pills are plain labels made in widgets/tag_pills.rs: tag names are
+// untrusted, so nothing here parses markup. One of the two boxes is shown:
+// the wrap box where the pills may take several lines (the editor), the
+// single line in a list row, where the tags past a few become one "+N"
+// pill.
+template $RappelTagPills: Gtk.Box {
+  Adw.WrapBox wrap_box {
+    child-spacing: 6;
+    line-spacing: 6;
+  }
+
+  Gtk.Box line_box {
+    visible: false;
+    spacing: 6;
+  }
+}

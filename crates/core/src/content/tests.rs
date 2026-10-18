@@ -408,12 +408,18 @@ fn flattened_blocks_keep_their_lines_and_cells() {
 fn many_leading_hard_breaks_are_fast() {
     // Quadratic before: minutes for a 1 MiB side.
     let md = format!("- \\\n{}b", "\\\n".repeat(300_000));
-    let start = std::time::Instant::now();
-    assert_eq!(plain_text(&parse(&md)), "b");
-    let md = format!("$$x$$\\\n{}b", "\\\n".repeat(300_000));
-    assert_eq!(plain_text(&parse(&md)), "x\nb");
+    let (used, ()) = crate::test_support::cpu_time_of(|| {
+        assert_eq!(plain_text(&parse(&md)), "b");
+        let md = format!("$$x$$\\\n{}b", "\\\n".repeat(300_000));
+        assert_eq!(plain_text(&parse(&md)), "x\nb");
+    });
     // Generous, for slow CI machines; the quadratic version took minutes.
-    assert!(start.elapsed() < std::time::Duration::from_secs(20));
+    // CPU time, checked against the machine's slowdown (ADR 0049).
+    crate::test_support::assert_cpu_within(
+        used,
+        std::time::Duration::from_secs(20),
+        "leading hard breaks",
+    );
 }
 
 #[test]

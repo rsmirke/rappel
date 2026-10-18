@@ -3,6 +3,7 @@
 - Status: Accepted
 - Date: 2026-10-17
 - Amends: SPEC §3 (the full-text index is not an external-content table; `suspended`), §4.1 (the `suspended` field and its merge rule), §4.6 (the Learning state, the bulk actions)
+- Amended by: ADR 0050 (a word that starts another word of the query is left out; only the first 1 KiB of the query is searched)
 - Refers to: ADR 0005 (storage), ADR 0013 (card deletion), ADR 0017 (the export format), ADR 0028 (undo and reset), ADR 0029 (tags), ADR 0030 (undo of a reset), ADR 0034 (the browser comes first)
 
 ## Context

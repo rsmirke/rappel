@@ -36,3 +36,22 @@ pub fn label_menu_button(button: &gtk::MenuButton, name: &str) {
         "Actions for {name}"
     ))]);
 }
+
+/// Gives `button` its menu `model` only when the menu first opens, for rows
+/// a `GtkListView` makes many of: building the popover of a six-item menu
+/// is about half the cost of making a card row, and most rows' menus are
+/// never opened. GTK calls the function each time the popup is about to be
+/// shown, and the button stays sensitive meanwhile
+/// (`gtk_menu_button_set_create_popup_func` docs), so a click, Enter or
+/// Space opens the menu as before. GTK 4.24 calls it on every open, and
+/// `set_menu_model` builds a new popover each time, so the model is set
+/// only the first time and the popover is then kept (tested in
+/// `card_row`: two opens give the same popover).
+pub fn menu_on_demand(button: &gtk::MenuButton, model: &gtk::gio::MenuModel) {
+    let model = model.clone();
+    button.set_create_popup_func(move |button| {
+        if button.menu_model().is_none() {
+            button.set_menu_model(Some(&model));
+        }
+    });
+}

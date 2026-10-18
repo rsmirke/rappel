@@ -13,8 +13,9 @@ use adw::subclass::prelude::*;
 use gtk::glib;
 use rappel_core::domain::Deck;
 
-use self::text::{DayNames, FORECAST_TITLE, REVIEWS_TITLE, TIME_TITLE, Tile};
+use self::text::{DayNames, FORECAST_TITLE, REVIEWS_TITLE, TIME_TITLE};
 use crate::state::{AppState, StatsData};
+use crate::ui::tile::set_tile;
 use crate::ui::time;
 use crate::widgets::chart_card::{ChartCard, ChartModel};
 
@@ -33,6 +34,8 @@ mod imp {
         pub window_title: TemplateChild<adw::WindowTitle>,
         #[template_child]
         pub content_stack: TemplateChild<gtk::Stack>,
+        #[template_child]
+        pub back_button: TemplateChild<gtk::Button>,
         #[template_child]
         pub retention_value: TemplateChild<gtk::Label>,
         #[template_child]
@@ -101,6 +104,9 @@ impl StatsPage {
         page.imp()
             .window_title
             .set_subtitle(deck.map_or("All Decks", |d| d.name.as_str()));
+        page.imp()
+            .back_button
+            .set_label(text::back_label(deck.is_some()));
         page.fill(&data);
         Ok(page)
     }
@@ -147,26 +153,19 @@ impl StatsPage {
         }
     }
 
-    /// Puts the keyboard focus on the first chart that is drawn.
+    /// Puts the keyboard focus on the first chart that is drawn, or on the
+    /// empty state's button.
     fn focus_first_chart(&self) {
         let imp = self.imp();
-        if let Some(card) = [&*imp.reviews_chart, &*imp.time_chart, &*imp.forecast_chart]
+        if imp.content_stack.visible_child_name().as_deref() == Some("empty") {
+            imp.back_button.grab_focus();
+        } else if let Some(card) = [&*imp.reviews_chart, &*imp.time_chart, &*imp.forecast_chart]
             .into_iter()
             .find(|card| card.shows_chart())
         {
             card.chart().grab_focus();
         }
     }
-}
-
-/// One headline tile: the big text, its caption, and the screen reader's
-/// reading of both in the value label (the caption is hidden from it, so
-/// the tile is read once, and "—" is read as "no reviews").
-fn set_tile(value: &gtk::Label, caption: &gtk::Label, tile: &Tile) {
-    value.set_label(&tile.value);
-    caption.set_label(&tile.caption);
-    value.update_property(&[gtk::accessible::Property::Label(&tile.accessible)]);
-    caption.update_state(&[gtk::accessible::State::Hidden(true)]);
 }
 
 #[cfg(test)]
@@ -177,20 +176,12 @@ mod tests {
 
     use super::*;
 
-    fn state() -> (tempfile::TempDir, AppState) {
-        adw::init().unwrap();
-        gtk::gio::resources_register_include!("rappel.gresource").unwrap();
-        let tmp = tempfile::tempdir().unwrap();
-        let state = AppState::open(tmp.path().join("data")).unwrap();
-        (tmp, state)
-    }
-
     /// A deck of two cards, each passed twice ten days ago and
     /// failed once yesterday.
     fn studied(state: &AppState) -> Deck {
         let deck = state.create_deck("Deck").unwrap();
         let now = rappel_core::time::now_ms();
-        let day = 86_400_000;
+        let day = crate::ui::time::DAY_MS;
         for i in 0..2 {
             let id = state
                 .add_card_with_tags(&deck.id, &format!("front {i}"), "back", &[])
@@ -219,10 +210,18 @@ mod tests {
 
     #[test]
     fn nothing_studied_shows_the_empty_state() {
-        crate::testing::with_gtk(|| {
-            let (_tmp, state) = state();
+        crate::testing::with_widgets(|| {
+            let (_tmp, state) = crate::testing::temporary_state();
             let page = StatsPage::new(&state, None).unwrap();
             assert_eq!(shown(&page).as_deref(), Some("empty"));
+            assert_eq!(
+                page.imp().back_button.label().as_deref(),
+                Some("_Back to Decks")
+            );
+            assert_eq!(
+                page.imp().back_button.action_name().as_deref(),
+                Some("navigation.pop")
+            );
             // A deck of new cards has nothing to show either.
             let deck = state.create_deck("Deck").unwrap();
             state
@@ -230,13 +229,17 @@ mod tests {
                 .unwrap();
             let page = StatsPage::new(&state, Some(&deck)).unwrap();
             assert_eq!(shown(&page).as_deref(), Some("empty"));
+            assert_eq!(
+                page.imp().back_button.label().as_deref(),
+                Some("_Back to Deck")
+            );
         });
     }
 
     #[test]
     fn studied_cards_fill_the_headline_and_the_charts() {
-        crate::testing::with_gtk(|| {
-            let (_tmp, state) = state();
+        crate::testing::with_widgets(|| {
+            let (_tmp, state) = crate::testing::temporary_state();
             let deck = studied(&state);
             let page = StatsPage::new(&state, Some(&deck)).unwrap();
             let imp = page.imp();
@@ -257,8 +260,8 @@ mod tests {
 
     #[test]
     fn a_chart_without_data_says_so_instead() {
-        crate::testing::with_gtk(|| {
-            let (_tmp, state) = state();
+        crate::testing::with_widgets(|| {
+            let (_tmp, state) = crate::testing::temporary_state();
             let deck = state.create_deck("Deck").unwrap();
             let id = state
                 .add_card_with_tags(&deck.id, "front", "back", &[])
@@ -266,7 +269,7 @@ mod tests {
                 .card
                 .id;
             // Reviewed once, long ago and failed: no review in the window.
-            let long_ago = rappel_core::time::now_ms() - 90 * 86_400_000;
+            let long_ago = rappel_core::time::now_ms() - 90 * crate::ui::time::DAY_MS;
             state
                 .record_review(&id, Grade::Fail, Duration::from_secs(3), long_ago)
                 .unwrap();
@@ -282,8 +285,8 @@ mod tests {
 
     #[test]
     fn a_deleted_deck_has_no_page() {
-        crate::testing::with_gtk(|| {
-            let (_tmp, state) = state();
+        crate::testing::with_widgets(|| {
+            let (_tmp, state) = crate::testing::temporary_state();
             let deck = studied(&state);
             state.delete_deck(&deck.id).unwrap();
             assert!(matches!(

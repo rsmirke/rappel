@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-10-15
-- Amended by: ADR 0019 (the review page shows rendered Markdown), ADR 0027 (the daily limits and the day start hour are settings), ADR 0028 (the daily limits count only reviews that are not undone, since the last reset)
+- Amended by: ADR 0019 (the review page shows rendered Markdown), ADR 0027 (the daily limits and the day start hour are settings), ADR 0028 (the daily limits count only reviews that are not undone, since the last reset), ADR 0030 (what a `Session` remembers), ADR 0045 (the bottom bar, key hints and summary tiles)
 
 ## Context
 

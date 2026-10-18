@@ -1,0 +1,39 @@
+using Gtk 4.0;
+
+// A field of tags: the tags as removable pills, then the text for typing
+// the next one, all in one frame (widgets/tag_entry.rs, ADR 0043). The text
+// is made in code and put after the pills, in their wrapping lines. A comma
+// or Enter turns the typed name into a pill; suggestions appear in a popover
+// under the frame (widgets/tag_suggestions.rs) while the text keeps the
+// focus. Tag names are untrusted: nothing here parses markup.
+template $RappelTagEntry: Gtk.Box {
+  orientation: vertical;
+  spacing: 6;
+
+  styles [
+    "tag-entry",
+  ]
+
+  // The same frame as the card editor's text fields, so the three fields
+  // read as one form. A click on its empty part focuses the text.
+  Gtk.Frame frame {
+    child: $RappelTagPills pills {
+      removable: true;
+      margin-top: 6;
+      margin-bottom: 6;
+      margin-start: 6;
+      margin-end: 6;
+    };
+  }
+
+  Gtk.Label error {
+    visible: false;
+    wrap: true;
+    xalign: 0;
+
+    styles [
+      "error",
+      "caption",
+    ]
+  }
+}

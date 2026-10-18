@@ -1,25 +1,32 @@
 //! `CardObject`: one card as a list model item, for the deck page's
-//! `GtkListView` (ADR 0013). It holds the card and its one-line preview
-//! (plain text, never markup), computed once, so binding a recycled row is
-//! cheap. It also holds the card's tags as one line, like the preview.
+//! `GtkListView` (ADR 0013, 0042). It holds the card, its tags (each name on
+//! one line, for the pills) and the one-line previews of its front and back
+//! (plain text, never markup). The previews are made the first time a row
+//! shows the card and then kept, so opening a deck of 5,000 cards parses
+//! nothing until the rows scroll into view, and binding a recycled row
+//! again is cheap.
 
-use std::cell::{Ref, RefCell};
+use std::cell::{OnceCell, Ref, RefCell};
 
 use gtk::glib;
 use gtk::subclass::prelude::*;
 use rappel_core::content::plain_summary;
-use rappel_core::domain::{Card, Tag, TaggedCard};
+use rappel_core::domain::{Card, TaggedCard};
+
+use super::card_row::text::row_label;
+use crate::ui::text::one_line;
 
 mod imp {
-    use super::{Card, RefCell};
+    use super::{Card, OnceCell, RefCell};
     use gtk::glib;
     use gtk::subclass::prelude::*;
 
     #[derive(Debug)]
     pub struct CardObject {
         pub card: RefCell<Card>,
-        pub preview: RefCell<String>,
-        pub tags_line: RefCell<String>,
+        pub tags: RefCell<Vec<String>>,
+        pub front: OnceCell<String>,
+        pub back: OnceCell<String>,
     }
 
     /// `GObject` needs a default; [`super::CardObject::new`], the only
@@ -36,8 +43,9 @@ mod imp {
                     updated_at: 0,
                     suspended: false,
                 }),
-                preview: RefCell::new(String::new()),
-                tags_line: RefCell::new(String::new()),
+                tags: RefCell::default(),
+                front: OnceCell::new(),
+                back: OnceCell::new(),
             }
         }
     }
@@ -59,8 +67,9 @@ impl CardObject {
     pub fn new(tagged: TaggedCard) -> Self {
         let TaggedCard { card, tags } = tagged;
         let obj: Self = glib::Object::new();
-        obj.imp().preview.replace(plain_summary(&card.front_md));
-        obj.imp().tags_line.replace(tags_line(&tags));
+        obj.imp()
+            .tags
+            .replace(tags.iter().map(|tag| one_line(&tag.name)).collect());
         obj.imp().card.replace(card);
         obj
     }
@@ -72,73 +81,38 @@ impl CardObject {
 
     /// The front on one line, without Markdown syntax (see
     /// [`plain_summary`]).
-    pub fn preview(&self) -> Ref<'_, String> {
-        self.imp().preview.borrow()
+    pub fn front_preview(&self) -> &str {
+        self.imp()
+            .front
+            .get_or_init(|| plain_summary(&self.imp().card.borrow().front_md))
     }
 
-    /// The tags on one line (see [`tags_line`]), empty without tags.
-    pub fn tags_line(&self) -> Ref<'_, String> {
-        self.imp().tags_line.borrow()
+    /// The back on one line, without Markdown syntax; empty for an empty
+    /// back.
+    pub fn back_preview(&self) -> &str {
+        self.imp()
+            .back
+            .get_or_init(|| plain_summary(&self.imp().card.borrow().back_md))
+    }
+
+    /// The tag names, each on one line (`ui::text::one_line`).
+    pub fn tags(&self) -> Ref<'_, Vec<String>> {
+        self.imp().tags.borrow()
+    }
+
+    /// Whether either preview has been made (they are made on first use).
+    #[cfg(test)]
+    pub fn has_previews(&self) -> bool {
+        self.imp().front.get().is_some() || self.imp().back.get().is_some()
     }
 
     /// What a screen reader says for the row (see [`row_label`]).
     pub fn row_label(&self) -> String {
-        let label = row_label(&self.preview(), &self.tags_line());
-        if self.card().suspended {
-            format!("{label}, suspended")
-        } else {
-            label
-        }
-    }
-}
-
-/// The tag names joined by ", ", each on one line (tag names are only
-/// trimmed, so a pasted one can hold a line break or runs of spaces).
-/// Plain text, never markup.
-pub fn tags_line(tags: &[Tag]) -> String {
-    tags.iter()
-        .map(|tag| tag.name.split_whitespace().collect::<Vec<_>>().join(" "))
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-/// The accessible label of a row: the front, then "tags:" and the tags
-/// line when there are tags.
-pub fn row_label(preview: &str, tags_line: &str) -> String {
-    if tags_line.is_empty() {
-        preview.to_owned()
-    } else {
-        format!("{preview}, tags: {tags_line}")
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn tag(name: &str) -> Tag {
-        Tag {
-            id: format!("id-{name}"),
-            name: name.to_owned(),
-        }
-    }
-
-    #[test]
-    fn tags_are_one_plain_line() {
-        assert_eq!(tags_line(&[]), "");
-        assert_eq!(tags_line(&[tag("maths")]), "maths");
-        assert_eq!(
-            tags_line(&[tag("maths"), tag("a\n  b"), tag("<b>x</b>")]),
-            "maths, a b, <b>x</b>"
-        );
-    }
-
-    #[test]
-    fn a_row_is_read_with_its_tags() {
-        assert_eq!(row_label("2 + 2", ""), "2 + 2");
-        assert_eq!(
-            row_label("2 + 2", "maths, easy"),
-            "2 + 2, tags: maths, easy"
-        );
+        row_label(
+            self.front_preview(),
+            self.back_preview(),
+            &self.tags(),
+            self.card().suspended,
+        )
     }
 }

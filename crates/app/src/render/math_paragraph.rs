@@ -53,8 +53,7 @@ pub fn accessible_text(text: &str, formulas: &[Formula]) -> String {
         }
     }
     out.push_str(text.get(from..).unwrap_or_default());
-    out.retain(|c| c != super::breaks::BREAK);
-    out
+    super::breaks::without_breaks(&out)
 }
 
 /// The placeholder's length in UTF-8 (3), for Pango's `u32` byte indices.

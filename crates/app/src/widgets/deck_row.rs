@@ -1,5 +1,6 @@
-//! One deck in the deck list: name, new/due counts and a menu with Rename
-//! and Delete. Layout in `data/deck_row.blp`.
+//! One deck in the deck list: name, what it has to study (or when it next
+//! will, `text`) and a menu with Rename and Delete. Layout in
+//! `data/deck_row.blp` (ADR 0041).
 //!
 //! The menu items activate the row's own `row.rename` / `row.delete`
 //! actions, which forward to the page's `decks.rename` / `decks.delete`
@@ -12,6 +13,8 @@ use rappel_core::domain::DeckSummary;
 
 use crate::ui::rows;
 
+pub mod text;
+
 mod imp {
     use std::cell::RefCell;
 
@@ -22,15 +25,25 @@ mod imp {
     #[template(resource = "/io/github/rsmirke/Rappel/deck_row.ui")]
     pub struct DeckRow {
         #[template_child]
+        pub name_label: TemplateChild<gtk::Label>,
+        #[template_child]
+        pub due_label: TemplateChild<gtk::Label>,
+        #[template_child]
+        pub separator_label: TemplateChild<gtk::Label>,
+        #[template_child]
+        pub other_label: TemplateChild<gtk::Label>,
+        #[template_child]
         pub menu_button: TemplateChild<gtk::MenuButton>,
         pub deck_id: RefCell<String>,
+        /// The accessible label last set, "Scratch, 12 due, 5 new".
+        pub accessible_label: RefCell<String>,
     }
 
     #[glib::object_subclass]
     impl ObjectSubclass for DeckRow {
         const NAME: &'static str = "RappelDeckRow";
         type Type = super::DeckRow;
-        type ParentType = adw::ActionRow;
+        type ParentType = gtk::ListBoxRow;
 
         fn class_init(klass: &mut Self::Class) {
             klass.bind_template();
@@ -50,28 +63,45 @@ mod imp {
     impl ObjectImpl for DeckRow {}
     impl WidgetImpl for DeckRow {}
     impl ListBoxRowImpl for DeckRow {}
-    impl PreferencesRowImpl for DeckRow {}
-    impl ActionRowImpl for DeckRow {}
 }
 
 glib::wrapper! {
     pub struct DeckRow(ObjectSubclass<imp::DeckRow>)
-        @extends adw::ActionRow, adw::PreferencesRow, gtk::ListBoxRow, gtk::Widget,
+        @extends gtk::ListBoxRow, gtk::Widget,
         @implements gtk::Accessible, gtk::Actionable, gtk::Buildable, gtk::ConstraintTarget;
 }
 
 impl DeckRow {
-    pub fn new(summary: &DeckSummary) -> Self {
+    /// A row for `summary`, its line worded for `now` when the next study
+    /// day begins at `next_day` (UTC milliseconds).
+    pub fn new(summary: &DeckSummary, now: i64, next_day: i64) -> Self {
         let row: Self = glib::Object::new();
-        let name = &summary.deck.name;
-        row.set_title(name);
-        row.set_subtitle(&format!(
-            "{} new · {} due",
-            summary.new_count, summary.due_count
-        ));
-        rows::label_menu_button(&row.imp().menu_button, name);
         row.imp().deck_id.replace(summary.deck.id.clone());
+        row.update(summary, now, next_day);
         row
+    }
+
+    /// Shows `summary` (the same deck, maybe renamed or with other counts)
+    /// in place, so a refresh keeps the keyboard focus on the row.
+    pub fn update(&self, summary: &DeckSummary, now: i64, next_day: i64) {
+        let imp = self.imp();
+        let name = &summary.deck.name;
+        let line = text::row_text(summary, now, next_day);
+        imp.name_label.set_label(name);
+        set_part(&imp.due_label, line.due.as_deref());
+        set_part(&imp.other_label, line.other.as_deref());
+        imp.separator_label.set_visible(line.has_separator());
+        // The row is read as one: "Scratch, 12 due, 5 new" (the "·" and the
+        // units in words).
+        // Set only when it changed: the list refreshes every minute or so,
+        // and a screen reader may announce a changed label of the focused
+        // row again.
+        let label = line.accessible_label(name);
+        if *imp.accessible_label.borrow() != label {
+            self.update_property(&[gtk::accessible::Property::Label(&label)]);
+            rows::label_menu_button(&imp.menu_button, name);
+            imp.accessible_label.replace(label);
+        }
     }
 
     /// The id of the deck this row shows.
@@ -82,4 +112,10 @@ impl DeckRow {
     fn forward(&self, action: &str) {
         rows::forward_id(self, action, &self.deck_id());
     }
+}
+
+/// Shows `text` in `label`, or hides the label.
+fn set_part(label: &gtk::Label, text: Option<&str>) {
+    label.set_label(text.unwrap_or_default());
+    label.set_visible(text.is_some());
 }

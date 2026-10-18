@@ -45,7 +45,11 @@ fn create_trims_the_name_and_lists_the_deck() {
         [DeckSummary {
             deck,
             new_count: 0,
-            due_count: 0
+            due_count: 0,
+            card_count: 0,
+            suspended_count: 0,
+            held_back_count: 0,
+            next_change_at: None,
         }]
     );
 }
@@ -617,5 +621,345 @@ mod study_counts {
         );
         // The next study day: 10 unreviewed cards left, all allowed.
         assert_eq!(new_count(&store, T0 + DAY_MS, DAY_START + DAY_MS), 10);
+    }
+
+    // --- What the deck list says when there is nothing to study now -----
+
+    /// `(card_count, suspended_count, held_back_count, next_change_at)` of
+    /// the only deck.
+    fn extra(store: &Store, now: i64, day_start: i64) -> (u32, u32, u32, Option<i64>) {
+        let d = store.list_decks(now, day_start).unwrap().remove(0);
+        (
+            d.card_count,
+            d.suspended_count,
+            d.held_back_count,
+            d.next_change_at,
+        )
+    }
+
+    /// Every deck's `next_change_at` equals `next_study_change`.
+    fn assert_next_matches(store: &Store, now: i64) {
+        for d in store.list_decks(now, DAY_START).unwrap() {
+            assert_eq!(
+                d.next_change_at,
+                store.next_study_change(&d.deck.id, now).unwrap(),
+                "deck {}",
+                d.deck.name
+            );
+        }
+    }
+
+    #[test]
+    fn a_deck_without_cards_has_nothing_counted_and_no_next_change() {
+        let mut store = Store::in_memory();
+        deck_with_cards(&mut store, "Empty", 0);
+        assert_eq!(extra(&store, T0, DAY_START), (0, 0, 0, None));
+    }
+
+    #[test]
+    fn new_cards_have_no_next_change_and_suspended_ones_are_counted() {
+        let mut store = Store::in_memory();
+        let (_, cards) = deck_with_cards(&mut store, "Maths", 3);
+        assert_eq!(extra(&store, T0, DAY_START), (3, 0, 0, None));
+        store.set_suspended(&cards[..1], true).unwrap();
+        assert_eq!(extra(&store, T0, DAY_START), (3, 1, 0, None));
+        // Every card suspended, one of them reviewed: no change to come.
+        answer(&mut store, &cards[1], Grade::Pass, T0);
+        store.set_suspended(&cards, true).unwrap();
+        let d = store.list_decks(T0, DAY_START).unwrap().remove(0);
+        assert_eq!((d.new_count, d.due_count), (0, 0));
+        assert_eq!(extra(&store, T0, DAY_START), (3, 3, 0, None));
+        assert_next_matches(&store, T0);
+    }
+
+    #[test]
+    fn deleted_cards_are_not_counted() {
+        let mut store = Store::in_memory();
+        let (_, cards) = deck_with_cards(&mut store, "Maths", 3);
+        store.set_suspended(&cards[..1], true).unwrap();
+        store.delete_card_at(&cards[0], T0).unwrap();
+        store.delete_card_at(&cards[1], T0).unwrap();
+        assert_eq!(extra(&store, T0, DAY_START), (1, 0, 0, None));
+    }
+
+    #[test]
+    fn a_step_card_changes_twenty_minutes_before_it_is_due() {
+        let mut store = Store::in_memory();
+        let (_, cards) = deck_with_cards(&mut store, "Maths", 1);
+        // Failed at T0: due again in the 10-minute step, so offered at once.
+        answer(&mut store, &cards[0], Grade::Fail, T0);
+        let d = store.list_decks(T0, DAY_START).unwrap().remove(0);
+        assert_eq!((d.due_count, d.next_change_at), (1, None));
+        assert_next_matches(&store, T0);
+        // Seen from 30 minutes earlier, the step (due at T0 + 10 min) is
+        // more than 20 minutes away: it changes the deck 20 minutes early.
+        let earlier = T0 - 30 * 60_000;
+        let d = store.list_decks(earlier, DAY_START).unwrap().remove(0);
+        let due = T0 + 10 * 60_000;
+        assert_eq!(
+            (d.due_count, d.next_change_at),
+            (0, Some(due - 20 * 60_000))
+        );
+        assert_next_matches(&store, earlier);
+    }
+
+    #[test]
+    fn suspended_cards_are_never_held_back() {
+        let mut store = Store::in_memory();
+        let (_, cards) = deck_with_cards(&mut store, "Maths", 30);
+        store.set_suspended(&cards[25..], true).unwrap();
+        // 25 new not suspended, 20 allowed: 5 held back, not 10.
+        let d = store.list_decks(T0, DAY_START).unwrap().remove(0);
+        assert_eq!(
+            (d.new_count, d.held_back_count, d.suspended_count),
+            (NEW_PER_DAY, 5, 5)
+        );
+
+        // Three overdue reviews, one suspended, a limit of 1: one held back.
+        let mut store = Store::in_memory();
+        let (_, cards) = deck_with_cards(&mut store, "Physics", 3);
+        for card in &cards {
+            answer(&mut store, card, Grade::Pass, T0 - 3 * DAY_MS);
+            answer(&mut store, card, Grade::Pass, T0 - 3 * DAY_MS + 600_000);
+        }
+        store.set_suspended(&cards[..1], true).unwrap();
+        store.set_max_reviews_per_day(1).unwrap();
+        let later = T0 + 400 * DAY_MS;
+        let d = store.list_decks(later, later).unwrap().remove(0);
+        assert_eq!((d.due_count, d.held_back_count), (1, 1));
+    }
+
+    #[test]
+    fn a_reset_card_counts_as_new_again() {
+        let mut store = Store::in_memory();
+        let (_, cards) = deck_with_cards(&mut store, "Maths", 1);
+        answer(&mut store, &cards[0], Grade::Pass, T0 - 3 * DAY_MS);
+        answer(
+            &mut store,
+            &cards[0],
+            Grade::Pass,
+            T0 - 3 * DAY_MS + 600_000,
+        );
+        let before = store.list_decks(T0, DAY_START).unwrap().remove(0);
+        assert_eq!(before.new_count, 0);
+        store.reset_card(&cards[0], T0).unwrap();
+        let d = store.list_decks(T0, DAY_START).unwrap().remove(0);
+        assert_eq!(
+            (
+                d.new_count,
+                d.due_count,
+                d.held_back_count,
+                d.next_change_at
+            ),
+            (1, 0, 0, None)
+        );
+        assert_list_matches_study_input(&store, T0, DAY_START);
+    }
+
+    #[test]
+    fn a_learned_card_changes_when_it_is_due_and_not_before() {
+        let mut store = Store::in_memory();
+        let (_, cards) = deck_with_cards(&mut store, "Maths", 1);
+        answer(&mut store, &cards[0], Grade::Pass, T0);
+        answer(&mut store, &cards[0], Grade::Pass, T0 + 600_000);
+        let due = store.next_study_change(&cards_deck(&store), T0 + 600_000);
+        let due = due.unwrap().expect("a reviewed card becomes due");
+        assert!(due > T0 + 600_000);
+        assert_eq!(extra(&store, T0 + 600_000, DAY_START), (1, 0, 0, Some(due)));
+        // One millisecond before: still the next change. At the due time it
+        // is studied now, so there is no later change.
+        assert_eq!(extra(&store, due - 1, DAY_START).3, Some(due));
+        let at_due = store.list_decks(due, due).unwrap().remove(0);
+        assert_eq!((at_due.due_count, at_due.next_change_at), (1, None));
+        for now in [T0, T0 + 600_000, due - 1, due, due + DAY_MS] {
+            assert_next_matches(&store, now);
+        }
+    }
+
+    fn cards_deck(store: &Store) -> String {
+        store.decks().unwrap().remove(0).id
+    }
+
+    #[test]
+    fn the_daily_limits_hold_cards_back() {
+        let mut store = Store::in_memory();
+        let (_, cards) = deck_with_cards(&mut store, "Maths", 30);
+        // 20 new allowed today, 10 held back.
+        assert_eq!(extra(&store, T0, DAY_START).2, 10);
+        for card in &cards[..NEW_PER_DAY as usize] {
+            answer(&mut store, card, Grade::Pass, T0);
+        }
+        let d = store.list_decks(T0, DAY_START).unwrap().remove(0);
+        assert_eq!((d.new_count, d.held_back_count), (0, 10));
+        // The next day the ten are allowed; nothing is held back.
+        let tomorrow = store
+            .list_decks(T0 + DAY_MS, DAY_START + DAY_MS)
+            .unwrap()
+            .remove(0);
+        assert_eq!((tomorrow.new_count, tomorrow.held_back_count), (10, 0));
+
+        // A review limit of 2 with 3 cards due holds one back.
+        let mut store = Store::in_memory();
+        let (_, cards) = deck_with_cards(&mut store, "Physics", 3);
+        for card in &cards {
+            answer(&mut store, card, Grade::Pass, T0 - 3 * DAY_MS);
+            answer(&mut store, card, Grade::Pass, T0 - 3 * DAY_MS + 600_000);
+        }
+        store.set_max_reviews_per_day(2).unwrap();
+        let later = T0 + 400 * DAY_MS;
+        let d = store.list_decks(later, later).unwrap().remove(0);
+        assert_eq!((d.due_count, d.held_back_count), (2, 1));
+        store.set_max_reviews_per_day(0).unwrap();
+        let d = store.list_decks(later, later).unwrap().remove(0);
+        assert_eq!((d.due_count, d.held_back_count), (0, 3));
+        assert_next_matches(&store, later);
+    }
+}
+
+// --- The deck list's counts are a second implementation of study_input ---
+
+mod counts_equal_study_input {
+    use std::time::Duration;
+
+    use proptest::prelude::*;
+
+    use super::{DAY_MS, T0};
+    use crate::domain::{CardState, Grade, Phase};
+    use crate::storage::Store;
+    use crate::storage::review::deck_counts_in;
+
+    const CARDS: usize = 12;
+
+    /// One random write: an answer, a suspension, an undo of the card's
+    /// latest entry, a reset or a deletion.
+    #[derive(Debug, Clone, Copy)]
+    enum Op {
+        Pass,
+        Fail,
+        Suspend,
+        Unsuspend,
+        UndoLatest,
+        Reset,
+        Delete,
+    }
+
+    fn op() -> impl Strategy<Value = Op> {
+        prop_oneof![
+            3 => Just(Op::Pass),
+            2 => Just(Op::Fail),
+            1 => Just(Op::Suspend),
+            1 => Just(Op::Unsuspend),
+            1 => Just(Op::UndoLatest),
+            1 => Just(Op::Reset),
+            1 => Just(Op::Delete),
+        ]
+    }
+
+    /// The deck's cards that would be studied now without the daily
+    /// limits, counted card by card through the public API: new cards and
+    /// due reviews, neither suspended.
+    fn uncut_totals(store: &Store, deck: &str, now: i64) -> (usize, usize) {
+        let mut new = 0;
+        let mut due = 0;
+        for card in store.list_cards(deck).unwrap() {
+            if card.suspended {
+                continue;
+            }
+            match store.card_state(&card.id).unwrap() {
+                CardState::New => new += 1,
+                CardState::Scheduled(s) if s.phase == Phase::Review && s.due_at <= now => {
+                    due += 1;
+                }
+                CardState::Scheduled(_) => {}
+            }
+        }
+        (new, due)
+    }
+
+    proptest! {
+        // About 0.1 s per 16 cases in a debug build.
+        #![proptest_config(ProptestConfig::with_cases(128))]
+
+        /// `deck_counts_in` (the deck list) and `study_input` (the deck
+        /// page) agree after any history, at any time, under any limits
+        /// (ADR 0014, 0041).
+        #[test]
+        fn deck_counts_equal_study_input(
+            ops in prop::collection::vec((op(), 0..CARDS, 0_i64..3_000), 0..60),
+            max_new in 0_u32..6,
+            max_reviews in 0_u32..6,
+            probes in prop::collection::vec((0_i64..40_000, 0_i64..24), 1..6),
+        ) {
+            let mut store = Store::in_memory();
+            store.set_max_new_per_day(max_new).unwrap();
+            store.set_max_reviews_per_day(max_reviews).unwrap();
+            let a = store.create_deck_at("A", T0).unwrap().id;
+            let b = store.create_deck_at("B", T0).unwrap().id;
+            let cards: Vec<String> = (0..CARDS)
+                .map(|i| {
+                    let deck = if i % 3 == 0 { &b } else { &a };
+                    store.add_card_at(deck, &format!("q{i}"), "a", T0).unwrap().id
+                })
+                .collect();
+            let mut latest: Vec<Option<String>> = vec![None; CARDS];
+            let mut t = T0;
+            for (op, i, minutes) in ops {
+                t += minutes * 60_000;
+                let card = &cards[i];
+                let one = std::slice::from_ref(card);
+                // Writes on a deleted card fail; that is part of the
+                // history too.
+                match op {
+                    Op::Pass | Op::Fail => {
+                        let grade = if matches!(op, Op::Pass) { Grade::Pass } else { Grade::Fail };
+                        if let Ok(e) = store.record_review(card, grade, Duration::from_secs(1), t) {
+                            latest[i] = Some(e.id);
+                        }
+                    }
+                    Op::Suspend => { let _ = store.set_suspended(one, true); }
+                    Op::Unsuspend => { let _ = store.set_suspended(one, false); }
+                    Op::UndoLatest => {
+                        if let Some(e) = latest[i].take() {
+                            let _ = store.undo(card, &e, t);
+                        }
+                    }
+                    Op::Reset => {
+                        if let Ok(e) = store.reset_card(card, t) {
+                            latest[i] = Some(e.id);
+                        }
+                    }
+                    Op::Delete => { let _ = store.delete_card_at(card, t); }
+                }
+            }
+            for (minutes, hours_ago) in probes {
+                let now = T0 + minutes * 60_000;
+                let day_start = (now - (now - T0).rem_euclid(DAY_MS) - hours_ago * 3_600_000).min(now);
+                for deck in [&a, &b] {
+                    let input = store.study_input(deck, now, day_start).unwrap();
+                    let counts = deck_counts_in(&store.conn, deck, now, day_start).unwrap();
+                    prop_assert_eq!(counts.new as usize, input.new.len());
+                    prop_assert_eq!(counts.reviews as usize, input.reviews.len());
+                    prop_assert_eq!(counts.steps as usize, input.steps.len());
+                    prop_assert_eq!(counts.next_change_at, store.next_study_change(deck, now).unwrap());
+                    if let Some(at) = counts.next_change_at {
+                        prop_assert!(at > now);
+                    }
+                    let live = store.list_cards(deck).unwrap();
+                    prop_assert_eq!(counts.live as usize, live.len());
+                    prop_assert_eq!(counts.suspended as usize, live.iter().filter(|c| c.suspended).count());
+                    let (new_total, due_total) = uncut_totals(&store, deck, now);
+                    prop_assert_eq!(
+                        counts.held_back as usize,
+                        (new_total - input.new.len()) + (due_total - input.reviews.len())
+                    );
+                }
+                // And `list_decks` passes them on unchanged.
+                for s in store.list_decks(now, day_start).unwrap() {
+                    let input = store.study_input(&s.deck.id, now, day_start).unwrap();
+                    prop_assert_eq!(s.new_count as usize, input.new.len());
+                    prop_assert_eq!(s.due_count as usize, input.reviews.len() + input.steps.len());
+                }
+            }
+        }
     }
 }

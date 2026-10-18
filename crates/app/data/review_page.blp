@@ -7,197 +7,445 @@ using Adw 1;
 template $RappelReviewPage: Adw.NavigationPage {
   title: _("Study");
 
-  child: Adw.ToolbarView {
-    [top]
-    Adw.HeaderBar {
-      title-widget: Adw.WindowTitle window_title {};
+  // The bin's size request is the window's minimum (data/window.blp);
+  // AdwBreakpointBin needs one.
+  child: Adw.BreakpointBin {
+    width-request: 360;
+    height-request: 294;
 
-      [start]
-      Gtk.Button undo_button {
-        icon-name: "edit-undo-symbolic";
-        action-name: "review.undo";
-        tooltip-text: _("Undo Last Answer (Ctrl+Z)");
+    // A narrow window stacks the summary's figures, as Statistics does.
+    Adw.Breakpoint {
+      condition ("max-width: 450sp")
 
-        accessibility {
-          label: _("Undo Last Answer");
-        }
-      }
-
-      [end]
-      Gtk.MenuButton card_menu_button {
-        visible: false;
-        icon-name: "view-more-symbolic";
-        menu-model: card_menu;
-        tooltip-text: _("Card Menu");
-
-        accessibility {
-          label: _("Card Menu");
-        }
-      }
-
-      [end]
-      Gtk.Button edit_button {
-        visible: false;
-        icon-name: "document-edit-symbolic";
-        action-name: "review.edit";
-        tooltip-text: _("Edit Card (E)");
-
-        accessibility {
-          label: _("Edit Card");
-        }
+      setters {
+        summary_figures.orientation: vertical;
       }
     }
 
-    content: Gtk.Stack stack {
-      transition-type: crossfade;
+    // A short window (a phone held sideways) keeps the room for the card:
+    // the key hints go and the bar's margins shrink. The summary is then
+    // `compact` (less spacing) without its icon, so its figures and Back to
+    // Deck fit at 360 × 294. A setter can neither add a style class nor
+    // unset the icon, so the page does both on `apply` and undoes them on
+    // `unapply`. When both breakpoints match, AdwBreakpointBin applies only
+    // the last one (AdwBreakpointBin docs), so the figures stay side by
+    // side here.
+    Adw.Breakpoint short_breakpoint {
+      condition ("max-height: 400sp")
 
-      Gtk.StackPage {
-        name: "card";
+      setters {
+        reveal_hint.visible: false;
+        fail_hint.visible: false;
+        pass_hint.visible: false;
+        bottom_bar.margin-top: 6;
+        bottom_bar.margin-bottom: 6;
+        summary_box.spacing: 24;
+      }
+    }
 
-        child: Gtk.ScrolledWindow {
-          hscrollbar-policy: never;
+    child: Adw.ToolbarView {
+      [top]
+      Adw.HeaderBar {
+        title-widget: Adw.WindowTitle window_title {};
 
-          child: Adw.Clamp {
-            maximum-size: 600;
-            margin-top: 36;
-            margin-bottom: 36;
-            margin-start: 18;
-            margin-end: 18;
+        [start]
+        Gtk.Button undo_button {
+          icon-name: "edit-undo-symbolic";
+          action-name: "review.undo";
+          tooltip-text: _("Undo Last Answer (Ctrl+Z)");
 
-            // Focusable, so the keyboard focus can rest here and Space,
-            // Enter, 1 and 2 reach the page's shortcuts.
-            child: Gtk.Box card_area {
+          accessibility {
+            label: _("Undo Last Answer");
+          }
+        }
+
+        [end]
+        Gtk.MenuButton card_menu_button {
+          visible: false;
+          icon-name: "view-more-symbolic";
+          menu-model: card_menu;
+          tooltip-text: _("Card Menu");
+
+          accessibility {
+            label: _("Card Menu");
+          }
+        }
+
+        [end]
+        Gtk.Button edit_button {
+          visible: false;
+          icon-name: "document-edit-symbolic";
+          action-name: "review.edit";
+          tooltip-text: _("Edit Card (E)");
+
+          accessibility {
+            label: _("Edit Card");
+          }
+        }
+      }
+
+      // No transitions (AdwViewStack's default): the card and the summary
+      // replace each other at once; only the answer fades in (the page's
+      // reveal animation).
+      content: Adw.ViewStack stack {
+        Adw.ViewStackPage {
+          name: "card";
+
+          child: Gtk.ScrolledWindow {
+            hscrollbar-policy: never;
+
+            child: Adw.Clamp {
+              maximum-size: 700;
+              margin-top: 36;
+              margin-bottom: 36;
+              margin-start: 18;
+              margin-end: 18;
+
+              // Focusable, so the keyboard focus can rest here and Space,
+              // Enter, 1 and 2 reach the page's shortcuts.
+              child: Gtk.Box card_area {
+                orientation: vertical;
+                spacing: 24;
+                focusable: true;
+                // A group, not a box's default generic role: GTK exposes no
+                // name or description for a generic one (its naming is
+                // "prohibited", gtk/gtkatcontext.c), so the card's text set
+                // below would not be read (ADR 0051).
+                accessible-role: group;
+
+                // Its accessible label is the front's text, and its
+                // description the back's once shown (set in the page). The
+                // sides' text is larger than body text, the front a little
+                // more than the back (`card-front`, `card-back` in
+                // data/style.css).
+                Gtk.Box front_box {
+                  orientation: vertical;
+
+                  styles [
+                    "card-front",
+                  ]
+                }
+
+                // The separator and the back, shown together at the reveal.
+                Gtk.Box back_part {
+                  orientation: vertical;
+                  spacing: 24;
+                  visible: false;
+
+                  Gtk.Separator {}
+
+                  Gtk.Box back_box {
+                    orientation: vertical;
+
+                    styles [
+                      "card-back",
+                    ]
+                  }
+                }
+
+                // Shown when a side is longer than the review page lays out
+                // (`render::MAX_SHOWN_BYTES`). Screen readers get the same
+                // text with the side (`CUT_NOTE` in the page), so the label
+                // itself is hidden from them (a presentation role is not
+                // exposed, `gtk_accessible_should_present`), or it would be
+                // read twice.
+                Gtk.Label cut_note {
+                  accessible-role: presentation;
+                  label: _("This card is long: only its start is shown. Edit it to see all of it.");
+                  visible: false;
+                  wrap: true;
+                  xalign: 0;
+
+                  styles [
+                    "dimmed",
+                    "caption",
+                  ]
+                }
+              };
+            };
+          };
+        }
+
+        Adw.ViewStackPage {
+          name: "summary";
+
+          child: Adw.StatusPage summary_page {
+            // Also in the page (`SUMMARY_ICON`), which takes it off on
+            // short windows.
+            icon-name: "object-select-symbolic";
+            title: _("Session Complete");
+
+            child: Gtk.Box summary_box {
               orientation: vertical;
-              spacing: 24;
-              focusable: true;
+              spacing: 36;
 
-              // Its accessible label is the front's text, and its
-              // description the back's once shown (set in the page).
-              Gtk.Box front_box {
-                orientation: vertical;
+              // Three figures, laid out like the tiles of Statistics. Their
+              // texts are set in the page (`summary_tiles`).
+              Adw.Clamp {
+                maximum-size: 480;
+                tightening-threshold: 480;
+
+                child: Gtk.Box summary_figures {
+                  spacing: 12;
+                  homogeneous: true;
+
+                  Gtk.Box {
+                    orientation: vertical;
+                    spacing: 2;
+
+                    styles [
+                      "card",
+                    ]
+
+                    Gtk.Label cards_value {
+                      margin-top: 12;
+                      margin-start: 6;
+                      margin-end: 6;
+
+                      styles [
+                        "title-2",
+                        "numeric",
+                      ]
+                    }
+
+                    Gtk.Label cards_caption {
+                      margin-bottom: 12;
+                      margin-start: 6;
+                      margin-end: 6;
+                      wrap: true;
+                      justify: center;
+
+                      styles [
+                        "caption",
+                        "dimmed",
+                      ]
+                    }
+                  }
+
+                  Gtk.Box {
+                    orientation: vertical;
+                    spacing: 2;
+
+                    styles [
+                      "card",
+                    ]
+
+                    Gtk.Label passed_value {
+                      margin-top: 12;
+                      margin-start: 6;
+                      margin-end: 6;
+
+                      styles [
+                        "title-2",
+                        "numeric",
+                      ]
+                    }
+
+                    Gtk.Label passed_caption {
+                      margin-bottom: 12;
+                      margin-start: 6;
+                      margin-end: 6;
+                      wrap: true;
+                      justify: center;
+
+                      styles [
+                        "caption",
+                        "dimmed",
+                      ]
+                    }
+                  }
+
+                  Gtk.Box {
+                    orientation: vertical;
+                    spacing: 2;
+
+                    styles [
+                      "card",
+                    ]
+
+                    Gtk.Label time_value {
+                      margin-top: 12;
+                      margin-start: 6;
+                      margin-end: 6;
+                      wrap: true;
+                      justify: center;
+
+                      styles [
+                        "title-2",
+                        "numeric",
+                      ]
+                    }
+
+                    Gtk.Label time_caption {
+                      margin-bottom: 12;
+                      margin-start: 6;
+                      margin-end: 6;
+                      wrap: true;
+                      justify: center;
+
+                      styles [
+                        "caption",
+                        "dimmed",
+                      ]
+                    }
+                  }
+                };
               }
 
-              Gtk.Separator back_separator {
-                visible: false;
-              }
-
-              Gtk.Box back_box {
-                orientation: vertical;
-                visible: false;
-              }
-
-              // Shown when a side is longer than the review page lays out
-              // (`render::MAX_SHOWN_BYTES`). Screen readers get the same
-              // text with the side (`CUT_NOTE` in the page).
-              Gtk.Label cut_note {
-                label: _("This card is long: only its start is shown. Edit it to see all of it.");
-                visible: false;
-                wrap: true;
-                xalign: 0;
+              Gtk.Button done_button {
+                label: _("_Back to Deck");
+                use-underline: true;
+                action-name: "review.done";
+                halign: center;
 
                 styles [
-                  "dim-label",
-                  "caption",
+                  "pill",
+                  "suggested-action",
                 ]
               }
             };
           };
-        };
-      }
+        }
+      };
 
-      Gtk.StackPage {
-        name: "summary";
+      // Show Answer, then Fail and Pass, in the same place, so the thumb
+      // stays where it is. Each button has its key in small dimmed text
+      // under it. The hint is hidden from screen readers, which hear the
+      // key in the button's description instead.
+      [bottom]
+      Adw.Clamp bottom_bar {
+        maximum-size: 420;
+        tightening-threshold: 420;
+        margin-top: 12;
+        margin-bottom: 18;
+        margin-start: 18;
+        margin-end: 18;
 
-        child: Adw.StatusPage summary_page {
-          icon-name: "emblem-ok-symbolic";
-          title: _("Session Complete");
+        // Both pages are as tall as each other (`vhomogeneous`).
+        child: Adw.ViewStack buttons {
+          Adw.ViewStackPage {
+            name: "reveal";
 
-          child: Gtk.Button done_button {
-            label: _("_Back to Deck");
-            use-underline: true;
-            action-name: "review.done";
-            halign: center;
+            child: Gtk.Box {
+              orientation: vertical;
+              spacing: 6;
 
-            styles [
-              "pill",
-              "suggested-action",
-            ]
-          };
+              Gtk.Button {
+                label: _("_Show Answer");
+                use-underline: true;
+                action-name: "review.reveal";
+
+                accessibility {
+                  description: _("Press Space");
+                }
+
+                styles [
+                  "pill",
+                  "suggested-action",
+                  "review-button",
+                ]
+              }
+
+              Gtk.Label reveal_hint {
+                label: _("Space");
+                accessible-role: presentation;
+
+                styles [
+                  "caption",
+                  "dimmed",
+                ]
+              }
+            };
+          }
+
+          Adw.ViewStackPage {
+            name: "grade";
+
+            child: Gtk.Box {
+              spacing: 12;
+              homogeneous: true;
+
+              Gtk.Box {
+                orientation: vertical;
+                spacing: 6;
+
+                Gtk.Button {
+                  label: _("_Fail");
+                  use-underline: true;
+                  action-name: "review.fail";
+
+                  accessibility {
+                    description: _("Press 1");
+                  }
+
+                  styles [
+                    "pill",
+                    "review-button",
+                  ]
+                }
+
+                Gtk.Label fail_hint {
+                  label: _("1");
+                  accessible-role: presentation;
+
+                  styles [
+                    "caption",
+                    "dimmed",
+                    "numeric",
+                  ]
+                }
+              }
+
+              Gtk.Box {
+                orientation: vertical;
+                spacing: 6;
+
+                Gtk.Button {
+                  label: _("_Pass");
+                  use-underline: true;
+                  action-name: "review.pass";
+
+                  accessibility {
+                    description: _("Press 2 or Space");
+                  }
+
+                  styles [
+                    "pill",
+                    "suggested-action",
+                    "review-button",
+                  ]
+                }
+
+                Gtk.Label pass_hint {
+                  label: _("2");
+                  accessible-role: presentation;
+
+                  styles [
+                    "caption",
+                    "dimmed",
+                    "numeric",
+                  ]
+                }
+              }
+            };
+          }
         };
       }
     };
-
-    [bottom]
-    Gtk.Stack buttons {
-      transition-type: crossfade;
-      margin-top: 12;
-      margin-bottom: 18;
-      margin-start: 18;
-      margin-end: 18;
-
-      Gtk.StackPage {
-        name: "reveal";
-
-        child: Gtk.Button {
-          label: _("_Show Answer");
-          use-underline: true;
-          action-name: "review.reveal";
-          tooltip-text: _("Show Answer (Space)");
-          halign: center;
-
-          styles [
-            "pill",
-            "suggested-action",
-          ]
-        };
-      }
-
-      Gtk.StackPage {
-        name: "grade";
-
-        child: Gtk.Box {
-          spacing: 12;
-          halign: center;
-          homogeneous: true;
-
-          Gtk.Button {
-            label: _("_Fail");
-            use-underline: true;
-            action-name: "review.fail";
-            tooltip-text: _("Fail (1)");
-
-            styles [
-              "pill",
-            ]
-          }
-
-          Gtk.Button {
-            label: _("_Pass");
-            use-underline: true;
-            action-name: "review.pass";
-            tooltip-text: _("Pass (2 or Space)");
-
-            styles [
-              "pill",
-              "suggested-action",
-            ]
-          }
-        };
-      }
-
-      Gtk.StackPage {
-        name: "none";
-
-        child: Gtk.Box {};
-      }
-    }
   };
 }
 
+// The keys are handled by the page's shortcut controller (`setup_keys`),
+// whose callbacks a menu cannot see. The `accel` attribute only shows the
+// key in the menu: GtkMenuTrackerItem reads it before asking the action
+// muxer (gtk_menu_tracker_item_get_accel). GtkModelButton then also makes
+// the key press the item, but in managed scope, so only while the menu is
+// open (gtkmodelbutton.c, update_accel), where it acts like a click.
 menu card_menu {
   section {
     item {
       label: _("Card _Information");
+      accel: "i";
       action: "review.card-info";
     }
   }
@@ -205,11 +453,13 @@ menu card_menu {
   section {
     item {
       label: _("_Suspend Card");
+      accel: "s";
       action: "review.suspend";
     }
 
     item {
       label: _("_Delete Card…");
+      accel: "Delete";
       action: "review.delete";
     }
   }
