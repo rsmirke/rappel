@@ -1,21 +1,27 @@
 //! Writing and reading the `.rappel` zip archive.
 //!
-//! An export holds `cards.json` and an empty `media/` directory. Nothing is
-//! ever extracted to disk, and nothing is read into memory whole: the
-//! archive is read from its file, its entries are listed from the central
-//! directory without reading their data, and an entry's data is streamed
-//! with a hard cap on the bytes it decompresses to, hashed as it goes
-//! (ADR 0053). Names are compared byte for byte with the names Rappel
-//! writes, and any other entry refuses the file, so paths in entry names
-//! (zip-slip) cannot matter.
+//! An export holds `cards.json` and an empty `media/` directory. It is
+//! written with the `zip` crate. It is read here, not by the `zip` crate,
+//! whose reader keeps every central record in memory and, when one end
+//! record does not work out, tries every earlier one it can find
+//! (ADR 0053): nothing is ever extracted to disk, nothing is read into
+//! memory whole, and every read is bounded by the limits. The end record
+//! must end the file; the central directory it names is walked record by
+//! record, exactly as many as it declares and within the size it declares;
+//! each name is compared byte for byte with the names Rappel writes and
+//! any other entry refuses the file, so paths in entry names (zip-slip)
+//! cannot matter; an entry's data is streamed (Stored, or Deflate through
+//! `flate2`) with a hard cap on the bytes it decompresses to, its CRC and
+//! size checked at its end, and hashed as it goes.
 
 use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
 use std::ops::Range;
 
+use flate2::read::DeflateDecoder;
 use sha2::{Digest, Sha256};
 use zip::result::ZipResult;
 use zip::write::SimpleFileOptions;
-use zip::{CompressionMethod, ZipArchive, ZipWriter};
+use zip::{CompressionMethod, ZipWriter};
 
 use super::{ImportProblem, Limits};
 
@@ -25,7 +31,16 @@ pub(super) const JSON_ENTRY: &str = "cards.json";
 pub(super) const MEDIA_DIR: &str = "media/";
 
 /// Length of a local file header without its name and extra field.
-const LOCAL_HEADER_LEN: u64 = 30;
+const LOCAL_HEADER_LEN: usize = 30;
+const LOCAL_SIGNATURE: [u8; 4] = *b"PK\x03\x04";
+/// Length of a central record without its name, extra field and comment.
+const CENTRAL_LEN: usize = 46;
+const CENTRAL_SIGNATURE: [u8; 4] = *b"PK\x01\x02";
+/// The extra field that holds 64-bit sizes and offsets.
+const ZIP64_EXTRA: u16 = 0x0001;
+/// Compression methods: Stored and Deflate, the only ones read.
+const STORED: u16 = 0;
+const DEFLATED: u16 = 8;
 
 /// The end of central directory record, without a comment.
 const EOCD_LEN: usize = 22;
@@ -92,15 +107,17 @@ impl Role {
 /// its data has been read.
 #[derive(Debug, Clone)]
 pub(super) struct Entry {
-    /// Its index in the archive.
-    pub(super) index: usize,
     pub(super) role: Role,
+    /// Stored or Deflate.
+    method: u16,
+    /// The CRC-32 of its data, checked once the data is read.
+    crc: u32,
+    /// Where its data starts and how many bytes it takes in the file.
+    data_start: u64,
+    compressed: u64,
     /// The size the central record declares, decompressed. Not trusted:
-    /// reading stops at the caller's cap whatever it says.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the media import (phase 2, slice 2) reads it")
-    )]
+    /// reading stops at the caller's cap whatever it says, and a size that
+    /// differs from what the data gives refuses the entry.
     pub(super) size: u64,
     /// The bytes it takes, from its local header to the end of its data.
     pub(super) span: Range<u64>,
@@ -156,7 +173,7 @@ impl<R: Seek> Seek for Window<R> {
 /// A checked archive: its entries are exactly the ones a Rappel export
 /// has, each stored in a supported way, and they do not overlap.
 pub(super) struct Archive<R> {
-    zip: ZipArchive<Window<R>>,
+    reader: Window<R>,
     entries: Vec<Entry>,
     /// `cards.json`.
     json: Entry,
@@ -177,7 +194,9 @@ impl<R: Read + Seek> Archive<R> {
     ///
     /// The entry count and the size of the central directory are checked
     /// against `limits` from the end record, before the central directory
-    /// is read, so a file declaring millions of entries costs nothing.
+    /// is read, so a file declaring millions of entries costs nothing; the
+    /// walk reads at most that size, keeps no name, and stops at the first
+    /// record that is not one Rappel writes.
     pub(super) fn open(reader: R, len: u64, limits: &Limits) -> Result<Self, ImportProblem> {
         if len > limits.archive {
             return Err(ImportProblem::FileTooLarge {
@@ -197,22 +216,32 @@ impl<R: Read + Seek> Archive<R> {
                 limits.central_directory
             )));
         }
-        let mut zip = ZipArchive::new(reader).map_err(|e| invalid(&e))?;
-        // The reader keys entries by name, so a repeated name would silently
-        // hide one of them: compare with the count the archive declares.
-        if zip.len() as u64 != end.entries {
-            return Err(ImportProblem::UnexpectedEntry(
-                "(a name used twice)".to_owned(),
-            ));
+        // The central directory ends before the end records start.
+        end.directory_offset
+            .checked_add(end.directory_size)
+            .filter(|e| *e <= end.end_start)
+            .ok_or_else(not_layout)?;
+        let mut entries = walk_directory(&mut reader, &end)?;
+        for entry in &mut entries {
+            locate_data(&mut reader, entry)?;
         }
-        let entries = list_entries(&mut zip)?;
-        check_layout(&entries, zip.central_directory_start())?;
+        if !entries.iter().any(|e| e.role == Role::Json) {
+            return Err(ImportProblem::MissingEntry(JSON_ENTRY));
+        }
+        if !entries.iter().any(|e| e.role == Role::MediaDir) {
+            return Err(ImportProblem::MissingEntry(MEDIA_DIR));
+        }
+        check_layout(&entries, end.directory_offset)?;
         let json = entries
             .iter()
             .find(|e| e.role == Role::Json)
             .cloned()
             .ok_or(ImportProblem::MissingEntry(JSON_ENTRY))?;
-        Ok(Self { zip, entries, json })
+        Ok(Self {
+            reader,
+            entries,
+            json,
+        })
     }
 
     /// The entries, in archive order.
@@ -231,19 +260,29 @@ impl<R: Read + Seek> Archive<R> {
 
     /// A reader of `entry`'s decompressed data that fails once more than
     /// `cap` bytes come out, whatever the entry declares, and hashes what
-    /// it reads. The zip reader checks the CRC once the data is read to
-    /// its end.
+    /// it reads. At the end of the data, its CRC and size are checked.
     pub(super) fn open_entry(
         &mut self,
         entry: &Entry,
         cap: u64,
     ) -> Result<EntryReader<'_, R>, ImportProblem> {
-        let file = self.zip.by_index(entry.index).map_err(|e| invalid(&e))?;
+        self.reader
+            .seek(SeekFrom::Start(entry.data_start))
+            .map_err(|e| io_problem(&e))?;
+        let raw = (&mut self.reader).take(entry.compressed);
+        let data = if entry.method == DEFLATED {
+            Data::Deflated(DeflateDecoder::new(raw))
+        } else {
+            Data::Stored(raw)
+        };
         Ok(EntryReader {
-            file,
+            data,
             entry: entry.role.name(),
             cap,
+            declared: entry.size,
+            expected_crc: entry.crc,
             count: 0,
+            crc: crc32fast::Hasher::new(),
             hasher: Sha256::new(),
             failure: None,
         })
@@ -307,24 +346,44 @@ pub(super) enum CopyError {
 /// Why an entry reader stopped early.
 #[derive(Debug, Clone)]
 enum Failure {
-    /// The zip reader failed: damaged data or a CRC that does not match.
-    Zip(String),
+    /// The data is damaged: it cannot be inflated, or its CRC or size is
+    /// not the one its central record declares.
+    Damaged(String),
     /// More than the cap came out.
     TooLarge,
 }
 
-/// The decompressed data of one entry, counted against a cap and hashed.
-/// After a failure every read fails, and [`Self::failure`] says why.
-pub(super) struct EntryReader<'a, R: Read> {
-    file: zip::read::ZipFile<'a, Window<R>>,
+/// An entry's data as it is in the file.
+enum Data<'a, R> {
+    Stored(io::Take<&'a mut Window<R>>),
+    Deflated(DeflateDecoder<io::Take<&'a mut Window<R>>>),
+}
+
+impl<R: Read> Read for Data<'_, R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match self {
+            Self::Stored(r) => r.read(buf),
+            Self::Deflated(r) => r.read(buf),
+        }
+    }
+}
+
+/// The decompressed data of one entry, counted against a cap, hashed, and
+/// checked against its CRC and size at its end. After a failure every
+/// read fails, and [`Self::failure`] says why.
+pub(super) struct EntryReader<'a, R> {
+    data: Data<'a, R>,
     entry: &'static str,
     cap: u64,
+    declared: u64,
+    expected_crc: u32,
     count: u64,
+    crc: crc32fast::Hasher,
     hasher: Sha256,
     failure: Option<Failure>,
 }
 
-impl<R: Read> std::fmt::Debug for EntryReader<'_, R> {
+impl<R> std::fmt::Debug for EntryReader<'_, R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("EntryReader")
             .field("entry", &self.entry)
@@ -348,7 +407,7 @@ impl<R: Read> EntryReader<'_, R> {
     /// Why reading failed, as the import reports it.
     pub(super) fn failure(&self) -> Option<ImportProblem> {
         self.failure.as_ref().map(|f| match f {
-            Failure::Zip(message) => ImportProblem::InvalidArchive(message.clone()),
+            Failure::Damaged(message) => ImportProblem::InvalidArchive(message.clone()),
             Failure::TooLarge => ImportProblem::EntryTooLarge {
                 entry: self.entry,
                 limit: self.cap,
@@ -360,6 +419,11 @@ impl<R: Read> EntryReader<'_, R> {
     pub(super) fn finish(self) -> (u64, [u8; 32]) {
         (self.count, self.hasher.finalize().into())
     }
+
+    fn fail(&mut self, failure: Failure) -> io::Error {
+        self.failure = Some(failure);
+        io::Error::other("the entry cannot be read")
+    }
 }
 
 impl<R: Read> Read for EntryReader<'_, R> {
@@ -370,18 +434,29 @@ impl<R: Read> Read for EntryReader<'_, R> {
         // One byte past the cap is enough to know it is too large.
         let left = (self.cap - self.count.min(self.cap)).saturating_add(1);
         let room = usize::try_from(left).unwrap_or(usize::MAX).min(buf.len());
-        let n = match self.file.read(&mut buf[..room]) {
+        let n = match self.data.read(&mut buf[..room]) {
             Ok(n) => n,
-            Err(err) => {
-                self.failure = Some(Failure::Zip(err.to_string()));
-                return Err(err);
-            }
+            Err(err) => return Err(self.fail(Failure::Damaged(err.to_string()))),
         };
+        if n == 0 && room > 0 {
+            // The end of the data: it must be what the central record says.
+            let crc = self.crc.clone().finalize();
+            if self.count != self.declared {
+                return Err(self.fail(Failure::Damaged(format!(
+                    "{} is not the size its entry declares",
+                    self.entry
+                ))));
+            }
+            if crc != self.expected_crc {
+                return Err(self.fail(Failure::Damaged("invalid checksum".to_owned())));
+            }
+            return Ok(0);
+        }
         self.count += n as u64;
         if self.count > self.cap {
-            self.failure = Some(Failure::TooLarge);
-            return Err(io::Error::other("the entry is too large"));
+            return Err(self.fail(Failure::TooLarge));
         }
+        self.crc.update(&buf[..n]);
         self.hasher.update(&buf[..n]);
         Ok(n)
     }
@@ -392,6 +467,10 @@ impl<R: Read> Read for EntryReader<'_, R> {
 struct EndRecord {
     entries: u64,
     directory_size: u64,
+    directory_offset: u64,
+    /// Where the end records start (the zip64 one, if any): the central
+    /// directory must end before.
+    end_start: u64,
 }
 
 /// The entry count and the central directory's size from the archive's
@@ -422,6 +501,8 @@ fn end_record<R: Read + Seek>(reader: &mut R, len: u64) -> Result<EndRecord, Imp
         return Ok(EndRecord {
             entries: u64::from(total),
             directory_size: u64::from(size),
+            directory_offset: u64::from(offset),
+            end_start: start,
         });
     }
 
@@ -461,6 +542,8 @@ fn end_record<R: Read + Seek>(reader: &mut R, len: u64) -> Result<EndRecord, Imp
     Ok(EndRecord {
         entries,
         directory_size,
+        directory_offset,
+        end_start: record_start,
     })
 }
 
@@ -485,46 +568,153 @@ fn u64_at(bytes: &[u8], i: usize) -> u64 {
     u64::from_le_bytes(b)
 }
 
-/// Every entry with its role, in archive order. Only metadata is read
-/// (each local header, for where the data starts), nothing is
-/// decompressed. The first entry Rappel does not write refuses the file.
-fn list_entries<R: Read + Seek>(
-    zip: &mut ZipArchive<Window<R>>,
+/// The central directory, walked record by record: exactly as many
+/// records as the end record declares, each inside the size it declares,
+/// which they must fill. Only what each entry needs is kept, never its name
+/// or comment, and the first name Rappel does not write refuses the file,
+/// so the walk costs at most the declared size in reading and nothing
+/// that grows with it in memory.
+fn walk_directory<R: Read + Seek>(
+    reader: &mut Window<R>,
+    end: &EndRecord,
 ) -> Result<Vec<Entry>, ImportProblem> {
-    let mut entries = Vec::with_capacity(zip.len());
-    for index in 0..zip.len() {
-        let entry = zip.by_index_raw(index).map_err(|e| invalid(&e))?;
-        let role = match entry.name_raw() {
-            name if name == JSON_ENTRY.as_bytes() => Role::Json,
-            name if name == MEDIA_DIR.as_bytes() => Role::MediaDir,
+    let short = || ImportProblem::InvalidArchive("the list of entries is cut short".to_owned());
+    reader
+        .seek(SeekFrom::Start(end.directory_offset))
+        .map_err(|e| io_problem(&e))?;
+    let mut directory = io::BufReader::with_capacity(64 << 10, reader.take(end.directory_size));
+    let capacity = usize::try_from(end.entries).unwrap_or(0).min(16);
+    let mut entries: Vec<Entry> = Vec::with_capacity(capacity);
+    let mut name = Vec::new();
+    let mut extra = Vec::new();
+    for _ in 0..end.entries {
+        let mut record = [0; CENTRAL_LEN];
+        directory.read_exact(&mut record).map_err(|_| short())?;
+        if record[..4] != CENTRAL_SIGNATURE {
+            return Err(ImportProblem::InvalidArchive(
+                "an entry of the list is damaged".to_owned(),
+            ));
+        }
+        let flags = u16_at(&record, 8);
+        let method = u16_at(&record, 10);
+        let crc = u32_at(&record, 16);
+        let (name_len, extra_len, comment_len) = (
+            usize::from(u16_at(&record, 28)),
+            usize::from(u16_at(&record, 30)),
+            u64::from(u16_at(&record, 32)),
+        );
+        name.resize(name_len, 0);
+        directory.read_exact(&mut name).map_err(|_| short())?;
+        extra.resize(extra_len, 0);
+        directory.read_exact(&mut extra).map_err(|_| short())?;
+        let skipped = io::copy(&mut (&mut directory).take(comment_len), &mut io::sink())
+            .map_err(|_| short())?;
+        if skipped != comment_len {
+            return Err(short());
+        }
+        let role = match name.as_slice() {
+            n if n == JSON_ENTRY.as_bytes() => Role::Json,
+            n if n == MEDIA_DIR.as_bytes() => Role::MediaDir,
             other => return Err(ImportProblem::UnexpectedEntry(shown_name(other))),
         };
+        // A name used twice would make the archive mean two things.
+        if entries.iter().any(|e| e.role == role) {
+            return Err(ImportProblem::UnexpectedEntry(
+                "(a name used twice)".to_owned(),
+            ));
+        }
+        let [compressed, size, local] = zip64_values(
+            [
+                u32_at(&record, 20),
+                u32_at(&record, 24),
+                u32_at(&record, 42),
+            ],
+            &extra,
+        )?;
+        // Bit 0: encrypted; bit 6: strong encryption.
+        let encrypted = flags & 0x41 != 0;
         let supported = match role {
-            Role::Json => {
-                matches!(
-                    entry.compression(),
-                    CompressionMethod::Stored | CompressionMethod::Deflated
-                ) && entry.is_file()
-            }
-            Role::MediaDir => entry.is_dir() && entry.size() == 0,
+            Role::Json => matches!(method, STORED | DEFLATED),
+            Role::MediaDir => size == 0 && matches!(method, STORED | DEFLATED),
         };
-        if entry.encrypted() || !supported {
+        if encrypted || !supported {
             return Err(ImportProblem::UnsupportedEntry(role.name()));
         }
         entries.push(Entry {
-            index,
             role,
-            size: entry.size(),
-            span: span(&entry, role.name().as_bytes()),
+            method,
+            crc,
+            data_start: local,
+            compressed,
+            size,
+            span: local..local,
         });
     }
-    if !entries.iter().any(|e| e.role == Role::Json) {
-        return Err(ImportProblem::MissingEntry(JSON_ENTRY));
-    }
-    if !entries.iter().any(|e| e.role == Role::MediaDir) {
-        return Err(ImportProblem::MissingEntry(MEDIA_DIR));
+    // The records must fill the declared size, no more and no less.
+    let mut rest = [0];
+    if directory.read(&mut rest).map_err(|e| io_problem(&e))? != 0 {
+        return Err(ImportProblem::InvalidArchive(
+            "the list of entries holds more than it declares".to_owned(),
+        ));
     }
     Ok(entries)
+}
+
+/// The compressed size, size and local header offset of a central record,
+/// each from its 32-bit field or, when that holds the zip64 marker, from
+/// the zip64 extra field, which has the marked ones in that order.
+fn zip64_values(fields: [u32; 3], extra: &[u8]) -> Result<[u64; 3], ImportProblem> {
+    let bad = || ImportProblem::InvalidArchive("an entry's sizes cannot be read".to_owned());
+    let mut values = fields.map(u64::from);
+    if !fields.contains(&u32::MAX) {
+        return Ok(values);
+    }
+    // The extra field is a list of (id, length, data).
+    let mut rest = extra;
+    let data = loop {
+        if rest.len() < 4 {
+            return Err(bad());
+        }
+        let (id, len) = (u16_at(rest, 0), usize::from(u16_at(rest, 2)));
+        let body = rest.get(4..4 + len).ok_or_else(bad)?;
+        if id == ZIP64_EXTRA {
+            break body;
+        }
+        rest = &rest[4 + len..];
+    };
+    // The order of the zip64 field: size, compressed size, offset.
+    let mut at = 0;
+    for i in [1, 0, 2] {
+        if fields[i] == u32::MAX {
+            let bytes = data.get(at..at + 8).ok_or_else(bad)?;
+            values[i] = u64_at(bytes, 0);
+            at += 8;
+        }
+    }
+    Ok(values)
+}
+
+/// Reads `entry`'s local header for where its data starts, and the bytes
+/// it takes. A data descriptor after the data is not counted.
+fn locate_data<R: Read + Seek>(
+    reader: &mut Window<R>,
+    entry: &mut Entry,
+) -> Result<(), ImportProblem> {
+    let start = entry.data_start;
+    let mut header = [0; LOCAL_HEADER_LEN];
+    read_at(reader, start, &mut header)?;
+    if header[..4] != LOCAL_SIGNATURE {
+        return Err(ImportProblem::InvalidArchive(
+            "an entry's header is missing".to_owned(),
+        ));
+    }
+    let data = start
+        .saturating_add(LOCAL_HEADER_LEN as u64)
+        .saturating_add(u64::from(u16_at(&header, 26)))
+        .saturating_add(u64::from(u16_at(&header, 28)));
+    entry.data_start = data;
+    entry.span = start..data.saturating_add(entry.compressed);
+    Ok(())
 }
 
 /// Two central records may point at the same bytes (overlapping entries,
@@ -537,29 +727,14 @@ fn check_layout(entries: &[Entry], cd_start: u64) -> Result<(), ImportProblem> {
     spans.sort_by_key(|s| s.start);
     let overlap = spans.windows(2).any(|w| w[0].end > w[1].start);
     if overlap || spans.iter().any(|s| s.end > cd_start) {
-        return Err(ImportProblem::InvalidArchive(
-            "entries overlap or are out of place".to_owned(),
-        ));
+        return Err(not_layout());
     }
     Ok(())
 }
 
-/// The bytes `entry` takes: from its local header to the end of its
-/// data. `by_index_raw` has read the local header, so the data start is
-/// known; if it were not, the header without its extra field is the least
-/// the entry takes. A data descriptor after the data is not counted.
-fn span<R: Read>(entry: &zip::read::ZipFile<'_, R>, name: &[u8]) -> Range<u64> {
-    let start = entry.header_start();
-    let data = entry.data_start().unwrap_or_else(|| {
-        start
-            .saturating_add(LOCAL_HEADER_LEN)
-            .saturating_add(name.len() as u64)
-    });
-    start..data.saturating_add(entry.compressed_size())
-}
-
-fn invalid(err: &zip::result::ZipError) -> ImportProblem {
-    ImportProblem::InvalidArchive(err.to_string())
+/// Entries that overlap or are out of place.
+fn not_layout() -> ImportProblem {
+    ImportProblem::InvalidArchive("entries overlap or are out of place".to_owned())
 }
 
 fn io_problem(err: &io::Error) -> ImportProblem {

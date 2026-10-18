@@ -218,14 +218,30 @@ impl Candidates {
 /// A second read of a table that has candidates: each row is checked
 /// again in order, and a candidate seen a second time is a duplicate at
 /// that row, exactly as a set of every value would find it. Only the
-/// candidates are tracked, so the memory is that of the candidates, and
-/// the names behind a candidate digest are compared themselves.
+/// candidates are tracked, in memory fixed by their number: a flag per
+/// candidate id or target, and per candidate name digest the 128-bit hash
+/// of the first name seen with it ([`name_hash`]), so two names that only
+/// share a 64-bit digest are told apart.
 #[derive(Debug)]
 pub(super) struct Locate {
     found: Candidates,
     ids_seen: Vec<bool>,
-    names_seen: HashSet<String>,
+    /// By candidate digest, the hash of the first name with it (0: none).
+    names_first: Vec<u128>,
+    /// Hashes of other names whose digest a candidate shares: only when
+    /// different names collide in 64 bits.
+    names_more: HashSet<u128>,
     targets_seen: Vec<bool>,
+}
+
+/// A 128-bit hash of a name key (the first half of its SHA-256, top bit
+/// set so it is never 0): equal for equal keys, and for different keys
+/// equal with a chance of 2^-127.
+fn name_hash(key: &str) -> u128 {
+    let digest: [u8; 32] = Sha256::digest(key.as_bytes()).into();
+    let mut first = [0; 16];
+    first.copy_from_slice(&digest[..16]);
+    u128::from_le_bytes(first) | FLAG
 }
 
 impl Locate {
@@ -233,7 +249,8 @@ impl Locate {
         Self {
             ids_seen: vec![false; found.ids.len()],
             targets_seen: vec![false; found.targets.len()],
-            names_seen: HashSet::new(),
+            names_first: vec![0; found.names.len()],
+            names_more: HashSet::new(),
             found,
         }
     }
@@ -245,10 +262,18 @@ impl Locate {
 
     /// Whether the name key `key` was seen in an earlier row.
     pub(super) fn repeats_name(&mut self, key: &str) -> bool {
-        if self.found.names.binary_search(&name_digest(key)).is_err() {
+        let Ok(i) = self.found.names.binary_search(&name_digest(key)) else {
             return false;
+        };
+        let hash = name_hash(key);
+        match self.names_first[i] {
+            0 => {
+                self.names_first[i] = hash;
+                false
+            }
+            first if first == hash => true,
+            _ => !self.names_more.insert(hash),
         }
-        !self.names_seen.insert(key.to_owned())
     }
 
     /// Whether an earlier undo named the same entry.

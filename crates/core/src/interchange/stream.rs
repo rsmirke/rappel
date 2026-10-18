@@ -477,9 +477,13 @@ pub(super) fn string_limit(limits: &Limits) -> u64 {
 /// parser: outside strings no `"` byte appears, and inside one only `\`
 /// escapes the next byte (the four digits of `\u` are never `"` or `\`).
 /// A raw line break cannot be inside a valid string, so lines are counted
-/// outside strings only.
+/// outside strings only. It also counts how deeply arrays and objects are
+/// nested: `serde_json` skips a value it does not need (another version's
+/// fields, before the version is known) without a depth limit, keeping a
+/// byte per level, so nesting past [`MAX_DEPTH`] refuses the file first.
 #[derive(Debug, Default)]
 struct Strings {
+    depth: u32,
     open: bool,
     escaped: bool,
     run: u64,
@@ -488,23 +492,50 @@ struct Strings {
     offset: u64,
 }
 
+/// The deepest nesting a file may have. `serde_json` refuses more than
+/// 128 levels wherever it parses a value, and an export has 4.
+pub(super) const MAX_DEPTH: u32 = 1024;
+
+/// What made the text be refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Trip {
+    /// A string longer than the limit.
+    Long,
+    /// Arrays and objects nested deeper than [`MAX_DEPTH`].
+    Deep,
+}
+
 impl Strings {
     /// The position in `chunk` of the byte that makes a string longer
-    /// than `limit`, with its line and column (as `serde_json` counts them).
-    fn scan(&mut self, chunk: &[u8], limit: u64) -> Option<(usize, u64, u64)> {
+    /// than `limit` or the nesting deeper than [`MAX_DEPTH`], with its line
+    /// and column (as `serde_json` counts them).
+    fn scan(&mut self, chunk: &[u8], limit: u64) -> Option<(usize, u64, u64, Trip)> {
         let mut i = 0;
         while i < chunk.len() {
             if !self.open {
-                let Some(p) = chunk[i..].iter().position(|&b| b == b'"' || b == b'\n') else {
+                let Some(p) = chunk[i..]
+                    .iter()
+                    .position(|&b| matches!(b, b'"' | b'\n' | b'[' | b'{' | b']' | b'}'))
+                else {
                     break;
                 };
                 i += p;
-                if chunk[i] == b'\n' {
-                    self.line += 1;
-                    self.line_start = self.offset + i as u64 + 1;
-                } else {
-                    self.open = true;
-                    self.run = 0;
+                match chunk[i] {
+                    b'\n' => {
+                        self.line += 1;
+                        self.line_start = self.offset + i as u64 + 1;
+                    }
+                    b'"' => {
+                        self.open = true;
+                        self.run = 0;
+                    }
+                    b'[' | b'{' => {
+                        if self.depth >= MAX_DEPTH {
+                            return Some(self.trip(i, Trip::Deep));
+                        }
+                        self.depth += 1;
+                    }
+                    _ => self.depth = self.depth.saturating_sub(1),
                 }
                 i += 1;
                 continue;
@@ -513,7 +544,7 @@ impl Strings {
             // to the next quote or backslash, counts.
             if self.escaped {
                 if self.run >= limit {
-                    return Some(self.trip(i));
+                    return Some(self.trip(i, Trip::Long));
                 }
                 self.escaped = false;
                 self.run += 1;
@@ -525,7 +556,7 @@ impl Strings {
             let span = stop.unwrap_or(rest.len());
             if self.run + span as u64 > limit {
                 let at = i + usize::try_from(limit - self.run).unwrap_or(0);
-                return Some(self.trip(at));
+                return Some(self.trip(at, Trip::Long));
             }
             self.run += span as u64;
             i += span;
@@ -536,7 +567,7 @@ impl Strings {
                 self.open = false;
             } else {
                 if self.run >= limit {
-                    return Some(self.trip(i));
+                    return Some(self.trip(i, Trip::Long));
                 }
                 self.run += 1;
                 self.escaped = true;
@@ -549,9 +580,9 @@ impl Strings {
 
     /// Where the string got too long: `at` in the current chunk, with its
     /// line and column.
-    fn trip(&self, at: usize) -> (usize, u64, u64) {
+    fn trip(&self, at: usize, why: Trip) -> (usize, u64, u64, Trip) {
         let offset = self.offset + at as u64;
-        (at, self.line + 1, offset - self.line_start + 1)
+        (at, self.line + 1, offset - self.line_start + 1, why)
     }
 }
 
@@ -571,13 +602,18 @@ impl<R: Read> Read for JsonInput<'_, R> {
             return Err(io::Error::other("a string is too long"));
         }
         let n = self.entry.read(buf)?;
-        let Some((at, line, column)) = self.strings.scan(&buf[..n], self.limit) else {
+        let Some((at, line, column, why)) = self.strings.scan(&buf[..n], self.limit) else {
             return Ok(n);
         };
-        self.too_long = Some(ImportProblem::Json(format!(
-            "a string longer than {} bytes at line {line}, column {column}",
-            self.limit
-        )));
+        self.too_long = Some(ImportProblem::Json(match why {
+            Trip::Long => format!(
+                "a string longer than {} bytes at line {line}, column {column}",
+                self.limit
+            ),
+            Trip::Deep => {
+                format!("nested deeper than {MAX_DEPTH} levels at line {line}, column {column}")
+            }
+        }));
         // The bytes before it go to the parser, so an error there is
         // reported first; the next read fails. Nothing at all would read
         // as the end of the file.
@@ -710,7 +746,28 @@ mod tests {
     use super::*;
 
     fn trips(text: &[u8], limit: u64) -> Option<(usize, u64, u64)> {
-        Strings::default().scan(text, limit)
+        Strings::default()
+            .scan(text, limit)
+            .map(|(at, line, column, why)| {
+                assert_eq!(why, Trip::Long);
+                (at, line, column)
+            })
+    }
+
+    #[test]
+    fn nesting_is_counted_outside_strings() {
+        let deep = |n: usize| [b"[".repeat(n), b"]".repeat(n)].concat();
+        let max = MAX_DEPTH as usize;
+        assert_eq!(Strings::default().scan(&deep(max), 10), None);
+        assert_eq!(
+            Strings::default().scan(&deep(max + 1), 10),
+            Some((max, 1, max as u64 + 1, Trip::Deep))
+        );
+        // Closed levels are not counted, nor brackets in strings.
+        let siblings = b"[[]]".repeat(max);
+        assert_eq!(Strings::default().scan(&siblings, 10), None);
+        let quoted = [b"[\"".to_vec(), b"[".repeat(max), b"\"]".to_vec()].concat();
+        assert_eq!(Strings::default().scan(&quoted, 2 * max as u64), None);
     }
 
     #[test]
@@ -731,7 +788,7 @@ mod tests {
     fn a_string_cut_across_chunks_is_followed() {
         let mut strings = Strings::default();
         assert_eq!(strings.scan(br#"["ab"#, 3), None);
-        assert_eq!(strings.scan(br#"\"c"#, 3), Some((1, 1, 6)));
+        assert_eq!(strings.scan(br#"\"c"#, 3), Some((1, 1, 6, Trip::Long)));
     }
 
     #[test]

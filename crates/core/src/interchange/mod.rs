@@ -432,7 +432,7 @@ pub(crate) struct Limits {
     /// Entries in the archive, from its end record.
     pub entries: u64,
     /// The archive's central directory (the list of entries), from its end
-    /// record: read into memory by the zip reader.
+    /// record: walked once, record by record, never kept.
     pub central_directory: u64,
     /// `cards.json`, decompressed. Bounds the notes an import keeps.
     pub json: u64,

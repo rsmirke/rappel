@@ -1213,6 +1213,8 @@ dependencies = [
 name = "rappel-core"
 version = "0.2.0-beta.1"
 dependencies = [
+ "crc32fast",
+ "flate2",
  "fsrs",
  "getrandom",
  "proptest",

@@ -308,6 +308,20 @@ fn json_place(text: &[u8], problem: &ImportProblem) -> Option<(String, usize)> {
     Some((kind.to_owned(), line_start + column))
 }
 
+/// A new environment whose database is a copy of `env`'s.
+fn copy_of(env: &Env) -> Env {
+    let tmp = tempfile::tempdir().unwrap();
+    let data = tmp.path().join("data");
+    fs::create_dir(&data).unwrap();
+    let file = data.join(crate::storage::DB_FILE_NAME);
+    env.store
+        .conn
+        .execute("VACUUM INTO ?1", [file.to_str().unwrap()])
+        .unwrap();
+    let store = Store::open(&data).unwrap();
+    Env { tmp, store }
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(160))]
 
@@ -340,7 +354,13 @@ proptest! {
         if let Some(plan) = agree(&env, &text)?
             && plan.summary().conflicts.is_empty()
         {
+            // The old apply on a copy of the same database writes the same.
+            let mut copy = copy_of(&env);
+            let applied = oracle::apply(&mut copy.store.conn, &text, &Limits::DEFAULT).unwrap();
+            prop_assert!(applied);
             env.store.apply_import_at(&plan, T_EXPORT).unwrap();
+            prop_assert_eq!(env.export(), copy.export());
+            prop_assert_eq!(schedule_table(&env.store), schedule_table(&copy.store));
             let again = env.plan(&write_archive(&text).unwrap()).unwrap();
             prop_assert!(again.summary().is_noop(), "{:?}", again.summary());
         }
@@ -562,6 +582,39 @@ fn a_file_changed_between_plan_and_apply_is_refused_with_nothing_written() {
         // Only a change the stamp does not show is found after the backup.
         let backed_up = usize::from(matches!(change, Change::SameStamp));
         assert_eq!(env.backups(), backups + backed_up, "{change:?}");
+    }
+}
+
+/// A file changed between two reads of one plan read step by step (its
+/// keys in another order): refused as changed, whichever read sees it.
+#[test]
+fn a_file_changed_while_it_is_planned_is_refused() {
+    use crate::interchange::import::BEFORE_READ;
+    let (source, _, _) = sample_env();
+    let doc = json_of(&source.export());
+    let text = text_in_order(&doc, &orders()[1]);
+    let changed = replace_all(&text, b"2 + 2 ?", b"2 + 3 ?");
+    // The structure read, five lists to check, five to compare.
+    for at in 1..=11 {
+        let env = Env::new();
+        let path = env.tmp.path().join("file.rappel");
+        fs::write(&path, stored(&text)).unwrap();
+        let (hook_path, hook_bytes) = (path.clone(), stored(&changed));
+        let mut reads = 0;
+        BEFORE_READ.set(Some(Box::new(move || {
+            reads += 1;
+            if reads == at {
+                fs::write(&hook_path, &hook_bytes).unwrap();
+            }
+        })));
+        let result = env.store.plan_import(&path);
+        BEFORE_READ.set(None);
+        assert!(
+            matches!(result, Err(Error::ImportFileChanged)),
+            "read {at}: {:?}",
+            result.map(|p| p.summary().clone())
+        );
+        assert_eq!(env.store.decks().unwrap(), []);
     }
 }
 

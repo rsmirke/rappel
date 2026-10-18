@@ -293,3 +293,4 @@ mod round_trip;
 mod settings;
 mod streaming;
 mod suspended;
+mod zip_attacks;

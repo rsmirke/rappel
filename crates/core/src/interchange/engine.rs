@@ -107,12 +107,24 @@ mod code {
     pub(super) const MAPPED: u8 = 4;
 }
 
+/// How an engine reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reading {
+    /// The whole file in one pass: any problem is a reason to read again,
+    /// step by step.
+    OnePass,
+    /// One list at a time, where a problem is reported; rows compared with
+    /// the database (and written, when applying).
+    StepByStep,
+    /// One list at a time, only checked: nothing compared.
+    ChecksOnly,
+}
+
 pub(super) struct Engine<'c> {
     conn: &'c Connection,
     limits: Limits,
-    /// Reading one list at a time, where a problem is reported, not a
-    /// reason to read again.
-    exact: bool,
+    /// How this engine reads.
+    reading: Reading,
     reads: Reads<'c>,
     writes: Option<Writes<'c>>,
     notes: Notes,
@@ -211,7 +223,11 @@ impl<'c> Engine<'c> {
         Ok(Self {
             conn,
             limits,
-            exact,
+            reading: if exact {
+                Reading::StepByStep
+            } else {
+                Reading::OnePass
+            },
             reads,
             writes,
             notes: Notes::default(),
@@ -231,6 +247,31 @@ impl<'c> Engine<'c> {
             has_decks,
             stored: stored_settings(conn)?,
         })
+    }
+
+    /// Whether a problem is reported (rather than read again).
+    fn exact(&self) -> bool {
+        self.reading != Reading::OnePass
+    }
+
+    /// Whether rows are compared with the database (and written).
+    fn classifies(&self) -> bool {
+        self.reading != Reading::ChecksOnly
+    }
+
+    /// An engine that only checks the file: nothing is compared with the
+    /// database, so a file that turns out to be refused costs no query.
+    pub(super) fn checks_only(mut self) -> Self {
+        self.reading = Reading::ChecksOnly;
+        self
+    }
+
+    /// Takes `exported_at`, `settings` and `media` from an engine that read
+    /// them, for one that reads only the lists.
+    pub(super) fn adopt_top_level(&mut self, other: &Self) {
+        self.exported_at = other.exported_at;
+        self.settings = other.settings;
+        self.has_media = other.has_media;
     }
 
     /// Why the last read stopped, if the engine stopped it.
@@ -266,7 +307,7 @@ impl<'c> Engine<'c> {
     /// The problem to report: with [`Self::exact`], this one; else read
     /// again, one list at a time, which finds it.
     fn problem(&self, problem: ImportProblem) -> Stop {
-        if self.exact {
+        if self.exact() {
             Stop::Problem(problem)
         } else {
             Stop::Fallback
@@ -311,7 +352,7 @@ impl<'c> Engine<'c> {
                 None => self.notes.deck_names.push(name_digest(key)),
             }
         }
-        if self.locate.is_some() {
+        if self.locate.is_some() || !self.classifies() {
             return Ok(());
         }
         self.classify_deck(index, d, key.as_deref())
@@ -417,7 +458,7 @@ impl<'c> Engine<'c> {
             return Err(self.problem(at("deleted_at", FieldProblem::LiveCardInDeletedDeck)));
         }
         card_fields(c, &self.limits).map_err(|(f, r)| self.problem(at(f, r)))?;
-        if self.locate.is_some() {
+        if self.locate.is_some() || !self.classifies() {
             return Ok(());
         }
         self.classify_card(index, c)
@@ -533,6 +574,9 @@ impl<'c> Engine<'c> {
             Some(false) => return Ok(()),
             None => self.notes.tag_names.push(name_digest(&key)),
         }
+        if !self.classifies() {
+            return Ok(());
+        }
         self.classify_tag(index, t, id, &key)
     }
 
@@ -610,7 +654,7 @@ impl<'c> Engine<'c> {
             _ => {}
         }
         self.previous_pair = Some(pair);
-        if self.locate.is_some() {
+        if self.locate.is_some() || !self.classifies() {
             return Ok(());
         }
         // A card tag is present or new, once its tag is mapped; it has no
@@ -678,6 +722,9 @@ impl<'c> Engine<'c> {
         self.notes
             .events
             .push(EventNote::new(id, e.reviewed_at, kind, card, row));
+        if !self.classifies() {
+            return Ok(());
+        }
         self.classify_event(index, e, kind, card)
     }
 
@@ -833,7 +880,9 @@ impl<'c> Engine<'c> {
     pub(super) fn after_table(&mut self, table: Table) -> Result<(), Stop> {
         match table {
             Table::Cards => {
-                self.add_batch_cards()?;
+                if self.classifies() {
+                    self.add_batch_cards()?;
+                }
                 if self.writes.is_some() {
                     self.reviewed = vec![false; self.notes.cards.len()];
                 }
@@ -961,7 +1010,7 @@ impl Sink for Engine<'_> {
         self.run(|e| {
             let candidates = e.notes.seal(table);
             if !candidates.is_empty() {
-                if !e.exact {
+                if !e.exact() {
                     return Err(Stop::Fallback);
                 }
                 e.candidates = Some(candidates);

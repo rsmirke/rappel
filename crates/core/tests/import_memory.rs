@@ -52,6 +52,9 @@ mod measure {
         CardTags,
         /// Tags: small rows with two notes each (id and name).
         Tags,
+        /// Tags whose second half repeats the names of the first: a
+        /// refused file whose repeats are confirmed by a second read.
+        DuplicateTags,
         /// Live decks.
         Decks,
         /// Cards with long fronts: few, large strings.
@@ -88,6 +91,11 @@ mod measure {
             case("resets and undos, stored", Fill::ResetUndo, true),
             case("card tags, stored", Fill::CardTags, true),
             case("tags, stored", Fill::Tags, true),
+            case(
+                "repeated tag names (refused), stored",
+                Fill::DuplicateTags,
+                true,
+            ),
             case("decks, stored", Fill::Decks, true),
             case("review events, deflated", Fill::Reviews, false),
             case("long cards, deflated", Fill::LongCards, false),
@@ -205,6 +213,17 @@ mod measure {
             Fill::Tags => fill_until(&mut json, json_bytes, |json, n, comma| {
                 write!(json, r#"{comma}{{"id":"{}","name":"t{n}"}}"#, tag(n))
             })?,
+            Fill::DuplicateTags => {
+                // The names of the first half, again, under other ids.
+                let mut half = 0;
+                fill_until(&mut json, json_bytes / 2, |json, n, comma| {
+                    half = n + 1;
+                    write!(json, r#"{comma}{{"id":"{}","name":"t{n:08}"}}"#, tag(n))
+                })?;
+                for n in 0..half {
+                    write!(json, r#",{{"id":"{}","name":"t{n:08}"}}"#, tag(half + n))?;
+                }
+            }
             _ => {}
         }
         json.write_all(br#"],"card_tags":["#)?;
@@ -265,7 +284,7 @@ mod measure {
                     r#"{comma}{{"id":"{reset}","card_id":"{card}","kind":"reset","reviewed_at":{at},"grade":null,"duration_ms":0,"undoes":null}},{{"id":"{undo}","card_id":"{card}","kind":"undo","reviewed_at":{at},"grade":null,"duration_ms":0,"undoes":"{reset}"}}"#
                 )
             })?,
-            Fill::CardTags | Fill::Tags | Fill::Decks => {}
+            Fill::CardTags | Fill::Tags | Fill::DuplicateTags | Fill::Decks => {}
         }
         Ok(())
     }
@@ -314,6 +333,13 @@ mod measure {
         let (index, size) = spec.split_once(':').unwrap();
         let case = cases()[index.parse::<usize>().unwrap()];
         let json = write_export(&path, size.parse().unwrap(), case.fill, case.stored).unwrap();
+        if case.fill == Fill::DuplicateTags {
+            let (result, peak) = peak_of(|| store.plan_import(&path)).unwrap();
+            let err = result.expect_err("repeated names are refused");
+            assert!(err.to_string().contains("same name"), "{err}");
+            println!("PEAK {peak} {json}");
+            return;
+        }
         let (summary, peak) = peak_of(|| {
             let plan = store.plan_import(&path).unwrap();
             if case.apply {
@@ -329,21 +355,135 @@ mod measure {
         println!("PEAK {peak} {json}");
     }
 
-    /// Archives refused from what their end record declares.
-    /// The last is read whole (100,000 entries, the most an import reads,
-    /// so its end record is zip64) and refused for its first unexpected
-    /// name: its list of entries is what the zip reader holds.
-    const REFUSED: [&str; 4] = [
+    /// Hostile archives, each refused while reading only what its last end
+    /// record declares, and measured as they are: a billion entries
+    /// declared; a list of entries declared nearly 4 GiB long; a file over
+    /// 2 GiB; 100,000 entries (a zip64 end record, read up to the first
+    /// name Rappel does not write); central records with 64 KiB comments
+    /// behind a directory size that lies; 400 end records after a damaged
+    /// directory; a zip64 end record with a million entries behind a
+    /// classic one that names nothing; and `cards.json` nested 16 million
+    /// levels deep inside a field another version would have.
+    const REFUSED: [&str; 8] = [
         "billion-entries",
         "huge-directory",
         "over-two-gib",
         "hundred-thousand-entries",
+        "long-comments",
+        "many-end-records",
+        "hidden-zip64",
+        "deep-nesting",
     ];
 
-    /// The budget for the 100,000 entries the zip reader lists.
-    const LISTED_BUDGET: u64 = 64 << 20;
+    /// A local header and its data for `name` (stored).
+    fn local(name: &[u8], data: &[u8]) -> Vec<u8> {
+        let mut out = b"PK\x03\x04".to_vec();
+        out.extend_from_slice(&[20, 0, 0, 0, 0, 0, 0, 0, 0x21, 0]);
+        out.extend_from_slice(&crc32fast::hash(data).to_le_bytes());
+        out.extend_from_slice(&u32::try_from(data.len()).unwrap().to_le_bytes());
+        out.extend_from_slice(&u32::try_from(data.len()).unwrap().to_le_bytes());
+        out.extend_from_slice(&u16::try_from(name.len()).unwrap().to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(name);
+        out.extend_from_slice(data);
+        out
+    }
+
+    /// A central record for `name` with a comment of `comment` bytes.
+    fn central(name: &[u8], comment: usize) -> Vec<u8> {
+        let mut out = b"PK\x01\x02".to_vec();
+        out.extend_from_slice(&[20, 0, 20, 0, 0, 0, 0, 0, 0, 0, 0x21, 0]);
+        out.extend_from_slice(&crc32fast::hash(b"{}").to_le_bytes());
+        out.extend_from_slice(&2u32.to_le_bytes());
+        out.extend_from_slice(&2u32.to_le_bytes());
+        out.extend_from_slice(&u16::try_from(name.len()).unwrap().to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&u16::try_from(comment).unwrap().to_le_bytes());
+        out.extend_from_slice(&[0; 12]);
+        out.extend_from_slice(name);
+        out.extend(std::iter::repeat_n(0xb0, comment));
+        out
+    }
+
+    /// A classic end record.
+    fn end(entries: u16, size: u32, offset: u32) -> Vec<u8> {
+        let mut out = b"PK\x05\x06\0\0\0\0".to_vec();
+        out.extend_from_slice(&entries.to_le_bytes());
+        out.extend_from_slice(&entries.to_le_bytes());
+        out.extend_from_slice(&size.to_le_bytes());
+        out.extend_from_slice(&offset.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out
+    }
+
+    /// The crafted archives of [`REFUSED`] that are not changed exports.
+    fn crafted(name: &str) -> Option<Vec<u8>> {
+        let mut bytes = local(b"cards.json", b"{}");
+        let offset = u32::try_from(bytes.len()).unwrap();
+        match name {
+            "long-comments" => {
+                for i in 0..1_000 {
+                    bytes.extend(central(format!("x{i:07}").as_bytes(), 65_535));
+                }
+                bytes.extend(end(1_000, 1_000, offset));
+            }
+            "many-end-records" => {
+                let record = central(b"", 0);
+                for _ in 0..65_533 {
+                    bytes.extend_from_slice(&record);
+                }
+                bytes.extend_from_slice(b"XXXX");
+                bytes.extend_from_slice(&[0; 42]);
+                for _ in 0..400 {
+                    bytes.extend(end(65_534, 1_000, offset));
+                }
+            }
+            "hidden-zip64" => {
+                let records: u64 = 1_000_000;
+                let record = central(b"", 0);
+                for _ in 0..records {
+                    bytes.extend_from_slice(&record);
+                }
+                let size = bytes.len() as u64 - u64::from(offset);
+                let zip64_at = bytes.len() as u64;
+                bytes.extend_from_slice(b"PK\x06\x06");
+                bytes.extend_from_slice(&44u64.to_le_bytes());
+                bytes.extend_from_slice(&[45, 0, 45, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+                for value in [records, records, size, u64::from(offset)] {
+                    bytes.extend_from_slice(&value.to_le_bytes());
+                }
+                bytes.extend_from_slice(b"PK\x06\x07\0\0\0\0");
+                bytes.extend_from_slice(&zip64_at.to_le_bytes());
+                bytes.extend_from_slice(&1u32.to_le_bytes());
+                bytes.extend(end(u16::MAX, u32::MAX, u32::MAX));
+                let classic = u32::try_from(bytes.len()).unwrap();
+                bytes.extend_from_slice(&[0; 64]);
+                bytes.extend(end(2, 100, classic));
+            }
+            _ => return None,
+        }
+        Some(bytes)
+    }
 
     fn write_refused(path: &Path, name: &str) {
+        if let Some(bytes) = crafted(name) {
+            fs::write(path, bytes).unwrap();
+            return;
+        }
+        if name == "deep-nesting" {
+            let mut zip = ZipWriter::new(BufWriter::new(File::create(path).unwrap()));
+            let stored = SimpleFileOptions::DEFAULT.compression_method(CompressionMethod::Stored);
+            zip.start_file("cards.json", stored).unwrap();
+            zip.write_all(br#"{"format_version":3,"folders":"#).unwrap();
+            let open = vec![b'['; 1 << 20];
+            for _ in 0..16 {
+                zip.write_all(&open).unwrap();
+            }
+            zip.add_directory("media/", SimpleFileOptions::DEFAULT)
+                .unwrap();
+            zip.finish().unwrap().flush().unwrap();
+            return;
+        }
         if name == "over-two-gib" {
             // Sparse: it takes no space.
             File::create(path).unwrap().set_len((2 << 30) + 1).unwrap();
@@ -492,12 +632,7 @@ mod measure {
         for (spec, child) in refused {
             let (peak, _) = result_of(child, &spec);
             eprintln!("{spec}: refused, peak {} KiB", peak >> 10);
-            let budget = if spec.ends_with("hundred-thousand-entries") {
-                LISTED_BUDGET
-            } else {
-                REFUSED_BUDGET
-            };
-            assert!(peak <= budget, "{spec}: {} KiB", peak >> 10);
+            assert!(peak <= REFUSED_BUDGET, "{spec}: {} KiB", peak >> 10);
         }
     }
 }

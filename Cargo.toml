@@ -54,6 +54,12 @@ zip = { version = "9", default-features = false, features = ["deflate-flate2-zli
 # Export / import (rappel-core): the `cards.json` format.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Import (rappel-core, ADR 0053): the archive is read by our own code, not
+# the zip crate's reader, which keeps every central record and retries
+# earlier end records; Deflate through flate2 (zlib-rs, pure Rust) and the
+# CRC through crc32fast, both already in the tree through `zip`.
+flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
+crc32fast = "1.5"
 # Export / import (rappel-core, ADR 0053): SHA-256 of `cards.json` while it
 # streams, so `apply_import` knows the file is the one `plan_import` checked;
 # the media store (SPEC §4.3) names files by it. Already in the tree through

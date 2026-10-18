@@ -215,6 +215,24 @@ impl Store {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Runs before each read of a step-by-step read, so tests can change
+    /// the file between them.
+    pub(super) static BEFORE_READ: std::cell::RefCell<Option<Box<dyn FnMut()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Before a read of a step-by-step read (a test hook; nothing otherwise).
+fn before_read() {
+    #[cfg(test)]
+    BEFORE_READ.with_borrow_mut(|hook| {
+        if let Some(hook) = hook {
+            hook();
+        }
+    });
+}
+
 /// What to do with a problem found in a read: planning, refuse the file;
 /// applying, the plan read the same file without it, so the file changed.
 fn refuse(applying: Option<&ImportPlan>, problem: ImportProblem) -> Error {
@@ -303,19 +321,30 @@ fn read_step_by_step<R: Read + Seek>(
 
     // The shape of the whole document: its JSON errors come before any
     // rule.
-    let mut engine = Engine::new(conn, *limits, applying.is_some(), true)?;
-    let end = read_document(archive, limits, &mut engine, Focus::Structure)
+    let mut checks = Engine::new(conn, *limits, false, true)?.checks_only();
+    before_read();
+    let end = read_document(archive, limits, &mut checks, Focus::Structure)
         .map_err(|p| refuse(applying, p))?;
     same_file(&end, &sha256)?;
     if let Some(problem) = end.problem(false) {
         return Err(refuse(applying, problem));
     }
-    engine.check_top_level().map_err(|p| refuse(applying, p))?;
+    checks.check_top_level().map_err(|p| refuse(applying, p))?;
 
+    // Every rule, list by list, before anything is compared with the
+    // database: a file refused here costs no query.
+    for table in Table::ALL {
+        read_table(&mut checks, archive, limits, table, &sha256, applying)?;
+    }
+    checks.check_settings().map_err(|p| refuse(applying, p))?;
+
+    // The file is valid: compare (and write) list by list.
+    let mut engine = Engine::new(conn, *limits, applying.is_some(), true)?;
+    engine.adopt_top_level(&checks);
+    drop(checks);
     for table in Table::ALL {
         read_table(&mut engine, archive, limits, table, &sha256, applying)?;
     }
-    engine.check_settings().map_err(|p| refuse(applying, p))?;
     Ok((sha256, engine.finish()))
 }
 
@@ -330,6 +359,7 @@ fn read_table<R: Read + Seek>(
     sha256: &[u8; 32],
     applying: Option<&ImportPlan>,
 ) -> Result<()> {
+    before_read();
     let end = read_document(archive, limits, engine, Focus::Table(table))
         .map_err(|p| refuse(applying, p))?;
     same_file(&end, sha256)?;
@@ -377,6 +407,7 @@ fn locate<R: Read + Seek>(
     sha256: &[u8; 32],
 ) -> Result<Option<ImportProblem>> {
     engine.start_locate(candidates);
+    before_read();
     let end = read_document(archive, limits, engine, Focus::Table(table))
         .map_err(|_| Error::ImportFileChanged)?;
     engine.end_locate();

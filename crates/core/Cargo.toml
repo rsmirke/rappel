@@ -9,6 +9,8 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+crc32fast.workspace = true
+flate2.workspace = true
 fsrs.workspace = true
 getrandom.workspace = true
 pulldown-cmark.workspace = true

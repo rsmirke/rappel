@@ -3,7 +3,7 @@
 //! by table, then compared with the database. The streaming reader must
 //! give exactly its summary, or exactly its refusal, for any file.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -16,7 +16,29 @@ use super::super::{Conflict, FieldProblem, ImportProblem, ImportSummary, Limits,
 use crate::domain::{Grade, Settings, deck_name_key, has_nul, name_key};
 use crate::error::Result as DbResult;
 use crate::id::uuid_v7_ms;
-use crate::storage::stored_settings;
+use crate::storage::{rebuild_cards, replace_settings, scheduler_in, stored_settings};
+
+/// The old `apply_import` after the backup, in one transaction: classify,
+/// revive, insert, apply the settings, rebuild the schedules. `Ok(false)`
+/// if the file is refused or has conflicts (nothing written).
+pub(super) fn apply(conn: &mut Connection, json: &[u8], limits: &Limits) -> DbResult<bool> {
+    let Ok(doc) = parse(json, limits) else {
+        return Ok(false);
+    };
+    let tx = conn.transaction()?;
+    let rows = classify(&tx, &doc)?;
+    if !rows.summary.conflicts.is_empty() {
+        return Ok(false);
+    }
+    revive_rows(&tx, &doc, &rows)?;
+    let reviewed = insert_rows(&tx, &doc, &rows)?;
+    if rows.summary.settings == SettingsImport::Applied {
+        replace_settings(&tx, &stored_of(&doc.settings))?;
+    }
+    rebuild_cards(&tx, &scheduler_in(&tx)?, reviewed)?;
+    tx.commit()?;
+    Ok(true)
+}
 
 /// The old `plan_import` after the archive: parse, check, compare.
 pub(super) fn plan(
@@ -699,4 +721,96 @@ fn check_deck_names(
         }
     }
     Ok(())
+}
+
+/// Brings back the revived decks, then the revived cards. `updated_at` is
+/// not touched, as deleting did not touch it.
+fn revive_rows(conn: &Connection, doc: &Document, rows: &Classified) -> DbResult<()> {
+    let mut deck = conn
+        .prepare("UPDATE decks SET deleted_at = NULL WHERE id = ?1 AND deleted_at IS NOT NULL")?;
+    for d in rows.revived_decks.iter().map(|&i| &doc.decks[i]) {
+        deck.execute([&d.id])?;
+    }
+    let mut card = conn
+        .prepare("UPDATE cards SET deleted_at = NULL WHERE id = ?1 AND deleted_at IS NOT NULL")?;
+    let from_file = rows.revived_cards.iter().map(|&i| doc.cards[i].id.as_str());
+    for id in from_file.chain(rows.batch_cards.iter().map(String::as_str)) {
+        card.execute([id])?;
+    }
+    Ok(())
+}
+
+/// Inserts the rows at the given positions of `doc`.
+fn insert_rows<'d>(
+    conn: &Connection,
+    doc: &'d Document,
+    rows: &Classified,
+) -> DbResult<BTreeSet<&'d str>> {
+    let mut deck = conn.prepare(
+        "INSERT INTO decks (id, name, name_key, created_at, updated_at, deleted_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+    )?;
+    for d in rows.new_decks.iter().map(|&i| &doc.decks[i]) {
+        deck.execute(params![
+            d.id,
+            d.name,
+            deck_name_key(&d.name),
+            d.created_at,
+            d.updated_at,
+            d.deleted_at
+        ])?;
+    }
+    let mut card = conn.prepare(
+        "INSERT INTO cards (id, deck_id, front_md, back_md, created_at, updated_at, suspended, deleted_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+    )?;
+    for c in rows.new_cards.iter().map(|&i| &doc.cards[i]) {
+        card.execute(params![
+            c.id,
+            c.deck_id,
+            c.front_md,
+            c.back_md,
+            c.created_at,
+            c.updated_at,
+            c.suspended,
+            c.deleted_at
+        ])?;
+        crate::storage::index_card_in(conn, &c.id, &c.front_md, &c.back_md)?;
+    }
+    let mut tag = conn.prepare("INSERT INTO tags (id, name, name_key) VALUES (?1, ?2, ?3)")?;
+    for t in rows.new_tags.iter().map(|&i| &doc.tags[i]) {
+        tag.execute(params![t.id, t.name, name_key(&t.name)])?;
+    }
+    let mut card_tag = conn.prepare("INSERT INTO card_tags (card_id, tag_id) VALUES (?1, ?2)")?;
+    for ct in rows.new_card_tags.iter().map(|&i| &doc.card_tags[i]) {
+        card_tag.execute(params![ct.card_id, rows.tag_id(&ct.tag_id)])?;
+    }
+    // In file order, which is by id: an undo's target (smaller id, checked
+    // by validation) is inserted before it, or is already here.
+    let mut event = conn.prepare(
+        "INSERT INTO review_events (id, card_id, kind, reviewed_at, grade, duration_ms, undoes)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+    )?;
+    let mut reviewed = BTreeSet::new();
+    let mut new_events: Vec<&EventRecord> = rows
+        .new_events
+        .iter()
+        .map(|&i| &doc.review_events[i])
+        .collect();
+    // The file's list should be sorted by id; sorting again costs little
+    // and does not trust that.
+    new_events.sort_by(|a, b| a.id.cmp(&b.id));
+    for e in new_events {
+        event.execute(params![
+            e.id,
+            e.card_id,
+            e.kind,
+            e.reviewed_at,
+            e.grade,
+            e.duration_ms,
+            e.undoes
+        ])?;
+        reviewed.insert(e.card_id.as_str());
+    }
+    Ok(reviewed)
 }
