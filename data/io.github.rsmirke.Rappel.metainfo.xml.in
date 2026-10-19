@@ -81,6 +81,11 @@
        A pre-release is written with "~" (0.2.0~beta.1), which AppStream
        sorts before 0.2.0; the notes are not translated (ADR 0060). -->
   <releases>
+    <release version="0.3.0~beta.1" date="2026-10-19" type="development">
+      <description translate="no">
+        <p>Images and sound on cards, and Clean Up Media to free the space of files no card uses. Every screen fits a phone and works by touch. Rappel speaks French, and imports Anki packages with their media and review history. Images, sounds and imported files are treated as untrusted and checked before use.</p>
+      </description>
+    </release>
     <release version="0.2.0~beta.1" date="2026-10-18" type="development">
       <description translate="no">
         <p>All Cards finds any card and changes many at once, with Undo. New statistics, card information, a keyboard shortcuts window and an About window. Cards can be suspended or deleted during a session.</p>
