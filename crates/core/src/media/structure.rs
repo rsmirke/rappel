@@ -38,6 +38,7 @@
 use std::ops::Range;
 
 use super::MediaKind;
+use super::bytes::{u16_le, u32_be, u32_le, u64_be};
 
 /// Why an audio file is refused: what was wrong, for the logs and tests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,28 +91,6 @@ pub fn audio_payload(kind: MediaKind, bytes: &[u8]) -> Result<Range<usize>, Malf
         MediaKind::Wav => wav(bytes).map(|()| whole),
         MediaKind::M4a => m4a(bytes).map(|()| whole),
     }
-}
-
-fn u32_be(b: &[u8], at: usize) -> Option<u32> {
-    let s = b.get(at..at.checked_add(4)?)?;
-    Some(u32::from_be_bytes([s[0], s[1], s[2], s[3]]))
-}
-
-fn u32_le(b: &[u8], at: usize) -> Option<u32> {
-    let s = b.get(at..at.checked_add(4)?)?;
-    Some(u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
-}
-
-fn u16_le(b: &[u8], at: usize) -> Option<u16> {
-    let s = b.get(at..at.checked_add(2)?)?;
-    Some(u16::from_le_bytes([s[0], s[1]]))
-}
-
-fn u64_be(b: &[u8], at: usize) -> Option<u64> {
-    let s = b.get(at..at.checked_add(8)?)?;
-    let mut a = [0; 8];
-    a.copy_from_slice(s);
-    Some(u64::from_be_bytes(a))
 }
 
 fn to_usize(n: u64) -> Option<usize> {

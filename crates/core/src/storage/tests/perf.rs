@@ -511,12 +511,28 @@ fn a_card_with_a_long_log_is_fast() {
     // An import backs the database up first, so it needs a data directory.
     let tmp = tempfile::tempdir().unwrap();
     let mut target = Store::open(tmp.path()).unwrap();
-    let (import, ()) = fastest("plan and apply the import (long log)", 1, || {
-        let plan = target
-            .plan_import_bytes(&bytes, &crate::interchange::Limits::DEFAULT)
-            .unwrap();
-        target.apply_import_at(&plan, now).unwrap();
-    });
+    // Into a new database each time, so it can be measured again.
+    let mut import_into_new = || {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut fresh = Store::open(tmp.path()).unwrap();
+        crate::test_support::cpu_time_of(|| {
+            let plan = fresh
+                .plan_import_bytes(&bytes, &crate::interchange::Limits::DEFAULT)
+                .unwrap();
+            fresh.apply_import_at(&plan, now).unwrap();
+        })
+        .0
+    };
+    let import =
+        crate::test_support::cpu_within_retried(ms(LONG_LOG_IMPORT_MS), &mut import_into_new)
+            .unwrap_or_else(|message| panic!("import: {message}"));
+    if std::env::var_os("RAPPEL_TIMINGS").is_some() {
+        eprintln!("plan and apply the import (long log): {import:?} CPU");
+    }
+    let plan = target
+        .plan_import_bytes(&bytes, &crate::interchange::Limits::DEFAULT)
+        .unwrap();
+    target.apply_import_at(&plan, now).unwrap();
     assert_eq!(target.review_events(&card).unwrap().len(), entries + 2);
     let (target_list, _) = fastest("list_decks after the import (long log)", 3, || {
         target.list_decks(now, day_start).unwrap()
@@ -538,7 +554,6 @@ fn a_card_with_a_long_log_is_fast() {
     ] {
         assert_cpu_within(t, ms(LONG_LOG_MS), what);
     }
-    assert_cpu_within(import, ms(LONG_LOG_IMPORT_MS), "import");
 }
 
 /// Tags on one card, as many as a pasted list or an import can bring

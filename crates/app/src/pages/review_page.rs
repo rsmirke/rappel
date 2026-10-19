@@ -2196,14 +2196,21 @@ mod tests {
                     finished,
                     Duration::from_secs(20)
                 ));
-                let (used, settled) = crate::testing::cpu_time_of(|| {
-                    page.animate_reveal();
-                    crate::testing::settle_until(finished, Duration::from_secs(20))
-                });
-                assert!(settled);
+                // Checked on this thread, which did the work (ADR 0049),
+                // and measured again if a burst of load slowed one run
+                // (ADR 0063).
+                let mut used = Duration::ZERO;
+                let verdict = crate::testing::cpu_within_retried(Duration::from_secs(2), || {
+                    let (time, settled) = crate::testing::cpu_time_of(|| {
+                        page.animate_reveal();
+                        crate::testing::settle_until(finished, Duration::from_secs(20))
+                    });
+                    assert!(settled);
+                    used = time;
+                    time
+                })
+                .map(|_| ());
                 window.destroy();
-                // Checked on this thread, which did the work (ADR 0049).
-                let verdict = crate::testing::cpu_within(used, Duration::from_secs(2));
                 (what, used, verdict)
             })
         });

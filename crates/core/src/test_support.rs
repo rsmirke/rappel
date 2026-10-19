@@ -268,6 +268,32 @@ fn judge(used: Duration, limit: Duration, slowdown: impl FnOnce() -> f64) -> Res
 /// Fails the test unless `used`, a CPU time of this thread, is within
 /// `limit` ([`cpu_within`]). Call it on the thread that did the work.
 #[track_caller]
+/// [`cpu_within`] for work that can be run again from the same state:
+/// `measure` runs it and returns the CPU time it used, on this thread. A
+/// time over `limit`, even at the slowdown measured then, is measured
+/// again, up to [`TRIES`] times in all, and the first verdict within the
+/// bound passes. A burst of load during one run (the slowdown is measured
+/// after the work, and the reference does not slow down exactly as the
+/// work does, ADR 0049) then fails nothing, while a regression, slow every
+/// time, still fails (ADR 0063).
+pub(crate) fn cpu_within_retried(
+    limit: Duration,
+    mut measure: impl FnMut() -> Duration,
+) -> Result<Duration, String> {
+    let mut last = String::new();
+    for _ in 0..TRIES {
+        let used = measure();
+        match cpu_within(used, limit) {
+            Ok(()) => return Ok(used),
+            Err(message) => last = message,
+        }
+    }
+    Err(format!("{last} (measured {TRIES} times)"))
+}
+
+/// How many times [`cpu_within_retried`] measures before it fails.
+pub(crate) const TRIES: usize = 3;
+
 pub(crate) fn assert_cpu_within(used: Duration, limit: Duration, what: &str) {
     if let Err(message) = cpu_within(used, limit) {
         panic!("{what}: {message}");
@@ -360,6 +386,33 @@ fn reference_work_is_long_enough_to_time() {
     // clock that reads zero or does not move fails here.
     assert!(times[0] >= Duration::from_millis(5), "{times:?}");
     assert!(slowdown() >= 1.0);
+}
+
+/// A slow measurement is taken again; a time slow every time fails after
+/// [`TRIES`] measurements.
+#[test]
+fn a_time_over_its_bound_is_measured_again() {
+    let limit = Duration::from_millis(100);
+    let mut calls = 0;
+    let got = cpu_within_retried(limit, || {
+        calls += 1;
+        if calls < 3 {
+            Duration::from_secs(1_000)
+        } else {
+            Duration::from_millis(50)
+        }
+    });
+    assert_eq!(got, Ok(Duration::from_millis(50)));
+    assert_eq!(calls, 3);
+    let mut calls = 0;
+    assert!(
+        cpu_within_retried(limit, || {
+            calls += 1;
+            Duration::from_secs(1_000)
+        })
+        .is_err()
+    );
+    assert_eq!(calls, TRIES);
 }
 
 #[test]

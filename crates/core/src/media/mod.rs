@@ -11,6 +11,7 @@
 //! network; a reference is only ever turned into a path inside the media
 //! folder, from a checked hash and a fixed extension.
 
+mod bytes;
 mod color;
 mod dimensions;
 mod kind;

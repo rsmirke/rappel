@@ -18,21 +18,18 @@
 //! checked on every read; a structure that does not hold is `None` (the
 //! file is damaged and is not decoded).
 
-use super::MediaKind;
+use super::{MediaKind, bytes};
 
 fn u16_be(b: &[u8], at: usize) -> Option<usize> {
-    let s = b.get(at..at.checked_add(2)?)?;
-    Some(usize::from(u16::from_be_bytes([s[0], s[1]])))
+    bytes::u16_be(b, at).map(usize::from)
 }
 
 fn u32_be(b: &[u8], at: usize) -> Option<usize> {
-    let s = b.get(at..at.checked_add(4)?)?;
-    usize::try_from(u32::from_be_bytes([s[0], s[1], s[2], s[3]])).ok()
+    bytes::u32_be(b, at).and_then(|n| usize::try_from(n).ok())
 }
 
 fn u32_le(b: &[u8], at: usize) -> Option<usize> {
-    let s = b.get(at..at.checked_add(4)?)?;
-    usize::try_from(u32::from_le_bytes([s[0], s[1], s[2], s[3]])).ok()
+    bytes::u32_le(b, at).and_then(|n| usize::try_from(n).ok())
 }
 
 /// `bytes`, an image of `kind`, without its colour profile; `None` if its

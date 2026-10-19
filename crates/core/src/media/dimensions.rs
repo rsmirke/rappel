@@ -15,31 +15,7 @@
 //! file is damaged, and is not decoded either.
 
 use super::MediaKind;
-
-fn u16_be(b: &[u8], at: usize) -> Option<u16> {
-    let s = b.get(at..at.checked_add(2)?)?;
-    Some(u16::from_be_bytes([s[0], s[1]]))
-}
-
-fn u16_le(b: &[u8], at: usize) -> Option<u16> {
-    let s = b.get(at..at.checked_add(2)?)?;
-    Some(u16::from_le_bytes([s[0], s[1]]))
-}
-
-fn u24_le(b: &[u8], at: usize) -> Option<u32> {
-    let s = b.get(at..at.checked_add(3)?)?;
-    Some(u32::from_le_bytes([s[0], s[1], s[2], 0]))
-}
-
-fn u32_be(b: &[u8], at: usize) -> Option<u32> {
-    let s = b.get(at..at.checked_add(4)?)?;
-    Some(u32::from_be_bytes([s[0], s[1], s[2], s[3]]))
-}
-
-fn u32_le(b: &[u8], at: usize) -> Option<u32> {
-    let s = b.get(at..at.checked_add(4)?)?;
-    Some(u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
-}
+use super::bytes::{u16_be, u16_le, u24_le, u32_be, u32_le};
 
 /// The width and height an image of `kind` declares in `bytes` (its
 /// whole file, or at least its header), or `None` if they cannot be read

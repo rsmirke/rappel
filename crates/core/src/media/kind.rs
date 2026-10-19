@@ -22,7 +22,7 @@ pub enum MediaKind {
     Jpeg,
     /// WebP (lossy, lossless or extended).
     WebP,
-    /// GIF (87a or 89a); slice 3 shows it still.
+    /// GIF (87a or 89a), shown still (ADR 0055).
     Gif,
     /// Ogg holding Opus or Vorbis audio (not video, not other codecs).
     Ogg,
