@@ -109,6 +109,39 @@ fn a_gif_s_icc_extension_is_taken_out() {
     );
 }
 
+/// A GIF without its trailer, or with stray bytes after its last block,
+/// is still decoded: what comes out ends with a trailer, holds no stray
+/// byte, and still has a size.
+#[test]
+fn a_gif_without_a_trailer_or_with_stray_bytes_is_kept() {
+    let base = fixture!("11x7.gif");
+    assert_eq!(base.last(), Some(&0x3B));
+    let body = &base[..base.len() - 1];
+    let no_trailer = gif_with_icc()[..gif_with_icc().len() - 1].to_vec();
+    let mut stray = gif_with_icc();
+    stray.pop();
+    stray.extend_from_slice(b"\x00\x00junk\x3b");
+    let mut expected = body.to_vec();
+    expected.push(0x3B);
+    // The same without its trailer, the ICC extension gone.
+    assert_eq!(
+        without_color_profile(MediaKind::Gif, body).as_deref(),
+        Some(base)
+    );
+    for (what, gif) in [("no trailer", no_trailer), ("stray bytes", stray)] {
+        let out = without_color_profile(MediaKind::Gif, &gif).unwrap();
+        assert!(!has(&out, b"ICCRGBG1012"), "{what}");
+        assert!(!has(&out, b"junk"), "{what}");
+        assert_eq!(out.last(), Some(&0x3B), "{what}");
+        assert_eq!(image_size(MediaKind::Gif, &out), Some((11, 7)), "{what}");
+        let mut kept = out.clone();
+        kept.pop();
+        let at = gif_blocks_at(base);
+        assert_eq!(&kept[..at], &base[..at], "{what}");
+        assert!(kept.ends_with(&body[at..]), "{what}: the image is kept");
+    }
+}
+
 #[test]
 fn images_without_a_profile_are_kept_as_they_are() {
     for (kind, bytes) in [

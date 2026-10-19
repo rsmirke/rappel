@@ -773,6 +773,31 @@ mod tests {
         out
     }
 
+    /// The 11 × 7 GIF fixture with an ICC application extension
+    /// (`ICCRGBG1012`) of `size` bytes of profile after its colour table.
+    fn gif_with_icc(size: usize) -> Vec<u8> {
+        let base = include_bytes!("../../../core/src/media/fixtures/images/11x7.gif");
+        let packed = base[10];
+        let table = if packed & 0x80 != 0 {
+            3 << ((packed & 0x07) + 1)
+        } else {
+            0
+        };
+        let at = 13 + table;
+        let mut out = base[..at].to_vec();
+        out.extend_from_slice(b"\x21\xff\x0bICCRGBG1012");
+        let mut left = size;
+        while left > 0 {
+            let n = left.min(255);
+            out.push(u8::try_from(n).expect("at most 255"));
+            out.resize(out.len() + n, 0x5A);
+            left -= n;
+        }
+        out.push(0);
+        out.extend_from_slice(&base[at..]);
+        out
+    }
+
     /// Metadata bombs (ICC profiles and text compressed from hundreds of
     /// MiB, megabytes of EXIF and of ICC segments) and an animated PNG of
     /// 10,000 frames: each is shown or a placeholder within the decode's
@@ -849,6 +874,10 @@ mod tests {
             let icc = include_bytes!("../../../core/src/media/fixtures/images/4x3-icc.png");
             let media = plant(&data, 90, "png", icc);
             assert!(settle(&folder, media).is_shown());
+            // So is a GIF with an ICC extension of 8 MiB (taken out).
+            let media = plant(&data, 91, "gif", &gif_with_icc(8 << 20));
+            let image = settle(&folder, media);
+            assert!(image.is_shown(), "{:?}", image.shown_failure());
             let grown = peak_memory().saturating_sub(before);
             assert!(
                 grown < 128 << 20,

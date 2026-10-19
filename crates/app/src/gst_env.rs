@@ -58,8 +58,9 @@ pub const ALLOW_LIST: &str = "GST_PLUGIN_LOADING_WHITELIST";
 /// `GStreamer` reads when it is unset (`gst/gstregistry.c`).
 pub const REGISTRY: [&str; 2] = ["GST_REGISTRY_1_0", "GST_REGISTRY"];
 
-/// Set on the new start to the process's id, so it never starts again;
-/// `1` skips the restart for debugging (README).
+/// Set on the new start to `pid:<the process's id>`, so it never starts
+/// again; `1` skips the restart for debugging (README), and no value of
+/// the restart's can be taken for it.
 const GUARD: &str = "RAPPEL_GST_ENVIRONMENT_SET";
 
 /// The plugins that may load, by name (`gst-inspect-1.0 <name>`): what
@@ -223,11 +224,12 @@ pub enum Start {
     Unrestricted,
 }
 
-/// The guard's value on the new start: the process's id, which `exec`
-/// keeps, so a guard inherited from another process (a Rappel that
-/// started this one) is not taken for ours.
+/// The guard's value on the new start: `pid:` and the process's id, which
+/// `exec` keeps, so a guard inherited from another process (a Rappel that
+/// started this one) is not taken for ours, and none is the debugging
+/// `1` (not even in process 1, a container's first process).
 fn guard_value(pid: u32) -> String {
-    pid.to_string()
+    format!("pid:{pid}")
 }
 
 /// What to do, given the guard's value, this process's id and whether

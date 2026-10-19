@@ -141,7 +141,8 @@ fn the_new_start_sets_what_is_missing_and_then_nothing() {
 #[test]
 fn the_guard_counts_only_for_this_process() {
     let pid = 4_242;
-    let ours = OsString::from("4242");
+    let ours = OsString::from("pid:4242");
+    let bare = OsString::from("4242");
     let other = OsString::from("17");
     let debug = OsString::from("1");
     assert_eq!(start(None, pid, false), Start::Restart);
@@ -153,6 +154,14 @@ fn the_guard_counts_only_for_this_process() {
     // Inherited from another process: not ours, so it restarts.
     assert_eq!(start(Some(&other), pid, false), Start::Restart);
     assert_eq!(start(Some(&other), pid, true), Start::Ready);
+    // A bare id is not the restart's value.
+    assert_eq!(start(Some(&bare), pid, false), Start::Restart);
+    // In process 1 the restart's value is still not the escape hatch.
+    assert_eq!(
+        start(Some(&OsString::from("pid:1")), 1, false),
+        Start::Unrestricted
+    );
+    assert_eq!(start(Some(&OsString::from("pid:1")), 1, true), Start::Ready);
     // The debugging escape hatch.
     assert_eq!(start(Some(&debug), pid, false), Start::Debugging);
     assert_eq!(start(Some(&debug), pid, true), Start::Debugging);

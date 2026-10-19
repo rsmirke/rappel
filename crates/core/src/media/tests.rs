@@ -731,4 +731,22 @@ fn stale_temporary_files_are_removed_and_young_ones_kept() {
     assert!(young.exists());
     assert!(other.exists(), "not a name Rappel makes");
     assert!(dir.join(media.file_name()).is_file());
+    // Two days on, everything here is old: only the regular file with
+    // Rappel's name goes, never a symbolic link (to a media file), a
+    // folder or uppercase hex (not a name Rappel makes).
+    let link = dir.join(".incoming-00112233445566aa");
+    std::os::unix::fs::symlink(dir.join(media.file_name()), &link).unwrap();
+    let folder = dir.join(".incoming-00112233445566bb");
+    fs::create_dir(&folder).unwrap();
+    fs::write(folder.join("inside"), b"kept").unwrap();
+    let upper = dir.join(".incoming-0123456789ABCDEF");
+    fs::write(&upper, b"partial").unwrap();
+    let later = crate::time::now_ms() + 2 * super::store::STALE_INCOMING_MS;
+    super::store::remove_stale_incoming(&dir, later);
+    assert!(!young.exists(), "old by then");
+    assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
+    assert!(folder.join("inside").is_file());
+    assert!(upper.exists());
+    assert!(other.exists());
+    assert!(dir.join(media.file_name()).is_file());
 }

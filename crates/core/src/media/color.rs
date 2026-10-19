@@ -10,7 +10,7 @@
 //! Rappel therefore sends the decoder the image without its profile: PNG's
 //! `iCCP` chunk, a JPEG's `ICC_PROFILE` segments (APP2), a WebP's `ICCP`
 //! chunk (and the flag that announces it), a GIF's `ICCRGBG1012`
-//! application extension (which the `gif` crate glycin's loader uses
+//! application extension (which the `gif` crate used by glycin's loader
 //! returns as the image's profile). The pixels are then shown as sRGB,
 //! which most images are; a wide-gamut photo's colours are a little less
 //! saturated.
@@ -153,7 +153,11 @@ fn sub_blocks_end(b: &[u8], mut pos: usize) -> Option<usize> {
 }
 
 /// Every block copied but an application extension named `ICCRGBG1012`
-/// (an ICC profile, `GIF89a`'s convention), up to the trailer.
+/// (an ICC profile, `GIF89a`'s convention), up to the trailer. The file's
+/// end, or a byte that starts no block, where a block should start is
+/// taken for the trailer, as decoders do: the blocks before it are kept,
+/// the stray bytes dropped (never passed on unread), and a trailer added.
+/// Such GIFs are common, and showed their frames before the walk.
 fn gif(b: &[u8]) -> Option<Vec<u8>> {
     let packed = *b.get(10)?;
     let mut pos = 13;
@@ -162,8 +166,8 @@ fn gif(b: &[u8]) -> Option<Vec<u8>> {
     }
     let mut out = b.get(..pos)?.to_vec();
     loop {
-        match *b.get(pos)? {
-            0x21 => {
+        match b.get(pos).copied() {
+            Some(0x21) => {
                 let label = *b.get(pos + 1)?;
                 let end = sub_blocks_end(b, pos + 2)?;
                 let icc = label == 0xFF
@@ -174,7 +178,7 @@ fn gif(b: &[u8]) -> Option<Vec<u8>> {
                 }
                 pos = end;
             }
-            0x2C => {
+            Some(0x2C) => {
                 let flags = *b.get(pos + 9)?;
                 let mut data = pos + 10;
                 if flags & 0x80 != 0 {
@@ -185,11 +189,11 @@ fn gif(b: &[u8]) -> Option<Vec<u8>> {
                 out.extend_from_slice(b.get(pos..end)?);
                 pos = end;
             }
-            0x3B => {
+            // The trailer, the file's end or stray bytes: the end.
+            Some(_) | None => {
                 out.push(0x3B);
                 return Some(out);
             }
-            _ => return None,
         }
     }
 }

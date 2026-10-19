@@ -620,7 +620,8 @@ fn copy_to_new(from: &Path, to: &Path) -> io::Result<()> {
 /// longer than any add or import's batch keeps one.
 pub(super) const STALE_INCOMING_MS: i64 = 24 * 60 * 60 * 1_000;
 
-/// Removes the temporary files (`.incoming-` and 16 hex digits, regular
+/// Removes the temporary files (`.incoming-` and 16 lowercase hex digits,
+/// as `media::hex` writes them; regular
 /// files) a crash left in the media folder `dir`, if last written more
 /// than [`STALE_INCOMING_MS`] before `now`; a younger one may belong to an
 /// add or an import running now, and is left alone (ADR 0063). They are
@@ -635,7 +636,9 @@ pub(crate) fn remove_stale_incoming(dir: &Path, now: i64) {
         let is_temp = name
             .to_str()
             .and_then(|n| n.strip_prefix(".incoming-"))
-            .is_some_and(|rest| rest.len() == 16 && rest.bytes().all(|c| c.is_ascii_hexdigit()));
+            .is_some_and(|rest| {
+                rest.len() == 16 && rest.bytes().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f'))
+            });
         let Ok(meta) = entry.metadata() else {
             continue;
         };
