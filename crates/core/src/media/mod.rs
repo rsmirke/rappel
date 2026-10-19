@@ -11,6 +11,8 @@
 //! network; a reference is only ever turned into a path inside the media
 //! folder, from a checked hash and a fixed extension.
 
+mod color;
+mod dimensions;
 mod kind;
 mod store;
 mod structure;
@@ -19,6 +21,8 @@ mod used;
 
 use std::fmt;
 
+pub use color::without_color_profile;
+pub use dimensions::image_size;
 pub use kind::{AUDIO_MAX_BYTES, DETECT_BYTES, IMAGE_MAX_BYTES, MediaKind};
 pub(crate) use store::{
     CopyFailure, Ingested, MEDIA_DIR_NAME, MediaBatch, copy_capped, insert_media_row, sync_folder,

@@ -377,6 +377,8 @@ async fn decode(path: PathBuf, media: MediaRef, timeout: Duration) -> Decoded {
 /// once as a warning. `Auto` and not `Bwrap`: forcing bubblewrap would
 /// break a Flatpak, where glycin uses flatpak-spawn.
 async fn decode_bytes(bytes: Vec<u8>, media: MediaRef, cancellable: gio::Cancellable) -> Decoded {
+    #[cfg(test)]
+    LOADS.set(LOADS.get() + 1);
     let mut loader = glycin::Loader::new_vec(bytes);
     loader.cancellable(cancellable);
     let image = loader.load().await.map_err(|err| {
@@ -415,6 +417,12 @@ async fn decode_bytes(bytes: Vec<u8>, media: MediaRef, cancellable: gio::Cancell
         return Err(Failure::CannotShow);
     }
     Ok(frame.texture())
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many images were sent to glycin on this thread (tests).
+    static LOADS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
 /// Logs, once per run, that images are decoded without glycin's sandbox.
@@ -619,6 +627,234 @@ mod tests {
                 crate::testing::print_timing(what, started.elapsed());
                 assert_eq!(image.shown_failure(), Some(Failure::CannotShow), "{what}");
             }
+        });
+    }
+
+    /// A JPEG of `w` × `h` by its frame header, and nothing to decode.
+    fn jpeg_of(w: u16, h: u16) -> Vec<u8> {
+        let mut out =
+            b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00".to_vec();
+        out.extend_from_slice(b"\xff\xc0\x00\x0b\x08");
+        out.extend_from_slice(&h.to_be_bytes());
+        out.extend_from_slice(&w.to_be_bytes());
+        out.extend_from_slice(b"\x01\x01\x11\x00\xff\xd9");
+        out
+    }
+
+    /// A WebP whose `VP8X` canvas is `w` × `h`.
+    fn webp_of(w: u32, h: u32) -> Vec<u8> {
+        let mut out = b"RIFF\x16\x00\x00\x00WEBPVP8X\x0a\x00\x00\x00\x00\x00\x00\x00".to_vec();
+        out.extend_from_slice(&(w - 1).to_le_bytes()[..3]);
+        out.extend_from_slice(&(h - 1).to_le_bytes()[..3]);
+        out
+    }
+
+    /// A GIF whose screen is `w` × `h`, with one frame of that size.
+    fn gif_of(w: u16, h: u16) -> Vec<u8> {
+        let mut out = b"GIF89a".to_vec();
+        out.extend_from_slice(&w.to_le_bytes());
+        out.extend_from_slice(&h.to_le_bytes());
+        out.extend_from_slice(b"\x00\x00\x00\x2c\x00\x00\x00\x00");
+        out.extend_from_slice(&w.to_le_bytes());
+        out.extend_from_slice(&h.to_le_bytes());
+        out.extend_from_slice(b"\x00\x02\x02\x44\x01\x00\x3b");
+        out
+    }
+
+    /// An image whose header claims more than the limits (16,384 px a
+    /// side, 64 MP) is refused by Rappel's own reading of the header,
+    /// before its bytes are sent to glycin: without a sandbox (a container,
+    /// ADR 0055) the loader has no memory limit (ADR 0063).
+    #[test]
+    fn images_too_large_by_their_header_never_reach_the_decoder() {
+        crate::testing::with_widgets(|| {
+            let (tmp, _state) = crate::testing::temporary_state();
+            let data = tmp.path().join("data");
+            let folder = data.join("media");
+            let cases = [
+                (
+                    "png",
+                    hand_png(100_000, 100_000, &[0; 64]),
+                    "a PNG of 100,000 × 100,000",
+                ),
+                ("png", hand_png(16_385, 1, &[0; 64]), "a PNG 16,385 px wide"),
+                ("png", hand_png(9_000, 9_000, &[0; 64]), "a PNG of 81 MP"),
+                ("jpg", jpeg_of(60_000, 60_000), "a JPEG of 60,000 × 60,000"),
+                (
+                    "webp",
+                    webp_of(1 << 24, 1 << 24),
+                    "a WebP canvas of 2^24 × 2^24",
+                ),
+                ("gif", gif_of(65_535, 65_535), "a GIF of 65,535 × 65,535"),
+            ];
+            for (seed, (ext, bytes, what)) in (40_u8..).zip(cases) {
+                let media = plant(&data, seed, ext, &bytes);
+                let before = LOADS.get();
+                let image = settle(&folder, media);
+                assert_eq!(image.shown_failure(), Some(Failure::CannotShow), "{what}");
+                assert_eq!(LOADS.get(), before, "{what} reached the decoder");
+            }
+            // Within the limits, the decoder is asked.
+            let media = plant(&data, 60, "png", &crate::testing::png_bytes(20, 10));
+            let before = LOADS.get();
+            assert!(settle(&folder, media).is_shown());
+            assert_eq!(LOADS.get(), before + 1);
+        });
+    }
+
+    /// The peak memory of this process so far (`VmHWM`), in bytes.
+    fn peak_memory() -> u64 {
+        let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+        status
+            .lines()
+            .find_map(|line| line.strip_prefix("VmHWM:"))
+            .and_then(|kb| kb.trim().trim_end_matches(" kB").trim().parse::<u64>().ok())
+            .map_or(0, |kb| kb * 1024)
+    }
+
+    /// `n` bytes of `byte`, compressed with zlib: a few hundred KiB for
+    /// hundreds of MiB.
+    fn zlib_of(byte: u8, n: usize) -> Vec<u8> {
+        let mut zlib = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+        let block = vec![byte; 1 << 20];
+        for _ in 0..n >> 20 {
+            zlib.write_all(&block).unwrap();
+        }
+        zlib.finish().unwrap()
+    }
+
+    /// An 8 × 8 RGB PNG with `extra` chunks before its pixels.
+    fn png_with(extra: &[([u8; 4], Vec<u8>)]) -> Vec<u8> {
+        let mut out = b"\x89PNG\r\n\x1a\n".to_vec();
+        let mut ihdr = 8_u32.to_be_bytes().to_vec();
+        ihdr.extend_from_slice(&8_u32.to_be_bytes());
+        ihdr.extend_from_slice(&[8, 2, 0, 0, 0]);
+        chunk(&mut out, *b"IHDR", &ihdr);
+        for (kind, data) in extra {
+            chunk(&mut out, *kind, data);
+        }
+        let raw = vec![0_u8; 8 * (1 + 8 * 3)];
+        let mut zlib = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+        zlib.write_all(&raw).unwrap();
+        chunk(&mut out, *b"IDAT", &zlib.finish().unwrap());
+        chunk(&mut out, *b"IEND", b"");
+        out
+    }
+
+    /// An animated PNG of `frames` frames of 8 × 8 (`acTL`, `fcTL`,
+    /// `fdAT`), the first the default image.
+    fn many_frame_png(frames: u32) -> Vec<u8> {
+        let mut actl = frames.to_be_bytes().to_vec();
+        actl.extend_from_slice(&0_u32.to_be_bytes());
+        let fctl = |seq: u32| {
+            let mut c = seq.to_be_bytes().to_vec();
+            for v in [8_u32, 8, 0, 0] {
+                c.extend_from_slice(&v.to_be_bytes());
+            }
+            c.extend_from_slice(&[0, 1, 0, 100, 0, 0]);
+            c
+        };
+        let mut out = png_with(&[(*b"acTL", actl), (*b"fcTL", fctl(0))]);
+        // Before IEND: the other frames.
+        let iend = out.split_off(out.len() - 12);
+        let raw = vec![0_u8; 8 * (1 + 8 * 3)];
+        let mut zlib = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+        zlib.write_all(&raw).unwrap();
+        let pixels = zlib.finish().unwrap();
+        let mut seq = 1;
+        for _ in 1..frames {
+            chunk(&mut out, *b"fcTL", &fctl(seq));
+            let mut data = (seq + 1).to_be_bytes().to_vec();
+            data.extend_from_slice(&pixels);
+            chunk(&mut out, *b"fdAT", &data);
+            seq += 2;
+        }
+        out.extend_from_slice(&iend);
+        out
+    }
+
+    /// Metadata bombs (ICC profiles and text compressed from hundreds of
+    /// MiB, megabytes of EXIF and of ICC segments) and an animated PNG of
+    /// 10,000 frames: each is shown or a placeholder within the decode's
+    /// timeout, and Rappel's own process does not grow with what the
+    /// loader unpacks (ADR 0063).
+    #[test]
+    fn metadata_bombs_and_many_frames_stay_in_the_loader() {
+        crate::testing::with_widgets(|| {
+            let (tmp, _state) = crate::testing::temporary_state();
+            let data = tmp.path().join("data");
+            let folder = data.join("media");
+            let bomb = zlib_of(0, 64 << 20);
+            let text = zlib_of(b'a', 64 << 20);
+            let mut iccp = b"icc\0\0".to_vec();
+            iccp.extend_from_slice(&bomb);
+            let mut ztxt = b"Comment\0\0".to_vec();
+            ztxt.extend_from_slice(&text);
+            let mut itxt = b"XML:com.adobe.xmp\0\x01\x00\0\0".to_vec();
+            itxt.extend_from_slice(&text);
+            let mut exif = b"MM\0\x2a\0\0\0\x08".to_vec();
+            exif.resize(9 << 20, 0xAB);
+            // A JPEG with 150 ICC segments of 64 KiB before its frame.
+            let jpeg = {
+                let base = include_bytes!("../../../core/src/media/fixtures/images/3x2.jpg");
+                let mut out = base[..2].to_vec();
+                for i in 0..150_u8 {
+                    out.extend_from_slice(b"\xff\xe2\xff\xff");
+                    out.extend_from_slice(b"ICC_PROFILE\0");
+                    out.push(i + 1);
+                    out.push(150);
+                    out.resize(out.len() + 0xffff - 2 - 14, 0x5A);
+                }
+                out.extend_from_slice(&base[2..]);
+                out
+            };
+            let cases = [
+                (
+                    "png",
+                    png_with(&[(*b"zTXt", ztxt)]),
+                    "a text of 64 MiB compressed",
+                ),
+                (
+                    "png",
+                    png_with(&[(*b"iTXt", itxt)]),
+                    "XMP of 64 MiB compressed",
+                ),
+                ("png", png_with(&[(*b"eXIf", exif)]), "9 MiB of EXIF"),
+                ("jpg", jpeg, "150 ICC segments of 64 KiB"),
+                (
+                    "png",
+                    many_frame_png(10_000),
+                    "an animated PNG of 10,000 frames",
+                ),
+                (
+                    "png",
+                    png_with(&[(*b"iCCP", iccp)]),
+                    "an ICC profile of 64 MiB compressed",
+                ),
+            ];
+            let before = peak_memory();
+            for (seed, (ext, bytes, what)) in (70_u8..).zip(cases) {
+                assert!(bytes.len() <= 10_000_000, "{what}: {} bytes", bytes.len());
+                let media = plant(&data, seed, ext, &bytes);
+                let started = std::time::Instant::now();
+                let image = settle(&folder, media);
+                crate::testing::print_timing(what, started.elapsed());
+                assert!(
+                    image.is_shown() || image.shown_failure() == Some(Failure::CannotShow),
+                    "{what}: {:?}",
+                    image.shown_failure()
+                );
+            }
+            // An image with a profile is still shown, as sRGB.
+            let icc = include_bytes!("../../../core/src/media/fixtures/images/4x3-icc.png");
+            let media = plant(&data, 90, "png", icc);
+            assert!(settle(&folder, media).is_shown());
+            let grown = peak_memory().saturating_sub(before);
+            assert!(
+                grown < 128 << 20,
+                "Rappel's process grew by {} MiB",
+                grown >> 20
+            );
         });
     }
 

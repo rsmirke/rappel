@@ -15,7 +15,7 @@ use std::collections::VecDeque;
 use std::path::Path;
 
 use rappel_core::content::{ImageTarget, Inline};
-use rappel_core::media::{MediaKind, MediaRef};
+use rappel_core::media::{MediaKind, MediaRef, image_size, without_color_profile};
 
 use super::media_file::{Unreadable, read_media_file};
 
@@ -388,15 +388,32 @@ pub fn texture_cost(width: i32, height: i32) -> usize {
 /// Reads the media file at `path` for decoding, checked
 /// (`media_file::read_media_file`): a regular file (never through a
 /// symbolic link), at most [`rappel_core::media::IMAGE_MAX_BYTES`], whose first
-/// bytes are of `media`'s kind, which must be an image. The bytes read are the ones
-/// decoded, so the file cannot change between the check and the decode.
+/// bytes are of `media`'s kind, which must be an image, and whose header
+/// declares a size [`within_limits`] (`media::image_size`, read here, so a
+/// file claiming more never reaches the decoder, which may run without a
+/// memory limit; ADR 0063), without its colour profile
+/// (`media::without_color_profile`: glycin would unpack it into this
+/// process and parse it here). The bytes read are the ones decoded, so the
+/// file cannot change between the check and the decode.
 pub fn read_image_file(path: &Path, media: MediaRef) -> Result<Vec<u8>, Failure> {
     if !media.kind().is_image() {
         return Err(Failure::CannotShow);
     }
-    read_media_file(path, media).map_err(|unreadable| match unreadable {
+    let bytes = read_media_file(path, media).map_err(|unreadable| match unreadable {
         Unreadable::Missing => Failure::Missing,
         Unreadable::Refused => Failure::CannotShow,
+    })?;
+    match image_size(media.kind(), &bytes) {
+        Some((width, height)) if within_limits(width, height) => {}
+        size => {
+            tracing::debug!(?size, "an image's header is past the limits or unreadable");
+            return Err(Failure::CannotShow);
+        }
+    }
+    // glycin parses a profile in this process, unpacked (ADR 0063).
+    without_color_profile(media.kind(), &bytes).ok_or_else(|| {
+        tracing::debug!("an image's chunks or segments do not hold together");
+        Failure::CannotShow
     })
 }
 
@@ -657,12 +674,20 @@ mod tests {
     #[test]
     fn a_media_file_is_read_only_when_it_is_what_it_names() {
         let dir = tempfile::tempdir().unwrap();
-        let png = b"\x89PNG\r\n\x1a\nrest".to_vec();
+        let png = crate::testing::png_bytes(4, 3);
         let media = MediaRef::parse(&format!("media:{HASH}.png")).unwrap();
         let path = dir.path().join(media.file_name());
         assert_eq!(read_image_file(&path, media), Err(Failure::Missing));
         fs::write(&path, &png).unwrap();
         assert_eq!(read_image_file(&path, media), Ok(png.clone()));
+        // A PNG signature without its header, and a header past the
+        // limits: never sent to the decoder (ADR 0063).
+        fs::write(&path, b"\x89PNG\r\n\x1a\nrest").unwrap();
+        assert_eq!(read_image_file(&path, media), Err(Failure::CannotShow));
+        let mut wide = png.clone();
+        wide[16..20].copy_from_slice(&(MAX_SIDE + 1).to_be_bytes());
+        fs::write(&path, &wide).unwrap();
+        assert_eq!(read_image_file(&path, media), Err(Failure::CannotShow));
         // Another kind under a PNG's name.
         let gif = MediaRef::parse(&format!("media:{HASH}.gif")).unwrap();
         fs::write(dir.path().join(gif.file_name()), &png).unwrap();
