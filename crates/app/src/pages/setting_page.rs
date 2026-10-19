@@ -170,7 +170,7 @@ impl SettingPage {
                 // Clone the callback out so no borrow is held while it runs.
                 let handler = imp.on_reset.borrow().as_ref().map(Callback::get);
                 if let Some(handler) = handler {
-                    handler(dir, store, key, was_reset);
+                    handler(dir, *store, key, was_reset);
                 }
                 return;
             }

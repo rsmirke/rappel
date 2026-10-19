@@ -234,8 +234,9 @@ pub struct SettingReset {
 /// The database after [`reset_setting`].
 #[derive(Debug)]
 pub enum AfterReset {
-    /// No stored setting is damaged: the open store.
-    Opened(Store),
+    /// No stored setting is damaged: the open store (boxed: a store is
+    /// large, the other variant small).
+    Opened(Box<Store>),
     /// This other setting is damaged too, so the database was not opened.
     Damaged(SettingKey),
 }
@@ -289,7 +290,7 @@ pub(super) fn reset_setting_with(
         false
     };
     let then = match store.checked() {
-        Ok(store) => AfterReset::Opened(store),
+        Ok(store) => AfterReset::Opened(Box::new(store)),
         Err(Error::DamagedSetting { key: next, .. }) => AfterReset::Damaged(next),
         Err(err) => return Err(err),
     };

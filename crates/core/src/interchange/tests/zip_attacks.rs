@@ -483,25 +483,41 @@ fn a_media_bomb_stops_at_its_limit() {
     encoder.write_all(&inflated).unwrap();
     let data = encoder.finish().unwrap();
     drop(inflated);
-    let mut record = super::media::record(&m, b"", T0);
-    record["bytes"] = json!(64);
-    let [json, dir] = json_and_dir(&[record]);
-    let bomb = Raw {
-        name: format!("media/{}", m.file_name()).into_bytes(),
-        method: 8,
-        flags: 0,
-        crc: 0,
-        size: 64,
-        data,
-    };
-    let archive = raw_archive(&[json, dir, bomb]);
-    assert_eq!(
-        plan_quickly(archive, "a media bomb"),
-        ImportProblem::EntryTooLarge {
-            entry: "a media file",
-            limit: 10_000_000,
-        }
-    );
+    // Declaring 64 bytes, it stops past them (ADR 0063); declaring the
+    // limit, one byte past the limit.
+    for (declared, expected) in [
+        (
+            64,
+            ImportProblem::InvalidArchive(
+                "a media file is not the size its entry declares".to_owned(),
+            ),
+        ),
+        (
+            10_000_000,
+            ImportProblem::EntryTooLarge {
+                entry: "a media file",
+                limit: 10_000_000,
+            },
+        ),
+    ] {
+        let mut record = super::media::record(&m, b"", T0);
+        record["bytes"] = json!(declared);
+        let [json, dir] = json_and_dir(&[record]);
+        let bomb = Raw {
+            name: format!("media/{}", m.file_name()).into_bytes(),
+            method: 8,
+            flags: 0,
+            crc: 0,
+            size: declared,
+            data: data.clone(),
+        };
+        let archive = raw_archive(&[json, dir, bomb]);
+        assert_eq!(
+            plan_quickly(archive, "a media bomb"),
+            expected,
+            "{declared}"
+        );
+    }
 }
 
 /// A media entry whose name says one hash and whose content has another
@@ -581,4 +597,283 @@ fn zip64_archive(entries: &[Raw]) -> Vec<u8> {
         }
     }
     zip.finish().unwrap().into_inner()
+}
+
+// ------------------------------------------------- round 3 (ADR 0063)
+
+/// `cards.json` deflated from more than the JSON limit (300 MiB of
+/// spaces in about 1 MiB), declaring a small size or a huge one: the
+/// inflating stops one byte past the limit, quickly, whatever is declared.
+#[test]
+fn a_deflate_bomb_stops_at_the_json_limit() {
+    use flate2::Compression;
+    use flate2::write::DeflateEncoder;
+    // Fast compression: making the bomb is the slow part in a debug build.
+    let mut encoder = DeflateEncoder::new(Vec::new(), Compression::fast());
+    let block = vec![b' '; 1 << 20];
+    encoder.write_all(b"{\"format_version\":2").unwrap();
+    for _ in 0..300 {
+        encoder.write_all(&block).unwrap();
+    }
+    let data = encoder.finish().unwrap();
+    assert!(data.len() < 4 << 20, "{}", data.len());
+    // Declaring 100 bytes it stops past them, at once (it read all of the
+    // JSON limit, 256 MiB, before: 17 s of CPU in a debug build); declaring
+    // more than the limit it is refused from its central record.
+    for (declared, limit) in [
+        (100, Duration::from_secs(2)),
+        (u32::MAX - 1, Duration::from_secs(60)),
+    ] {
+        let bomb = raw_archive(&[
+            Raw {
+                name: b"cards.json".to_vec(),
+                method: 8,
+                flags: 0,
+                crc: 0,
+                size: declared,
+                data: data.clone(),
+            },
+            raw(b"media/", b""),
+        ]);
+        let problem = refused(within(limit, "a deflate bomb", move || {
+            Store::in_memory().plan_import_bytes(&bomb, &Limits::DEFAULT)
+        }));
+        if declared == 100 {
+            assert_eq!(
+                problem,
+                ImportProblem::InvalidArchive(
+                    "cards.json is not the size its entry declares".to_owned()
+                )
+            );
+        } else {
+            assert!(
+                matches!(problem, ImportProblem::EntryTooLarge { .. }),
+                "{problem}"
+            );
+        }
+    }
+}
+
+/// zip64 extra fields at the extremes: sizes and offsets of `u64::MAX`,
+/// a marker with no extra field, an extra field too short, one zip64
+/// field among many others: each refused or read, never an overflow.
+#[test]
+fn zip64_fields_at_the_extremes_are_refused() {
+    let plain = hand_made(Made {
+        zip64: true,
+        size: None,
+    });
+    let extra = plain
+        .windows(4)
+        .position(|w| w == b"\x01\x00\x18\x00")
+        .expect("the zip64 extra field");
+    for (at, value) in [(4, u64::MAX), (12, u64::MAX), (20, u64::MAX), (20, 1 << 40)] {
+        let mut bytes = plain.clone();
+        bytes[extra + at..extra + at + 8].copy_from_slice(&value.to_le_bytes());
+        let problem = refused(Env::new().plan(&bytes));
+        assert!(
+            matches!(problem, ImportProblem::InvalidArchive(_)),
+            "field {at} = {value}: {problem}"
+        );
+    }
+    // The extra field's own length says 8 where 24 are needed.
+    let mut short = plain.clone();
+    short[extra + 2..extra + 4].copy_from_slice(&8_u16.to_le_bytes());
+    assert_eq!(
+        refused(Env::new().plan(&short)),
+        ImportProblem::InvalidArchive("an entry's sizes cannot be read".to_owned())
+    );
+    // Another id where the zip64 field should be.
+    let mut other = plain;
+    other[extra..extra + 2].copy_from_slice(&0x5455_u16.to_le_bytes());
+    assert_eq!(
+        refused(Env::new().plan(&other)),
+        ImportProblem::InvalidArchive("an entry's sizes cannot be read".to_owned())
+    );
+}
+
+/// What a local header says beyond where its data starts (its sizes,
+/// method, CRC, flags such as a data descriptor, even its name) is never
+/// relied on: the central record decides, so a file whose local headers
+/// disagree imports as its central records say, or is refused by them.
+#[test]
+fn local_headers_that_disagree_are_not_relied_on() {
+    let plain = hand_made(Made {
+        zip64: false,
+        size: None,
+    });
+    let expected = Env::new().plan(&plain).unwrap().summary().clone();
+    // cards.json's local header: flags (data descriptor), method, CRC and
+    // sizes changed; then its name, the same length.
+    let mut lying = plain.clone();
+    lying[6..8].copy_from_slice(&8_u16.to_le_bytes());
+    lying[8..10].copy_from_slice(&0_u16.to_le_bytes());
+    lying[14..26].copy_from_slice(&[0; 12]);
+    assert_eq!(Env::new().plan(&lying).unwrap().summary(), &expected);
+    let renamed = {
+        let mut b = plain.clone();
+        b[30..40].copy_from_slice(b"evil.jsonx");
+        b
+    };
+    assert_eq!(Env::new().plan(&renamed).unwrap().summary(), &expected);
+    // A local name longer than the bytes left: its data would start past
+    // the directory.
+    let mut long = plain;
+    long[26..28].copy_from_slice(&u16::MAX.to_le_bytes());
+    assert_eq!(
+        refused(Env::new().plan(&long)),
+        ImportProblem::InvalidArchive("entries overlap or are out of place".to_owned())
+    );
+}
+
+/// Names a zip reader may stumble on: a backslash path, a NUL, a name of
+/// 65,535 bytes, 10,000 empty `media/` entries, many empty media files.
+#[test]
+fn odd_names_and_empty_entries_are_refused_from_the_directory() {
+    let (m, bytes) = png(1);
+    let [json, _] = json_and_dir(&[super::media::record(&m, &bytes, T0)]);
+    let long = vec![b'a'; usize::from(u16::MAX)];
+    for name in [
+        format!("media\\{}", m.file_name()).into_bytes(),
+        format!("media/{}\0", m.file_name()).into_bytes(),
+        long,
+    ] {
+        let archive = raw_archive(&[
+            raw(&json.name, &json.data),
+            raw(b"media/", b""),
+            raw(&name, &bytes),
+        ]);
+        assert!(
+            matches!(
+                plan_quickly(archive, "an odd name"),
+                ImportProblem::UnexpectedEntry(_)
+            ),
+            "{:?}",
+            String::from_utf8_lossy(&name[..20.min(name.len())])
+        );
+    }
+    let mut dirs = vec![raw(&json.name, &json.data)];
+    dirs.extend((0..10_000).map(|_| raw(b"media/", b"")));
+    assert_eq!(
+        plan_quickly(raw_archive(&dirs), "10,000 media/ entries"),
+        ImportProblem::UnexpectedEntry("(a name used twice)".to_owned())
+    );
+    let mut empty = vec![raw(&json.name, &json.data), raw(b"media/", b"")];
+    empty.push(raw(format!("media/{}", m.file_name()).as_bytes(), b""));
+    assert_eq!(
+        plan_quickly(raw_archive(&empty), "an empty media file"),
+        ImportProblem::InvalidArchive("a media file is empty".to_owned())
+    );
+}
+
+/// A folder for files too large for `/tmp` (a RAM disk): `target/tmp`.
+fn disk_dir() -> tempfile::TempDir {
+    let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/tmp");
+    fs::create_dir_all(&base).unwrap();
+    tempfile::tempdir_in(base).unwrap()
+}
+
+/// Archives at the 2 GiB limit, as sparse files (no disk space): exactly
+/// 2 GiB with a valid archive at its end is planned (bytes before an
+/// archive are not looked for); one byte more is refused by its size.
+#[test]
+fn an_archive_of_exactly_two_gib_is_read_and_one_byte_more_is_not() {
+    let dir = disk_dir();
+    let env = Env::new();
+    let archive = env.export();
+    let limit = Limits::DEFAULT.archive;
+    for (extra, ok) in [(0, true), (1, false)] {
+        let path = dir.path().join(format!("edge-{extra}.rappel"));
+        let size = limit + extra;
+        let base = size - u64::try_from(archive.len()).unwrap();
+        // Offsets in the archive count from the file's start.
+        let moved = shifted(&archive, base);
+        let file = fs::File::create(&path).unwrap();
+        file.set_len(base).unwrap();
+        let mut file = file;
+        std::io::Seek::seek(&mut file, std::io::SeekFrom::Start(base)).unwrap();
+        file.write_all(&moved).unwrap();
+        drop(file);
+        assert_eq!(fs::metadata(&path).unwrap().len(), size);
+        let planned = env.store.plan_import(&path);
+        if ok {
+            assert!(planned.is_ok(), "{planned:?}");
+        } else {
+            assert_eq!(refused(planned), ImportProblem::FileTooLarge { limit });
+        }
+        fs::remove_file(&path).unwrap();
+    }
+}
+
+/// `archive` with every offset its records hold moved by `base`: its
+/// central records' local offsets and the end record's directory offset.
+fn shifted(archive: &[u8], base: u64) -> Vec<u8> {
+    let mut out = archive.to_vec();
+    let add = |field: &mut [u8]| {
+        let value = u64::from(u32::from_le_bytes(field[..4].try_into().unwrap())) + base;
+        field[..4].copy_from_slice(&u32::try_from(value).unwrap().to_le_bytes());
+    };
+    let end = out.len() - 22;
+    assert_eq!(&out[end..end + 4], b"PK\x05\x06");
+    let directory = usize::try_from(u32::from_le_bytes(
+        out[end + 16..end + 20].try_into().unwrap(),
+    ))
+    .unwrap();
+    let mut pos = directory;
+    while &out[pos..pos + 4] == b"PK\x01\x02" {
+        let names = usize::from(u16::from_le_bytes([out[pos + 28], out[pos + 29]]))
+            + usize::from(u16::from_le_bytes([out[pos + 30], out[pos + 31]]))
+            + usize::from(u16::from_le_bytes([out[pos + 32], out[pos + 33]]));
+        add(&mut out[pos + 42..pos + 46]);
+        pos += 46 + names;
+    }
+    add(&mut out[end + 16..end + 20]);
+    out
+}
+
+/// A file cut short, or replaced by a symbolic link to a pipe, between the
+/// plan and the apply: refused as changed, nothing written, and never
+/// waiting on the pipe.
+#[test]
+fn a_file_cut_or_swapped_for_a_pipe_after_the_plan_writes_nothing() {
+    let (env, _, _) = sample_env();
+    let archive = env.export();
+    for swap in ["cut", "pipe"] {
+        let mut target = Env::new();
+        let path = target.tmp.path().join("file.rappel");
+        fs::write(&path, &archive).unwrap();
+        let plan = target.store.plan_import(&path).unwrap();
+        fs::remove_file(&path).unwrap();
+        if swap == "cut" {
+            fs::write(&path, &archive[..archive.len() / 2]).unwrap();
+        } else {
+            let fifo = target.tmp.path().join("pipe");
+            let made = std::process::Command::new("mkfifo").arg(&fifo).status();
+            if !made.is_ok_and(|s| s.success()) {
+                eprintln!("mkfifo is not available: the pipe case is skipped");
+                continue;
+            }
+            std::os::unix::fs::symlink(&fifo, &path).unwrap();
+        }
+        let before = target.export();
+        let store = std::mem::replace(&mut target.store, Store::in_memory());
+        let (store, applied) = within(
+            Duration::from_secs(10),
+            "an apply on a swapped file",
+            move || {
+                let mut store = store;
+                let applied = store.apply_import_at(&plan, T_EXPORT);
+                (store, applied)
+            },
+        );
+        target.store = store;
+        assert!(
+            matches!(
+                applied,
+                Err(Error::ImportFileChanged | Error::ImportRefused(ImportProblem::NotAFile))
+            ),
+            "{swap}: {applied:?}"
+        );
+        assert_eq!(target.export(), before, "{swap}");
+    }
 }

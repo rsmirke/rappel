@@ -248,18 +248,16 @@ fn cancel_is_seen_between_any_two_cards() {
     let seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let (flag, count) = (Arc::clone(&cancel), Arc::clone(&seen));
     // Cancelled once the fifth card is done: the sixth is never read.
-    super::super::import::AFTER_CARD.with_borrow_mut(|hook| {
-        *hook = Some(Box::new(move || {
-            if count.fetch_add(1, Ordering::Relaxed) + 1 == 5 {
-                flag.store(true, Ordering::Relaxed);
-            }
-        }));
+    let hook = crate::test_support::set_hook(&super::super::import::AFTER_CARD, move || {
+        if count.fetch_add(1, Ordering::Relaxed) + 1 == 5 {
+            flag.store(true, Ordering::Relaxed);
+        }
     });
     let source = crate::interchange::source::Source::Bytes(Arc::from(&bytes[..]));
     let result = env
         .store
         .plan_anki_source(source, &AnkiLimits::DEFAULT, &cancel, PLAN_NOW);
-    super::super::import::AFTER_CARD.with_borrow_mut(|hook| *hook = None);
+    drop(hook);
     assert!(matches!(result, Err(Error::ImportCancelled)), "{result:?}");
     assert_eq!(seen.load(Ordering::Relaxed), 5);
     env.assert_no_temp();
@@ -278,11 +276,11 @@ fn a_cancel_at_the_last_moment_writes_nothing() {
     let flag = Arc::clone(&cancel);
     // After the media are stored and the schedules rebuilt, just before
     // the commit.
-    super::super::import::BEFORE_COMMIT.with_borrow_mut(|hook| {
-        *hook = Some(Box::new(move || flag.store(true, Ordering::Relaxed)));
+    let hook = crate::test_support::set_hook(&super::super::import::BEFORE_COMMIT, move || {
+        flag.store(true, Ordering::Relaxed);
     });
     let applied = env.store.apply_anki_at(&plan, APPLY_NOW, &cancel);
-    super::super::import::BEFORE_COMMIT.with_borrow_mut(|hook| *hook = None);
+    drop(hook);
     assert!(
         matches!(applied, Err(Error::ImportCancelled)),
         "{applied:?}"
@@ -479,4 +477,67 @@ fn a_local_name_with_a_colon_is_a_file() {
     assert_eq!(plan.summary().new_media, 2, "{:#?}", plan.summary());
     assert_eq!(count(&plan.summary().skipped, Skip::RemoteImage), 1);
     let _ = CLOZE;
+}
+
+/// A cancel during a long SQLite statement (here the integrity check of a
+/// collection with a large indexed table) stops the statement: after the
+/// cancel, the plan uses a fraction of the CPU time a whole plan uses from
+/// the same point, and returns `ImportCancelled` (ADR 0063).
+#[test]
+fn a_cancel_stops_a_long_sqlite_statement() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    let mut b = one_basic();
+    b.sql(
+        "CREATE TABLE padding (x); CREATE INDEX padding_x ON padding (x);
+         WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n LIMIT 400000)
+         INSERT INTO padding SELECT randomblob(24) FROM n;",
+    );
+    let bytes = b.build(Container::Legacy);
+    let env = Env::new();
+    // The CPU time a plan uses from the start of the integrity check on,
+    // cancelled there or not.
+    let after_check = |cancelling: bool| {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&cancel);
+        let start = Rc::new(RefCell::new(None));
+        let at = Rc::clone(&start);
+        let hook =
+            crate::test_support::set_hook(&super::super::collection::BEFORE_CHECK, move || {
+                if cancelling {
+                    flag.store(true, Ordering::Relaxed);
+                    // Long enough for the cancel to reach the statement's flag.
+                    std::thread::sleep(Duration::from_millis(60));
+                }
+                *at.borrow_mut() = Some((
+                    crate::test_support::thread_cpu_time(),
+                    std::time::Instant::now(),
+                ));
+            });
+        let source = crate::interchange::source::Source::Bytes(Arc::from(&bytes[..]));
+        let result = env
+            .store
+            .plan_anki_source(source, &AnkiLimits::DEFAULT, &cancel, PLAN_NOW)
+            .map(|_| ());
+        let end = crate::test_support::thread_cpu_time();
+        drop(hook);
+        let (cpu, wall) = start.borrow_mut().take().expect("the check was reached");
+        (
+            crate::test_support::cpu_time_between(cpu, end, wall.elapsed()),
+            result,
+        )
+    };
+    let (whole, planned) = after_check(false);
+    assert!(planned.is_ok(), "{planned:?}");
+    let (part, cancelled) = after_check(true);
+    eprintln!("after the check began: {whole:?} of CPU, cancelled there: {part:?}");
+    assert!(
+        matches!(cancelled, Err(Error::ImportCancelled)),
+        "{cancelled:?}"
+    );
+    assert!(
+        part * 3 < whole,
+        "cancelled: {part:?} of CPU, whole: {whole:?}"
+    );
+    env.assert_no_temp();
 }

@@ -9,6 +9,7 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 ### Fixed
 - **Playing an MP3 with tags no longer closes Rappel** (ADR 0062). GStreamer stopped the whole app on the ID3 tag most MP3 files start with; Rappel now plays an MP3's audio without its tags (it shows no tags anyway).
 - **A picture whose file claims an enormous size, or carries a huge colour profile, can no longer use up the computer's memory** (ADR 0063): Rappel checks the size itself before decoding, and pictures are shown without their colour profile (as sRGB).
+- **Cancel stops an Anki import at once**, also while it checks a large collection (ADR 0063).
 - **Importing a file with many pictures and sounds is many times faster** (ADR 0063): the files are written to disk together instead of one after another, as safely as before (10,000 small files: 3 s instead of 68 s).
 - **The first audio played after installing or updating starts in a fraction of a second** instead of holding the window for one to two seconds (ADR 0062): GStreamer now looks only at the plugins Rappel lets it use.
 - **On a phone, the on-screen keyboard no longer hides the field you type in** (ADR 0058): when the window gets shorter, the focused field (the card editor's sides and tags, Add Tags, a deck's name, Preferences) is scrolled back into view, and a text field keeps its cursor in view.

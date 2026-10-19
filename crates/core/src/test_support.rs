@@ -435,3 +435,29 @@ fn a_cpu_clock_that_does_not_move_is_not_trusted() {
         ms(7)
     );
 }
+
+/// A test hook: code a test runs at a point of the code under test,
+/// through a thread-local (`import::BEFORE_READ`, the Anki import's
+/// `AFTER_CARD`, `BEFORE_COMMIT`, `BEFORE_CHECK`).
+pub(crate) type Hook = std::cell::RefCell<Option<Box<dyn FnMut()>>>;
+
+/// Sets `hook` to `f` on this thread until the returned guard is dropped,
+/// even if the test panics meanwhile, so a later test on the thread never
+/// runs it.
+#[must_use = "the hook is set as long as the guard lives"]
+pub(crate) fn set_hook(
+    hook: &'static std::thread::LocalKey<Hook>,
+    f: impl FnMut() + 'static,
+) -> HookGuard {
+    hook.with_borrow_mut(|h| *h = Some(Box::new(f)));
+    HookGuard(hook)
+}
+
+/// Clears its hook when dropped ([`set_hook`]).
+pub(crate) struct HookGuard(&'static std::thread::LocalKey<Hook>);
+
+impl Drop for HookGuard {
+    fn drop(&mut self) {
+        self.0.with_borrow_mut(|h| *h = None);
+    }
+}

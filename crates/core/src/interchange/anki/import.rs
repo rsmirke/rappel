@@ -11,6 +11,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use rusqlite::{Connection, Statement, TransactionBehavior, params};
@@ -91,15 +92,25 @@ impl Store {
         let opened = source.open().map_err(refusal)?;
         let stamp = opened.stamp;
         let tx = self.conn.unchecked_transaction()?;
-        let mut run = Run::open(opened.input, opened.len, limits, &data_dir, cancel)?;
-        let outcome = run.convert(&tx, None, now, now)?;
+        let (collection, outcome) = interruptible(cancel, |interrupt| {
+            let mut run = Run::open(
+                opened.input,
+                opened.len,
+                limits,
+                &data_dir,
+                cancel,
+                interrupt,
+            )?;
+            let outcome = run.convert(&tx, None, now, now)?;
+            Ok((run.collection_sha256, outcome))
+        })?;
         tx.finish()?;
         Ok(AnkiPlan {
             planned_at: now,
             source,
             stamp,
             limits: *limits,
-            collection: run.collection_sha256,
+            collection,
             digest: outcome.digest,
             summary: outcome.summary,
         })
@@ -131,6 +142,18 @@ impl Store {
         now: i64,
         cancel: &AtomicBool,
     ) -> Result<AnkiReport> {
+        interruptible(cancel, |interrupt| {
+            self.apply_anki_with(plan, now, cancel, interrupt)
+        })
+    }
+
+    fn apply_anki_with(
+        &mut self,
+        plan: &AnkiPlan,
+        now: i64,
+        cancel: &AtomicBool,
+        interrupt: &Arc<AtomicBool>,
+    ) -> Result<AnkiReport> {
         let summary = &plan.summary;
         if summary.is_noop() {
             return Ok(AnkiReport {
@@ -153,11 +176,18 @@ impl Store {
         if opened.stamp != plan.stamp {
             return Err(Error::ImportFileChanged);
         }
-        let mut run = Run::open(opened.input, opened.len, &plan.limits, &data_dir, cancel)
-            .map_err(|err| match err {
-                Error::AnkiRefused(_) => Error::ImportFileChanged,
-                other => other,
-            })?;
+        let mut run = Run::open(
+            opened.input,
+            opened.len,
+            &plan.limits,
+            &data_dir,
+            cancel,
+            interrupt,
+        )
+        .map_err(|err| match err {
+            Error::AnkiRefused(_) => Error::ImportFileChanged,
+            other => other,
+        })?;
         if run.collection_sha256 != plan.collection {
             return Err(Error::ImportFileChanged);
         }
@@ -289,6 +319,7 @@ impl<'c> Run<'c> {
         limits: &AnkiLimits,
         data_dir: &Path,
         cancel: &'c AtomicBool,
+        interrupt: &Arc<AtomicBool>,
     ) -> Result<Self> {
         remove_stale_temps(data_dir);
         let mut package = Package::open(input, len, limits).map_err(Error::AnkiRefused)?;
@@ -298,7 +329,8 @@ impl<'c> Run<'c> {
         check_cancel(cancel)?;
         let temp = package.extract_collection(data_dir)?;
         check_cancel(cancel)?;
-        let collection = Collection::open(&temp.path, limits).map_err(Error::AnkiRefused)?;
+        let collection =
+            Collection::open(&temp.path, limits, interrupt).map_err(Error::AnkiRefused)?;
         let notetypes = collection.notetypes(limits).map_err(Error::AnkiRefused)?;
         let decks = collection.decks(limits).map_err(Error::AnkiRefused)?;
         let mut run = Self {
@@ -783,14 +815,14 @@ impl Walk<'_, '_> {
 thread_local! {
     /// Runs just before an apply's last cancel check and its commit, so
     /// tests can cancel there.
-    pub(super) static BEFORE_COMMIT: std::cell::RefCell<Option<Box<dyn FnMut()>>> =
+    pub(super) static BEFORE_COMMIT: crate::test_support::Hook =
         const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]
 thread_local! {
     /// Runs after each card of a walk, so tests can cancel in the middle.
-    pub(super) static AFTER_CARD: std::cell::RefCell<Option<Box<dyn FnMut()>>> =
+    pub(super) static AFTER_CARD: crate::test_support::Hook =
         const { std::cell::RefCell::new(None) };
 }
 
@@ -812,6 +844,47 @@ fn before_commit() {
             hook();
         }
     });
+}
+
+/// Runs `work` (a plan or an apply) with a flag its collection's SQLite
+/// statements stop at (`Collection::open`'s progress handler, which must
+/// be `'static`, so it cannot read `cancel` itself): a thread of this call
+/// copies `cancel` into it every 20 ms until `work` returns. An error once
+/// `cancel` is set is a cancel: an interrupted statement fails with
+/// whatever error it reports.
+fn interruptible<T>(
+    cancel: &AtomicBool,
+    work: impl FnOnce(&Arc<AtomicBool>) -> Result<T>,
+) -> Result<T> {
+    let interrupt = Arc::new(AtomicBool::new(false));
+    let done = AtomicBool::new(false);
+    let result = std::thread::scope(|scope| {
+        let watcher = std::thread::Builder::new()
+            .name("anki-cancel".to_owned())
+            .stack_size(64 << 10)
+            .spawn_scoped(scope, || {
+                while !done.load(Ordering::Relaxed) {
+                    if cancel.load(Ordering::Relaxed) {
+                        interrupt.store(true, Ordering::Relaxed);
+                        return;
+                    }
+                    std::thread::park_timeout(std::time::Duration::from_millis(20));
+                }
+            });
+        if let Err(err) = &watcher {
+            tracing::warn!("long SQLite statements of an Anki import cannot be cancelled: {err}");
+        }
+        let result = work(&interrupt);
+        done.store(true, Ordering::Relaxed);
+        if let Ok(watcher) = &watcher {
+            watcher.thread().unpark();
+        }
+        result
+    });
+    match result {
+        Err(_) if cancel.load(Ordering::Relaxed) => Err(Error::ImportCancelled),
+        other => other,
+    }
 }
 
 fn check_cancel(cancel: &AtomicBool) -> Result<()> {

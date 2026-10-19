@@ -651,6 +651,14 @@ impl<R: Read> Read for EntryReader<'_, R> {
         if self.count > self.cap {
             return Err(self.fail(Failure::TooLarge));
         }
+        // More than it declares is refused at once, not at its end: a
+        // bomb declaring 100 bytes stops there, not at the cap (ADR 0063).
+        if self.count > self.declared {
+            return Err(self.fail(Failure::Damaged(format!(
+                "{} is not the size its entry declares",
+                self.entry
+            ))));
+        }
         self.crc.update(&buf[..n]);
         self.hasher.update(&buf[..n]);
         Ok(n)

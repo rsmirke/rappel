@@ -284,6 +284,7 @@ mod conflicts;
 mod format;
 mod fuzz;
 mod large;
+mod limits;
 mod log_and_tags;
 mod media;
 mod oracle;

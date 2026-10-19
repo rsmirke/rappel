@@ -51,7 +51,7 @@ thiserror = "2"
 # `collation` and `limits` (ADR 0061): an Anki collection's schema names a
 # `unicase` collation, which its tables cannot be read without, and an
 # untrusted collection is read with lowered length limits.
-rusqlite = { version = "0.40", default-features = false, features = ["bundled", "backup", "collation", "limits"] }
+rusqlite = { version = "0.40", default-features = false, features = ["bundled", "backup", "collation", "hooks", "limits"] }
 
 # Scheduling (rappel-core): the reference FSRS implementation (ADR 0006).
 fsrs = "6.6"
