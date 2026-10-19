@@ -28,8 +28,7 @@ use crate::interchange::archive::Archive;
 use crate::interchange::source::{Input, Source};
 use crate::interchange::validate::timestamp_ok;
 use crate::media::{
-    CopyFailure, Ingested, MediaProblem, MediaRef, Sync, copy_capped, ingest, insert_media_row,
-    sync_folder,
+    CopyFailure, Ingested, MediaBatch, MediaProblem, MediaRef, copy_capped, insert_media_row,
 };
 use crate::storage::{
     Store, create_backup, find_or_create_tag, index_card_in, observe_max_id, prune_backups,
@@ -487,6 +486,8 @@ impl<'c> Run<'c> {
         now: i64,
     ) -> Result<usize> {
         let mut added = 0;
+        // Synced in batches and named before the rows commit (ADR 0063).
+        let mut batch = MediaBatch::new(dir)?;
         for (i, (media, file)) in used.iter().enumerate() {
             if i % 64 == 0 {
                 check_cancel(self.cancel)?;
@@ -500,7 +501,7 @@ impl<'c> Run<'c> {
             let Some(Ok(mut reader)) = self.package.media_reader(*file, cap) else {
                 return Err(Error::ImportFileChanged);
             };
-            let got = ingest(dir, &mut reader, Sync::FileOnly).map_err(|err| match err {
+            let got = batch.add(&mut reader).map_err(|err| match err {
                 Error::MediaRefused(_) | Error::MediaRead(_) => Error::ImportFileChanged,
                 other => other,
             })?;
@@ -511,9 +512,7 @@ impl<'c> Run<'c> {
             insert_media_row(conn, &got, now)?;
             added += usize::from(!had);
         }
-        if !used.is_empty() {
-            sync_folder(dir)?;
-        }
+        batch.finish()?;
         Ok(added)
     }
 }

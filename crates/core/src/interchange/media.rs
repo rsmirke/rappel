@@ -19,8 +19,7 @@ use super::validate::{invalid, media_fields};
 use super::{FieldProblem, ImportProblem, Limits};
 use crate::error::{Error, Result};
 use crate::media::{
-    DETECT_BYTES, Ingested, MediaKind, MediaRef, Sync, check_structure, ingest, insert_media_row,
-    sync_folder,
+    DETECT_BYTES, Ingested, MediaBatch, MediaKind, MediaRef, check_structure, insert_media_row,
 };
 
 /// What the import keeps of one media record.
@@ -234,9 +233,11 @@ pub(super) fn check_contents<R: Read + Seek>(
 /// the record's `created_at`. The same code as [`crate::storage::Store::add_media`],
 /// which hashes the file again: anything other than the plan's content
 /// (another hash, kind or size, a damaged entry) is a changed file, and the
-/// transaction is dropped. A file written before that stays in the folder
-/// under its own hash, unused (slice 5 removes unused files); nothing is
-/// deleted here.
+/// transaction is dropped. The files are synced in batches and named
+/// before the rows commit ([`MediaBatch`], ADR 0063); a file named before
+/// a failure stays in the folder under its own hash, unused (Clean Up
+/// Media removes unused files), and the files of the batch not named yet
+/// are removed.
 pub(super) fn store_new_media<R: Read + Seek>(
     conn: &Connection,
     list: &MediaList,
@@ -245,6 +246,7 @@ pub(super) fn store_new_media<R: Read + Seek>(
     dir: &Path,
 ) -> Result<usize> {
     let mut added = 0;
+    let mut batch = MediaBatch::new(dir)?;
     for (index, note) in list.notes.iter().enumerate() {
         if !note.new {
             continue;
@@ -253,7 +255,7 @@ pub(super) fn store_new_media<R: Read + Seek>(
         let mut reader = archive
             .open_entry(&entry, limits.media(note.media.kind()))
             .map_err(|_| Error::ImportFileChanged)?;
-        let got = ingest(dir, &mut reader, Sync::FileOnly);
+        let got = batch.add(&mut reader);
         if reader.failure().is_some() {
             return Err(Error::ImportFileChanged);
         }
@@ -267,9 +269,8 @@ pub(super) fn store_new_media<R: Read + Seek>(
         insert_media_row(conn, &got, note.created_at)?;
         added += 1;
     }
-    // Each file is synced; their names once, before the rows commit.
-    if added > 0 {
-        sync_folder(dir)?;
-    }
+    // Every file synced and named, and the names synced, before the rows
+    // commit.
+    batch.finish()?;
     Ok(added)
 }

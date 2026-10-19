@@ -121,7 +121,7 @@ impl Store {
         // is committed, so a clean-up (which takes it too) never sees the
         // file without its row and moves it to the trash (ADR 0057). Taken
         // once the copy is complete, so a slow input never holds it.
-        let (got, tx) = ingest_then(dir, reader, Sync::Folder, || {
+        let (got, tx) = ingest_then(dir, reader, || {
             Ok(Transaction::new_unchecked(
                 &self.conn,
                 TransactionBehavior::Immediate,
@@ -160,44 +160,33 @@ pub(crate) fn insert_media_row(conn: &Connection, got: &Ingested, created_at: i6
     Ok(())
 }
 
-/// What [`ingest`] syncs besides the file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Sync {
-    /// The folder too, so the new name is on disk.
-    Folder,
-    /// Only the file: the caller syncs the folder once after many files
-    /// ([`sync_folder`]).
-    FileOnly,
-}
-
 /// Streams `reader` into the media folder `dir` (created with mode `0700`
-/// if needed) under its hash and kind, and returns them. A file already
-/// under that name is kept if it has that content, and set aside if not
-/// ([`give_name`]).
-pub(crate) fn ingest(dir: &Path, reader: &mut impl Read, sync: Sync) -> Result<Ingested> {
-    ingest_then(dir, reader, sync, || Ok(())).map(|(got, ())| got)
-}
-
-/// [`ingest`], calling `before_naming` once the copy is complete and synced
-/// and before the file gets its name, and returning its value too; its
-/// error stops the add before the file is named.
+/// if needed) under its hash and kind, synced with the folder, and returns
+/// them, calling `before_naming` once the copy is complete and synced and
+/// before the file gets its name, and returning its value too; its error
+/// stops the add before the file is named. A file already under that name
+/// is kept if it has that content, and set aside if not ([`give_name`]).
 pub(crate) fn ingest_then<T>(
     dir: &Path,
     reader: &mut impl Read,
-    sync: Sync,
     before_naming: impl FnOnce() -> Result<T>,
 ) -> Result<(Ingested, T)> {
     ensure_data_dir(dir)?;
     let (temp, file) = create_temp(dir)?;
-    let result = copy_and_name(dir, &temp, file, reader, sync, before_naming);
+    let result = copy_and_name(dir, &temp, file, reader, before_naming);
     // The temporary name goes in every case: on success the file has its
     // own name (or was already there), on failure it is incomplete.
-    match fs::remove_file(&temp) {
+    remove_temp(&temp);
+    result
+}
+
+/// Removes the temporary file `temp`, if it is still there.
+fn remove_temp(temp: &Path) {
+    match fs::remove_file(temp) {
         Ok(()) => {}
         Err(err) if err.kind() == io::ErrorKind::NotFound => {}
         Err(err) => tracing::warn!("cannot remove a temporary media file: {err}"),
     }
-    result
 }
 
 /// The body of [`ingest_then`], with the temporary file made.
@@ -206,27 +195,187 @@ fn copy_and_name<T>(
     temp: &Path,
     mut file: File,
     reader: &mut impl Read,
-    sync: Sync,
     before_naming: impl FnOnce() -> Result<T>,
 ) -> Result<(Ingested, T)> {
-    let io_err = |path: &Path| {
-        let path = path.to_path_buf();
-        move |source| Error::Io { path, source }
-    };
-    let got = copy_capped(reader, &mut file).map_err(|e| match e {
-        CopyFailure::Refused(problem) => Error::MediaRefused(problem),
-        CopyFailure::Read(err) => Error::MediaRead(err),
-        CopyFailure::Write(err) => io_err(temp)(err),
-    })?;
+    let got = copy_into(reader, temp, &mut file)?;
     file.sync_all().map_err(io_err(temp))?;
     drop(file);
     let value = before_naming()?;
     let target = dir.join(got.media.file_name());
     give_name(&Disk, temp, &target, &got)?;
-    if sync == Sync::Folder {
-        sync_folder(dir)?;
-    }
+    sync_folder(dir)?;
     Ok((got, value))
+}
+
+/// An IO error on `path`.
+fn io_err(path: &Path) -> impl FnOnce(io::Error) -> Error + use<> {
+    let path = path.to_path_buf();
+    move |source| Error::Io { path, source }
+}
+
+/// [`copy_capped`] from `reader` into `file`, the temporary file `temp`.
+fn copy_into(reader: &mut impl Read, temp: &Path, file: &mut File) -> Result<Ingested> {
+    copy_capped(reader, file).map_err(|e| match e {
+        CopyFailure::Refused(problem) => Error::MediaRefused(problem),
+        CopyFailure::Read(err) => Error::MediaRead(err),
+        CopyFailure::Write(err) => io_err(temp)(err),
+    })
+}
+
+/// How many files a [`MediaBatch`] holds (each an open file) before it
+/// syncs and names them: as fast as 512 (10,000 files in 2.9 s either
+/// way), and far from the 1,024 open files a process may usually have.
+pub(super) const BATCH_FILES: usize = 128;
+/// How many bytes a [`MediaBatch`] holds before it syncs and names them.
+const BATCH_BYTES: u64 = 256 << 20;
+/// How many threads sync a batch's files at once. Each waits on its
+/// `fsync`, and the file system commits the waiting ones together: 10,000
+/// small files took 66 s on one thread, 16 s on 8, 4.8 s on 32 and 2.9 s
+/// on 64 (ext4 on an SSD, ADR 0063).
+const SYNC_THREADS: usize = 64;
+/// The stack of a sync thread, which only calls `fsync`.
+const SYNC_STACK: usize = 64 << 10;
+
+/// Many media files added at once, by an import's apply (ADR 0063). Each is
+/// copied into a temporary file as [`ingest_then`] does (checked, capped
+/// and hashed), but not synced alone: once the batch holds
+/// [`BATCH_FILES`] files or [`BATCH_BYTES`] bytes, and at [`Self::finish`],
+/// its files are synced together, on several threads (one `fsync` waits
+/// for a journal commit; parallel ones share commits), then named, each
+/// by [`give_name`]; the folder is synced once at the end. So, as before,
+/// a file has its media name only once its content is on disk, and every
+/// name is on disk before [`Self::finish`] returns, which comes before the
+/// rows commit. A crash leaves at most a batch of `.incoming-…` files,
+/// never a media name without its content. Dropped unfinished (an error,
+/// a cancel), it removes the files it has not named.
+pub(crate) struct MediaBatch<'d> {
+    dir: &'d Path,
+    pending: Vec<(PathBuf, File, Ingested)>,
+    bytes: u64,
+    named: bool,
+}
+
+impl<'d> MediaBatch<'d> {
+    /// An empty batch for the media folder `dir`, made (mode `0700`) if
+    /// needed.
+    pub(crate) fn new(dir: &'d Path) -> Result<Self> {
+        ensure_data_dir(dir)?;
+        Ok(Self {
+            dir,
+            pending: Vec::new(),
+            bytes: 0,
+            named: false,
+        })
+    }
+
+    /// Copies `reader` into the batch and returns its hash, kind and size.
+    /// The file gets its name later ([`Self::finish`]).
+    pub(crate) fn add(&mut self, reader: &mut impl Read) -> Result<Ingested> {
+        let (temp, mut file) = create_temp(self.dir)?;
+        let got = match copy_into(reader, &temp, &mut file) {
+            Ok(got) => got,
+            Err(err) => {
+                drop(file);
+                remove_temp(&temp);
+                return Err(err);
+            }
+        };
+        self.bytes = self.bytes.saturating_add(got.bytes);
+        self.pending.push((temp, file, got));
+        if self.pending.len() >= BATCH_FILES || self.bytes >= BATCH_BYTES {
+            self.flush()?;
+        }
+        Ok(got)
+    }
+
+    /// Syncs the pending files, then names them.
+    fn flush(&mut self) -> Result<()> {
+        self.bytes = 0;
+        let synced = sync_files(&self.pending);
+        if let Err(err) = synced {
+            self.drop_pending();
+            return Err(err);
+        }
+        let mut pending = std::mem::take(&mut self.pending).into_iter();
+        while let Some((temp, file, got)) = pending.next() {
+            drop(file);
+            let named = give_name(&Disk, &temp, &self.dir.join(got.media.file_name()), &got);
+            remove_temp(&temp);
+            if let Err(err) = named {
+                for (temp, file, _) in pending {
+                    drop(file);
+                    remove_temp(&temp);
+                }
+                return Err(err);
+            }
+            self.named = true;
+        }
+        Ok(())
+    }
+
+    /// Names every file of the batch, and syncs the folder if any was.
+    pub(crate) fn finish(mut self) -> Result<()> {
+        self.flush()?;
+        if self.named {
+            sync_folder(self.dir)?;
+        }
+        Ok(())
+    }
+
+    /// Removes the files not named yet.
+    fn drop_pending(&mut self) {
+        for (temp, file, _) in self.pending.drain(..) {
+            drop(file);
+            remove_temp(&temp);
+        }
+    }
+}
+
+impl Drop for MediaBatch<'_> {
+    fn drop(&mut self) {
+        self.drop_pending();
+    }
+}
+
+/// Syncs `files` (`fsync`), on up to [`SYNC_THREADS`] threads at once; on
+/// this thread alone if no thread can be started.
+fn sync_files(files: &[(PathBuf, File, Ingested)]) -> Result<()> {
+    if files.is_empty() {
+        return Ok(());
+    }
+    let sync = |chunk: &[(PathBuf, File, Ingested)]| -> Result<()> {
+        for (temp, file, _) in chunk {
+            file.sync_all().map_err(io_err(temp))?;
+        }
+        Ok(())
+    };
+    let threads = SYNC_THREADS.min(files.len());
+    let size = files.len().div_ceil(threads);
+    std::thread::scope(|scope| {
+        let mut handles = Vec::new();
+        let mut here = Vec::new();
+        for chunk in files.chunks(size) {
+            let builder = std::thread::Builder::new().stack_size(SYNC_STACK);
+            match builder.spawn_scoped(scope, move || sync(chunk)) {
+                Ok(handle) => handles.push(handle),
+                Err(_) => here.push(chunk),
+            }
+        }
+        let mut result = here.into_iter().try_for_each(sync);
+        for handle in handles {
+            // A panic in a sync is a bug; treat it as a failed sync.
+            let joined = handle.join().unwrap_or_else(|_| {
+                Err(Error::Io {
+                    path: PathBuf::new(),
+                    source: io::Error::other("a sync thread panicked"),
+                })
+            });
+            if result.is_ok() {
+                result = joined;
+            }
+        }
+        result
+    })
 }
 
 /// A new, empty temporary file in `dir`, mode `0600`. `create_new` never

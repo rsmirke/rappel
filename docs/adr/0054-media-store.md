@@ -3,7 +3,7 @@
 - Status: Accepted
 - Date: 2026-10-18
 - Amends: ADR 0017 (an export holds the media files and their records; `media` is no longer always empty), ADR 0019 (a `media:` image target is a checked reference; a link to an audio file is an audio inline), ADR 0053 (the archive reader accepts `media/<sha256>.<ext>` entries), ADR 0025 and ADR 0050 (rows 39 to 41 of the untrusted-input table)
-- Amended by: ADR 0057 (unused media files move to a dated trash and are purged after 30 days unless a backup uses them; `add_media` names its file under the write lock)
+- Amended by: ADR 0057 (unused media files move to a dated trash and are purged after 30 days unless a backup uses them; `add_media` names its file under the write lock), ADR 0063 (an import's apply syncs its new files in batches, many at once, before naming them)
 - Refers to: SPEC §3 (`media` table), §4.1, §4.3, §4.9, principle 5; `docs/briefs/phase-2.md` (slice 2)
 
 ## Context

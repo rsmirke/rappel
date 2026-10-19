@@ -590,3 +590,75 @@ fn add_image_takes_only_images() {
         big
     );
 }
+
+/// The files of a batch are named only when it syncs them (every
+/// `BATCH_FILES` files, and at `finish`), each with its content, and no
+/// temporary file is left (ADR 0063).
+#[test]
+fn a_batch_names_its_files_once_synced_and_leaves_no_temporary_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("media");
+    let count = u32::try_from(store::BATCH_FILES).unwrap() + 3;
+    let mut batch = MediaBatch::new(&dir).unwrap();
+    let mut added = Vec::new();
+    for n in 0..count {
+        added.push(batch.add(&mut png_bytes(n + 1).as_slice()).unwrap());
+        let named = names(&dir).iter().filter(|n| !n.starts_with('.')).count();
+        // The first batch is named when it is full, the rest at the end.
+        let expected = if n + 1 >= count - 3 {
+            store::BATCH_FILES
+        } else {
+            0
+        };
+        assert_eq!(named, expected, "after {}", n + 1);
+    }
+    batch.finish().unwrap();
+    let mut expected: Vec<String> = added.iter().map(|got| got.media.file_name()).collect();
+    expected.sort();
+    assert_eq!(names(&dir), expected);
+    for (n, got) in (1..).zip(&added) {
+        assert_eq!(
+            fs::read(dir.join(got.media.file_name())).unwrap(),
+            png_bytes(n)
+        );
+        assert_eq!(got.bytes, u64::try_from(png_bytes(n).len()).unwrap());
+    }
+}
+
+/// A batch that fails or is dropped unfinished (an error later in the
+/// import, a cancel) removes the files it has not named; those of a sync
+/// already done stay, under their own hash.
+#[test]
+fn a_failed_or_dropped_batch_removes_what_it_has_not_named() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("media");
+    let mut batch = MediaBatch::new(&dir).unwrap();
+    for n in 0..5 {
+        batch.add(&mut png_bytes(n + 1).as_slice()).unwrap();
+    }
+    // A refused file and a failing reader leave nothing of themselves.
+    assert!(matches!(
+        batch.add(&mut b"<svg/>".as_slice()),
+        Err(Error::MediaRefused(MediaProblem::NotMedia))
+    ));
+    let mut bytes = png_bytes(9);
+    bytes.resize(200_000, 1);
+    assert!(matches!(
+        batch.add(&mut Failing(bytes)),
+        Err(Error::MediaRead(_))
+    ));
+    assert_eq!(names(&dir).len(), 5, "five temporary files");
+    drop(batch);
+    assert_eq!(names(&dir), Vec::<String>::new());
+
+    // Past a sync: its files stay named, the rest go.
+    let mut batch = MediaBatch::new(&dir).unwrap();
+    let count = u32::try_from(store::BATCH_FILES).unwrap() + 2;
+    for n in 0..count {
+        batch.add(&mut png_bytes(n + 1).as_slice()).unwrap();
+    }
+    drop(batch);
+    let left = names(&dir);
+    assert_eq!(left.len(), store::BATCH_FILES);
+    assert!(left.iter().all(|name| !name.starts_with('.')), "{left:?}");
+}
