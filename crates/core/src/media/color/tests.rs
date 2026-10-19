@@ -47,6 +47,68 @@ fn the_profile_is_taken_out_and_the_rest_kept() {
     );
 }
 
+/// Where the blocks of a GIF start: after its header, screen descriptor
+/// and global colour table.
+fn gif_blocks_at(gif: &[u8]) -> usize {
+    let packed = gif[10];
+    let table = if packed & 0x80 != 0 {
+        3 << ((packed & 0x07) + 1)
+    } else {
+        0
+    };
+    13 + table
+}
+
+/// `GIF89a`'s ICC application extension: `ICCRGBG1012`, then a made-up
+/// profile of 588 bytes in sub-blocks.
+fn icc_extension() -> Vec<u8> {
+    let mut ext = b"\x21\xff\x0bICCRGBG1012".to_vec();
+    for chunk in [vec![0x41_u8; 255], vec![0x42; 255], vec![0x43; 78]] {
+        ext.push(u8::try_from(chunk.len()).unwrap());
+        ext.extend_from_slice(&chunk);
+    }
+    ext.push(0);
+    ext
+}
+
+const NETSCAPE: &[u8] = b"\x21\xff\x0bNETSCAPE2.0\x03\x01\x00\x00\x00";
+
+/// The real GIF with an ICC application extension put after its colour
+/// table, as `GIF89a`'s convention writes it, and a Netscape loop extension
+/// beside it.
+fn gif_with_icc() -> Vec<u8> {
+    let base = fixture!("11x7.gif");
+    let at = gif_blocks_at(base);
+    let mut gif = base[..at].to_vec();
+    gif.extend_from_slice(&icc_extension());
+    gif.extend_from_slice(NETSCAPE);
+    gif.extend_from_slice(&base[at..]);
+    gif
+}
+
+/// The ICC extension is taken out, the Netscape extension and the image
+/// kept byte for byte.
+#[test]
+fn a_gif_s_icc_extension_is_taken_out() {
+    let base = fixture!("11x7.gif");
+    let at = gif_blocks_at(base);
+    let gif = gif_with_icc();
+    assert!(has(&gif, b"ICCRGBG1012"), "the fixture has a profile");
+    let out = without_color_profile(MediaKind::Gif, &gif).unwrap();
+    assert!(!has(&out, b"ICCRGBG1012"));
+    let mut expected = base[..at].to_vec();
+    expected.extend_from_slice(NETSCAPE);
+    expected.extend_from_slice(&base[at..]);
+    assert_eq!(out, expected);
+    assert_eq!(image_size(MediaKind::Gif, &out), Some((11, 7)));
+    // The animated one keeps its frames.
+    let animated = fixture!("9x6-animated.gif");
+    assert_eq!(
+        without_color_profile(MediaKind::Gif, animated).as_deref(),
+        Some(animated)
+    );
+}
+
 #[test]
 fn images_without_a_profile_are_kept_as_they_are() {
     for (kind, bytes) in [
@@ -92,17 +154,20 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(1_000))]
 
     /// Damaged and cut images never make the walk panic, and what comes out
-    /// never holds the profile's marker where the walk could read it.
+    /// holds no profile the walk can read: taking it out again changes
+    /// nothing.
     #[test]
     fn damaged_images_never_panic(
-        which in 0_usize..3,
+        which in 0_usize..4,
         cut in any::<prop::sample::Index>(),
         flips in prop::collection::vec((any::<prop::sample::Index>(), any::<u8>()), 0..8),
     ) {
+        let gif = gif_with_icc();
         let (kind, bytes) = [
             (MediaKind::Png, fixture!("4x3-icc.png")),
             (MediaKind::Jpeg, fixture!("4x3-icc.jpg")),
             (MediaKind::WebP, fixture!("4x3-icc.webp")),
+            (MediaKind::Gif, gif.as_slice()),
         ][which];
         let mut file = bytes.to_vec();
         for (at, value) in flips {
@@ -110,6 +175,10 @@ proptest! {
             file[i] = value;
         }
         file.truncate(cut.index(file.len() + 1));
-        let _ = without_color_profile(kind, &file);
+        // What comes out is itself free of a profile the walk can find:
+        // taking it out again changes nothing.
+        if let Some(out) = without_color_profile(kind, &file) {
+            prop_assert_eq!(without_color_profile(kind, &out), Some(out.clone()));
+        }
     }
 }

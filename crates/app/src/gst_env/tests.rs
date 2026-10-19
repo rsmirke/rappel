@@ -138,6 +138,28 @@ fn the_new_start_sets_what_is_missing_and_then_nothing() {
     assert_eq!(list.1, OsString::from(allowed()));
 }
 
+#[test]
+fn the_guard_counts_only_for_this_process() {
+    let pid = 4_242;
+    let ours = OsString::from("4242");
+    let other = OsString::from("17");
+    let debug = OsString::from("1");
+    assert_eq!(start(None, pid, false), Start::Restart);
+    assert_eq!(start(None, pid, true), Start::Ready);
+    // The new start: the environment is ready, or still lacks Rappel's
+    // values (audio then off).
+    assert_eq!(start(Some(&ours), pid, true), Start::Ready);
+    assert_eq!(start(Some(&ours), pid, false), Start::Unrestricted);
+    // Inherited from another process: not ours, so it restarts.
+    assert_eq!(start(Some(&other), pid, false), Start::Restart);
+    assert_eq!(start(Some(&other), pid, true), Start::Ready);
+    // The debugging escape hatch.
+    assert_eq!(start(Some(&debug), pid, false), Start::Debugging);
+    assert_eq!(start(Some(&debug), pid, true), Start::Debugging);
+    // Not set by this process: restricted.
+    assert!(restricted());
+}
+
 /// Set for the child processes of `only_the_allowed_plugins_play`: `1`
 /// plays with Rappel's environment, `0` without its allow-list.
 const CHILD: &str = "RAPPEL_TEST_GST_CHILD";

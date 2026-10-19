@@ -874,16 +874,32 @@ fn interruptible<T>(
         if let Err(err) = &watcher {
             tracing::warn!("long SQLite statements of an Anki import cannot be cancelled: {err}");
         }
-        let result = work(&interrupt);
-        done.store(true, Ordering::Relaxed);
-        if let Ok(watcher) = &watcher {
-            watcher.thread().unpark();
-        }
-        result
+        // Stops the watcher however `work` ends, a panic included: the
+        // scope waits for it, so it must end.
+        let _stop = StopWatcher {
+            done: &done,
+            watcher: watcher.as_ref().ok().map(|w| w.thread().clone()),
+        };
+        work(&interrupt)
     });
     match result {
         Err(_) if cancel.load(Ordering::Relaxed) => Err(Error::ImportCancelled),
         other => other,
+    }
+}
+
+/// Sets `done` and wakes the watcher when dropped ([`interruptible`]).
+struct StopWatcher<'a> {
+    done: &'a AtomicBool,
+    watcher: Option<std::thread::Thread>,
+}
+
+impl Drop for StopWatcher<'_> {
+    fn drop(&mut self) {
+        self.done.store(true, Ordering::Relaxed);
+        if let Some(watcher) = &self.watcher {
+            watcher.unpark();
+        }
     }
 }
 

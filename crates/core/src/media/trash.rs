@@ -548,6 +548,9 @@ impl Store {
         now: i64,
         before_lock: &dyn Fn(),
     ) -> Result<TrashTidied> {
+        if let Some(dir) = &self.media_dir {
+            super::store::remove_stale_incoming(dir, now);
+        }
         let recovered = self.recover_trashed_media_at(now)?;
         let mut tidied = purge(self, now, before_lock)?;
         tidied.recovered = recovered;

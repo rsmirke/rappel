@@ -222,6 +222,12 @@ fn copy_into(reader: &mut impl Read, temp: &Path, file: &mut File) -> Result<Ing
     })
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Makes [`sync_files`] fail on this thread (tests).
+    pub(super) static FAIL_SYNC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// How many files a [`MediaBatch`] holds (each an open file) before it
 /// syncs and names them: as fast as 512 (10,000 files in 2.9 s either
 /// way), and far from the 1,024 open files a process may usually have.
@@ -342,6 +348,13 @@ impl Drop for MediaBatch<'_> {
 fn sync_files(files: &[(PathBuf, File, Ingested)]) -> Result<()> {
     if files.is_empty() {
         return Ok(());
+    }
+    #[cfg(test)]
+    if FAIL_SYNC.get() {
+        return Err(Error::Io {
+            path: files[0].0.clone(),
+            source: io::Error::other("an injected sync failure"),
+        });
     }
     let sync = |chunk: &[(PathBuf, File, Ingested)]| -> Result<()> {
         for (temp, file, _) in chunk {
@@ -600,6 +613,51 @@ fn copy_to_new(from: &Path, to: &Path) -> io::Result<()> {
         .open(to)?;
     io::copy(&mut source, &mut out)?;
     out.sync_all()
+}
+
+/// How old a temporary file of the media folder must be before
+/// [`remove_stale_incoming`] takes it for a crash's leftover: a day, far
+/// longer than any add or import's batch keeps one.
+pub(super) const STALE_INCOMING_MS: i64 = 24 * 60 * 60 * 1_000;
+
+/// Removes the temporary files (`.incoming-` and 16 hex digits, regular
+/// files) a crash left in the media folder `dir`, if last written more
+/// than [`STALE_INCOMING_MS`] before `now`; a younger one may belong to an
+/// add or an import running now, and is left alone (ADR 0063). They are
+/// incomplete copies, never a media file. Failures are logged only.
+pub(crate) fn remove_stale_incoming(dir: &Path, now: i64) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    let mut removed = 0_usize;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let is_temp = name
+            .to_str()
+            .and_then(|n| n.strip_prefix(".incoming-"))
+            .is_some_and(|rest| rest.len() == 16 && rest.bytes().all(|c| c.is_ascii_hexdigit()));
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        let written = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .and_then(|d| i64::try_from(d.as_millis()).ok());
+        let stale = written.is_some_and(|ms| now.saturating_sub(ms) > STALE_INCOMING_MS);
+        if is_temp && meta.file_type().is_file() && stale {
+            match fs::remove_file(entry.path()) {
+                Ok(()) => removed += 1,
+                Err(err) => tracing::warn!("cannot remove a stale temporary media file: {err}"),
+            }
+        }
+    }
+    if removed > 0 {
+        tracing::info!(
+            files = removed,
+            "temporary media files left by a crash removed"
+        );
+    }
 }
 
 /// Syncs the folder `dir`, so the names made in it are on disk.

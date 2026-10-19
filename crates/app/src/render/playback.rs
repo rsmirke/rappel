@@ -166,7 +166,8 @@ impl Drop for Forced {
 /// Whether [`PLUGIN`] was found, once per run.
 static AVAILABLE: OnceLock<bool> = OnceLock::new();
 
-/// Whether audio can be played here: [`PLUGIN`] is where `GStreamer` looks.
+/// Whether audio can be played here: `GStreamer` is restricted to Rappel's
+/// plugins (`gst_env::restricted`) and [`PLUGIN`] is where it looks.
 /// Found once per run (a few file checks); the first `false` is logged.
 pub fn available() -> bool {
     #[cfg(test)]
@@ -174,6 +175,10 @@ pub fn available() -> bool {
         return value;
     }
     *AVAILABLE.get_or_init(|| {
+        // GStreamer without Rappel's allow-list plays nothing (ADR 0062).
+        if !crate::gst_env::restricted() {
+            return false;
+        }
         let dirs = plugin_dirs(&this_env());
         let found = playback_found(&dirs, Path::is_file);
         if !found {

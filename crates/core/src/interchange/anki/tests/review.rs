@@ -541,3 +541,23 @@ fn a_cancel_stops_a_long_sqlite_statement() {
     );
     env.assert_no_temp();
 }
+
+/// A panic during a plan (here in a test hook) reaches the caller: the
+/// thread that passes a cancel on is stopped however the plan ends, so
+/// the call does not hang.
+#[test]
+fn a_panic_during_a_plan_is_not_a_hang() {
+    let bytes = one_basic().build(Container::Legacy);
+    let panicked = within(Duration::from_secs(30), "a plan that panics", move || {
+        let env = Env::new();
+        let hook = crate::test_support::set_hook(&super::super::import::AFTER_CARD, || {
+            panic!("a hook that panics");
+        });
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| env.plan(&bytes)));
+        drop(hook);
+        result
+            .err()
+            .and_then(|payload| payload.downcast_ref::<&str>().map(|m| (*m).to_owned()))
+    });
+    assert_eq!(panicked.as_deref(), Some("a hook that panics"));
+}

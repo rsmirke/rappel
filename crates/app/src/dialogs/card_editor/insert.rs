@@ -256,8 +256,11 @@ impl CardEditor {
                     (Added::NotMedia, Some(Instead::Text(text))) => {
                         insert_text(&buffer, &mark, &text);
                     }
+                    // At the mark: where the paste was asked, even if the
+                    // cursor moved while the files were read.
                     (Added::NotMedia, Some(Instead::Clipboard)) => {
-                        buffer.paste_clipboard(&view.clipboard(), None, view.is_editable());
+                        let at = buffer.iter_at_mark(&mark);
+                        buffer.paste_clipboard(&view.clipboard(), Some(&at), view.is_editable());
                     }
                     _ => {}
                 }

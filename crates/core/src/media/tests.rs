@@ -2,6 +2,7 @@ use std::fs;
 use std::io::{self, Read};
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
+use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 
@@ -661,4 +662,73 @@ fn a_failed_or_dropped_batch_removes_what_it_has_not_named() {
     let left = names(&dir);
     assert_eq!(left.len(), store::BATCH_FILES);
     assert!(left.iter().all(|name| !name.starts_with('.')), "{left:?}");
+}
+
+/// A failed sync of a batch removes every file it held and names none;
+/// a file of another sync stays named.
+#[test]
+fn a_batch_whose_sync_fails_names_nothing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("media");
+    let mut batch = MediaBatch::new(&dir).unwrap();
+    for n in 0..3 {
+        batch.add(&mut png_bytes(n + 1).as_slice()).unwrap();
+    }
+    store::FAIL_SYNC.set(true);
+    let finished = batch.finish();
+    store::FAIL_SYNC.set(false);
+    assert!(matches!(finished, Err(Error::Io { .. })), "{finished:?}");
+    assert_eq!(names(&dir), Vec::<String>::new());
+}
+
+/// A name that cannot be given (a folder already under it) stops the
+/// batch: the files named before stay, the rest of the batch is removed.
+#[test]
+fn a_batch_that_cannot_name_a_file_removes_the_rest() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("media");
+    let mut batch = MediaBatch::new(&dir).unwrap();
+    let first = batch.add(&mut png_bytes(1).as_slice()).unwrap();
+    let second = batch.add(&mut png_bytes(2).as_slice()).unwrap();
+    batch.add(&mut png_bytes(3).as_slice()).unwrap();
+    fs::create_dir(dir.join(second.media.file_name())).unwrap();
+    assert!(batch.finish().is_err());
+    let mut left = names(&dir);
+    left.sort();
+    let mut expected = vec![first.media.file_name(), second.media.file_name()];
+    expected.sort();
+    assert_eq!(
+        left, expected,
+        "the first file and the folder, nothing else"
+    );
+    assert!(dir.join(first.media.file_name()).is_file());
+}
+
+/// Temporary files a crash left are removed by the trash's tidy once a day
+/// old, never younger ones (an add may be writing them), and nothing else.
+#[test]
+fn stale_temporary_files_are_removed_and_young_ones_kept() {
+    let (tmp, mut store) = store();
+    let media = store.add_media_bytes(&png_bytes(1)).unwrap();
+    let dir = media_dir(&tmp);
+    let old = dir.join(".incoming-0123456789abcdef");
+    let young = dir.join(".incoming-fedcba9876543210");
+    let other = dir.join(".incoming-not-ours");
+    for path in [&old, &young, &other] {
+        fs::write(path, b"partial").unwrap();
+    }
+    let day_ago = std::time::SystemTime::now() - Duration::from_hours(25);
+    for path in [&old, &other] {
+        fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(day_ago)
+            .unwrap();
+    }
+    store.tidy_media_trash().unwrap();
+    assert!(!old.exists());
+    assert!(young.exists());
+    assert!(other.exists(), "not a name Rappel makes");
+    assert!(dir.join(media.file_name()).is_file());
 }

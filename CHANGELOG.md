@@ -29,6 +29,7 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 - **Reset Progress is greyed out for a card that is already new** (no review since it was created or last reset, or only reviews that were undone), in the card menu of the deck page and of All Cards. A reset of such a card used to add a log entry that changed nothing. In selection mode, **Reset Progress** is offered while at least one chosen card has progress, and leaves the new ones alone. If a menu is stale and the core refuses, the page says "This card has no progress to reset" and updates the row.
 
 ### Changed
+- `rappel-core`: `AfterReset::Opened` holds a `Box<Store>` (rusqlite's `hooks` feature made `Store` larger).
 - **Audio is decoded only by plugins Rappel allows** (ADR 0062): GStreamer may load just the 21 plugins that playing Ogg, MP3, M4A and WAV needs, in a plugin registry of Rappel's own. FFmpeg's plugin is not among them, so an M4A file in Apple Lossless, or one in AAC on a system whose only AAC decoder is FFmpeg's, says "Could not be played". Install GStreamer's `faad` (`gstreamer1.0-plugins-bad`) or `fdkaac` for M4A files.
 - `rappel-core`: new `Store::plan_anki_import` and `Store::apply_anki_import` (both take a cancel flag), `interchange::file_kind`, `Error::AnkiRefused` and `Error::ImportCancelled`. New dependency `ruzstd` (MIT) for zstd; `rappel-core` also uses `ratex-parser`.
 - Numbers are grouped everywhere ("1,000 years", "in 1,000 years"); a few places printed them without a separator.

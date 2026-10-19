@@ -98,18 +98,28 @@ fn each_limit_holds_at_its_boundary_and_not_one_past() {
     ];
     for (what, limit, past) in cases {
         let mut env = Env::new();
+        let before = env.export();
+        let backups = env.backups();
         let refusal = env.store.plan_import_bytes(&archive, &past);
         assert!(
             matches!(refusal, Err(Error::ImportRefused(_))),
             "{what} one past its limit: {refusal:?}"
         );
+        // Refused: nothing written, no media file, no backup.
+        assert_eq!(env.export(), before, "{what}");
+        let folder = env.tmp.path().join("data").join(MEDIA_DIR_NAME);
+        assert_eq!(
+            fs::read_dir(&folder).map_or(0, Iterator::count),
+            0,
+            "{what}"
+        );
+        assert_eq!(env.backups(), backups, "{what}");
         let plan = env
             .store
             .plan_import_bytes(&archive, &limit)
             .unwrap_or_else(|err| panic!("{what} at its limit: {err}"));
         let report = env.store.apply_import_at(&plan, T_EXPORT).unwrap();
         assert_eq!(report.media, 2, "{what}");
-        let folder = env.tmp.path().join("data").join(MEDIA_DIR_NAME);
         assert_eq!(fs::read_dir(&folder).unwrap().count(), 2, "{what}");
     }
 }

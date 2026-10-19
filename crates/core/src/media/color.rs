@@ -9,10 +9,11 @@
 //! the tests, and the 10 MB a file may have would unpack to gigabytes.
 //! Rappel therefore sends the decoder the image without its profile: PNG's
 //! `iCCP` chunk, a JPEG's `ICC_PROFILE` segments (APP2), a WebP's `ICCP`
-//! chunk (and the flag that announces it). The pixels are then shown as
-//! sRGB, which most images are; a wide-gamut photo's colours are a little
-//! less saturated. GIF's ICC application extension is not read by glycin's
-//! GIF loader, so a GIF is sent as it is.
+//! chunk (and the flag that announces it), a GIF's `ICCRGBG1012`
+//! application extension (which the `gif` crate glycin's loader uses
+//! returns as the image's profile). The pixels are then shown as sRGB,
+//! which most images are; a wide-gamut photo's colours are a little less
+//! saturated.
 //!
 //! Each walk is one pass over the file's chunks or segments with bounds
 //! checked on every read; a structure that does not hold is `None` (the
@@ -40,7 +41,7 @@ pub fn without_color_profile(kind: MediaKind, bytes: &[u8]) -> Option<Vec<u8>> {
         MediaKind::Png => png(bytes),
         MediaKind::Jpeg => jpeg(bytes),
         MediaKind::WebP => webp(bytes),
-        MediaKind::Gif => Some(bytes.to_vec()),
+        MediaKind::Gif => gif(bytes),
         MediaKind::Ogg | MediaKind::Mp3 | MediaKind::M4a | MediaKind::Wav => None,
     }
 }
@@ -137,6 +138,60 @@ fn webp(b: &[u8]) -> Option<Vec<u8>> {
     let size = u32::try_from(out.len() - 8).ok()?;
     out[4..8].copy_from_slice(&size.to_le_bytes());
     Some(out)
+}
+
+/// The sub-blocks starting at `pos` (each a size byte and that many
+/// bytes, ended by an empty one): where they end.
+fn sub_blocks_end(b: &[u8], mut pos: usize) -> Option<usize> {
+    loop {
+        let size = usize::from(*b.get(pos)?);
+        pos = pos.checked_add(1 + size)?;
+        if size == 0 {
+            return (pos <= b.len()).then_some(pos);
+        }
+    }
+}
+
+/// Every block copied but an application extension named `ICCRGBG1012`
+/// (an ICC profile, `GIF89a`'s convention), up to the trailer.
+fn gif(b: &[u8]) -> Option<Vec<u8>> {
+    let packed = *b.get(10)?;
+    let mut pos = 13;
+    if packed & 0x80 != 0 {
+        pos += 3 << ((packed & 0x07) + 1);
+    }
+    let mut out = b.get(..pos)?.to_vec();
+    loop {
+        match *b.get(pos)? {
+            0x21 => {
+                let label = *b.get(pos + 1)?;
+                let end = sub_blocks_end(b, pos + 2)?;
+                let icc = label == 0xFF
+                    && b.get(pos + 2) == Some(&11)
+                    && b.get(pos + 3..pos + 14) == Some(b"ICCRGBG1012");
+                if !icc {
+                    out.extend_from_slice(&b[pos..end]);
+                }
+                pos = end;
+            }
+            0x2C => {
+                let flags = *b.get(pos + 9)?;
+                let mut data = pos + 10;
+                if flags & 0x80 != 0 {
+                    data += 3 << ((flags & 0x07) + 1);
+                }
+                // The LZW minimum code size, then the image's sub-blocks.
+                let end = sub_blocks_end(b, data.checked_add(1)?)?;
+                out.extend_from_slice(b.get(pos..end)?);
+                pos = end;
+            }
+            0x3B => {
+                out.push(0x3B);
+                return Some(out);
+            }
+            _ => return None,
+        }
+    }
 }
 
 #[cfg(test)]

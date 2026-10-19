@@ -359,10 +359,6 @@ fn judge(used: Duration, limit: Duration, slowdown: impl FnOnce() -> f64) -> Res
     }
 }
 
-/// Fails the test unless `used`, a CPU time of this thread, is within
-/// `limit` ([`cpu_within`]). Call it on the thread that did the work: for
-/// GTK work, inside the [`with_gtk`] or [`with_widgets`] body.
-#[track_caller]
 /// [`cpu_within`] for work that can be run again from the same state:
 /// `measure` runs it and returns the CPU time it used, on this thread. A
 /// time over `limit`, even at the slowdown measured then, is measured
@@ -389,6 +385,10 @@ pub fn cpu_within_retried(
 /// How many times [`cpu_within_retried`] measures before it fails.
 pub const TRIES: usize = 3;
 
+/// Fails the test unless `used`, a CPU time of this thread, is within
+/// `limit` ([`cpu_within`]). Call it on the thread that did the work: for
+/// GTK work, inside the [`with_gtk`] or [`with_widgets`] body.
+#[track_caller]
 pub fn assert_cpu_within(used: Duration, limit: Duration, what: &str) {
     if let Err(message) = cpu_within(used, limit) {
         panic!("{what}: {message}");

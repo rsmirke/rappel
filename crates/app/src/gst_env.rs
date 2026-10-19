@@ -58,7 +58,8 @@ pub const ALLOW_LIST: &str = "GST_PLUGIN_LOADING_WHITELIST";
 /// `GStreamer` reads when it is unset (`gst/gstregistry.c`).
 pub const REGISTRY: [&str; 2] = ["GST_REGISTRY_1_0", "GST_REGISTRY"];
 
-/// Set on the new start, so it never starts again.
+/// Set on the new start to the process's id, so it never starts again;
+/// `1` skips the restart for debugging (README).
 const GUARD: &str = "RAPPEL_GST_ENVIRONMENT_SET";
 
 /// The plugins that may load, by name (`gst-inspect-1.0 <name>`): what
@@ -207,34 +208,111 @@ pub fn wanted(get: &dyn Fn(&str) -> Option<OsString>) -> Vec<(&'static str, OsSt
     out
 }
 
+/// What [`ensure_restricted`] does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Start {
+    /// The environment is as Rappel needs it: carry on.
+    Ready,
+    /// Start again in place with the variables set.
+    Restart,
+    /// `RAPPEL_GST_ENVIRONMENT_SET=1`, the debugging escape hatch (README):
+    /// carry on as the environment is, warning if it lacks Rappel's values.
+    Debugging,
+    /// This is the new start, and the environment still lacks them: carry
+    /// on with audio off rather than unrestricted.
+    Unrestricted,
+}
+
+/// The guard's value on the new start: the process's id, which `exec`
+/// keeps, so a guard inherited from another process (a Rappel that
+/// started this one) is not taken for ours.
+fn guard_value(pid: u32) -> String {
+    pid.to_string()
+}
+
+/// What to do, given the guard's value, this process's id and whether
+/// [`wanted`] is empty. Pure.
+pub fn start(guard: Option<&OsStr>, pid: u32, nothing_wanted: bool) -> Start {
+    let guard = guard.and_then(OsStr::to_str);
+    match guard {
+        Some("1") => Start::Debugging,
+        Some(value) if value == guard_value(pid) => {
+            if nothing_wanted {
+                Start::Ready
+            } else {
+                Start::Unrestricted
+            }
+        }
+        // Unset, or another process's.
+        _ if nothing_wanted => Start::Ready,
+        _ => Start::Restart,
+    }
+}
+
+/// Set when `GStreamer` could not be restricted: [`restricted`] is then
+/// false and audio is not played (`playback::available`).
+static UNRESTRICTED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+
+/// Whether `GStreamer` runs with Rappel's restrictions, or was left as it
+/// is on purpose (the debugging escape hatch). False after a failed
+/// restart: the app then plays no audio rather than playing it with
+/// every plugin `GStreamer` has.
+pub fn restricted() -> bool {
+    UNRESTRICTED.get().is_none()
+}
+
+/// Turns audio off ([`restricted`]); the caller has logged why.
+fn unrestricted() {
+    tracing::warn!("audio is turned off rather than played with every GStreamer plugin");
+    let _ = UNRESTRICTED.set(());
+}
+
 /// Starts the program again with the variables of [`wanted`] set, unless
 /// they are already (or this is the new start). Returns only if no new
-/// start happens; called first thing in `main`.
+/// start happens; called first thing in `main`. If the new start cannot be
+/// made, audio is turned off ([`restricted`]).
 pub fn ensure_restricted() {
-    if std::env::var_os(GUARD).is_some() {
-        return;
-    }
     let vars = wanted(&|name| std::env::var_os(name));
-    if vars.is_empty() {
-        return;
+    match start(
+        std::env::var_os(GUARD).as_deref(),
+        std::process::id(),
+        vars.is_empty(),
+    ) {
+        Start::Ready => return,
+        Start::Debugging => {
+            if !vars.is_empty() {
+                tracing::warn!(
+                    "{GUARD}=1: GStreamer is not restricted to Rappel's plugins (debugging only)"
+                );
+            }
+            return;
+        }
+        Start::Unrestricted => {
+            tracing::warn!("GStreamer's variables are still missing after the restart");
+            unrestricted();
+            return;
+        }
+        Start::Restart => {}
     }
     let exe = match std::env::current_exe() {
         Ok(exe) => exe,
         Err(err) => {
             tracing::warn!("cannot find the program to restrict GStreamer's plugins: {err}");
+            unrestricted();
             return;
         }
     };
     let mut args = std::env::args_os();
     let program_name = args.next().unwrap_or_else(|| OsString::from("rappel"));
-    // `exec` returns only on failure.
+    // `exec` returns only on failure; it keeps the process's id.
     let err = std::process::Command::new(exe)
         .arg0(program_name)
         .args(args)
         .envs(vars)
-        .env(GUARD, "1")
+        .env(GUARD, guard_value(std::process::id()))
         .exec();
     tracing::warn!("cannot restart to restrict GStreamer's plugins: {err}");
+    unrestricted();
 }
 
 #[cfg(test)]
