@@ -50,8 +50,9 @@ thiserror = "2"
 # Storage (rappel-core). Bundled SQLite: same version everywhere, FTS5 included.
 # `collation` and `limits` (ADR 0061): an Anki collection's schema names a
 # `unicase` collation, which its tables cannot be read without, and an
-# untrusted collection is read with lowered length limits.
-rusqlite = { version = "0.40", default-features = false, features = ["bundled", "backup", "collation", "limits"] }
+# untrusted collection is read with lowered length limits. `hooks` (ADR 0063):
+# the progress handler that stops a long statement of a cancelled Anki import.
+rusqlite = { version = "0.40", default-features = false, features = ["bundled", "backup", "collation", "hooks", "limits"] }
 
 # Scheduling (rappel-core): the reference FSRS implementation (ADR 0006).
 fsrs = "6.6"

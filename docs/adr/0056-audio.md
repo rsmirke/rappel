@@ -3,6 +3,7 @@
 - Status: Accepted
 - Date: 2026-10-18
 - Amends: ADR 0054 (the `[audio: …]` placeholder is gone; `Store::add_audio`, `MediaProblem::NotAudio`; an audio file is accepted by the store, the import and the export only if all of it is plain audio of its kind, `MediaProblem::Malformed`), ADR 0055 (the editor's Insert Image… path, paste and drop take audio files too; one checked read of a media file for images and audio), ADR 0025 and ADR 0050 (rows 46 to 49 of the untrusted-input table), ADR 0039 (R on the review page, in the Keyboard Shortcuts dialog)
+- Amended by: ADR 0062 (`GStreamer` loads only allow-listed plugins, from a registry of Rappel's own; an MP3 is played without its tags, on which `GStreamer` 1.28 aborted the process)
 - Refers to: SPEC §4.9, §4.3, principle 5; `docs/briefs/phase-2.md` (slice 4)
 
 ## Context

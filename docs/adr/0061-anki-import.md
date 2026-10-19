@@ -2,6 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-10-18
+- Amended by: ADR 0063 (a cancel stops a running SQLite statement; test hooks cleared by a guard)
 - Refers to: SPEC §4.11 and §4 (phase 2, item 8); `docs/briefs/phase-2.md` (slice 9); ADR 0017, 0053, 0054 (the `.rappel` import, its streaming reader, the media store), ADR 0056 (audio checked by structure), ADR 0034 (Anki is a source, not a model)
 
 ## Context

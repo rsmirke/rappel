@@ -253,7 +253,7 @@ impl Store {
 thread_local! {
     /// Runs before each read of a step-by-step read, so tests can change
     /// the file between them.
-    pub(super) static BEFORE_READ: std::cell::RefCell<Option<Box<dyn FnMut()>>> =
+    pub(super) static BEFORE_READ: crate::test_support::Hook =
         const { std::cell::RefCell::new(None) };
 }
 

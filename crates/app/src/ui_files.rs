@@ -239,23 +239,9 @@ fn plain_layouts_load_in_a_fresh_process() {
     if std::env::var_os(FRESH_PROCESS).is_some() {
         return;
     }
-    let exe = std::env::current_exe().expect("the test binary has a path");
-    let output = std::process::Command::new(exe)
-        .args([
-            "--exact",
-            "ui_files::plain_layouts_in_a_new_process",
-            "--test-threads=1",
-        ])
-        .env(FRESH_PROCESS, "1")
-        .output()
-        .expect("the test binary runs again");
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        output.status.success() && stdout.contains("1 passed"),
-        "the plain layouts failed in a fresh process ({}):\n{stdout}\n{}",
-        output.status,
-        String::from_utf8_lossy(&output.stderr)
-    );
+    crate::testing::run_alone("ui_files::plain_layouts_in_a_new_process", |command| {
+        command.env(FRESH_PROCESS, "1");
+    });
 }
 
 /// The child of `plain_layouts_load_in_a_fresh_process`: loads every plain

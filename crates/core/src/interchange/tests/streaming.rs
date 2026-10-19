@@ -601,14 +601,14 @@ fn a_file_changed_while_it_is_planned_is_refused() {
         fs::write(&path, stored(&text)).unwrap();
         let (hook_path, hook_bytes) = (path.clone(), stored(&changed));
         let mut reads = 0;
-        BEFORE_READ.set(Some(Box::new(move || {
+        let hook = crate::test_support::set_hook(&BEFORE_READ, move || {
             reads += 1;
             if reads == at {
                 fs::write(&hook_path, &hook_bytes).unwrap();
             }
-        })));
+        });
         let result = env.store.plan_import(&path);
-        BEFORE_READ.set(None);
+        drop(hook);
         assert!(
             matches!(result, Err(Error::ImportFileChanged)),
             "read {at}: {:?}",

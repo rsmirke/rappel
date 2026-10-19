@@ -7,6 +7,12 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- **Playing an MP3 with tags no longer closes Rappel** (ADR 0062). GStreamer stopped the whole app on the ID3 tag most MP3 files start with; Rappel now plays an MP3's audio without its tags (it shows no tags anyway).
+- **A picture whose file claims an enormous size, or carries a huge colour profile, can no longer use up the computer's memory** (ADR 0063): Rappel checks the size itself before decoding, and pictures are shown without their colour profile (as sRGB).
+- **Pasting or dropping a file that is not a picture or a sound puts its path in the text**, as a text editor does, instead of saying it cannot be added (ADR 0063).
+- **Cancel stops an Anki import at once**, also while it checks a large collection (ADR 0063).
+- **Importing a file with many pictures and sounds is many times faster** (ADR 0063): the files are written to disk together instead of one after another, as safely as before (10,000 small files: 3 s instead of 68 s).
+- **The first audio played after installing or updating starts in a fraction of a second** instead of holding the window for one to two seconds (ADR 0062): GStreamer now looks only at the plugins Rappel lets it use.
 - **On a phone, the on-screen keyboard no longer hides the field you type in** (ADR 0058): when the window gets shorter, the focused field (the card editor's sides and tags, Add Tags, a deck's name, Preferences) is scrolled back into view, and a text field keeps its cursor in view.
 - **The card editor's tags are easy to tap and never cut** (ADR 0058): each tag is a pill with libadwaita's full-size remove button, and shows its whole name, wrapping when it is wider than the field.
 - **On a narrow window, the editor's preview scrolls with the keyboard** (ADR 0058): switching to Preview puts the focus on it, and Up, Down, Page Up, Page Down, Space, Home and End scroll it.
@@ -23,6 +29,8 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 - **Reset Progress is greyed out for a card that is already new** (no review since it was created or last reset, or only reviews that were undone), in the card menu of the deck page and of All Cards. A reset of such a card used to add a log entry that changed nothing. In selection mode, **Reset Progress** is offered while at least one chosen card has progress, and leaves the new ones alone. If a menu is stale and the core refuses, the page says "This card has no progress to reset" and updates the row.
 
 ### Changed
+- `rappel-core`: `AfterReset::Opened` holds a `Box<Store>` (rusqlite's `hooks` feature made `Store` larger).
+- **Audio is decoded only by plugins Rappel allows** (ADR 0062): GStreamer may load just the 21 plugins that playing Ogg, MP3, M4A and WAV needs, in a plugin registry of Rappel's own. FFmpeg's plugin is not among them, so an M4A file in Apple Lossless, or one in AAC on a system whose only AAC decoder is FFmpeg's, says "Could not be played". Install GStreamer's `faad` (`gstreamer1.0-plugins-bad`) or `fdkaac` for M4A files.
 - `rappel-core`: new `Store::plan_anki_import` and `Store::apply_anki_import` (both take a cancel flag), `interchange::file_kind`, `Error::AnkiRefused` and `Error::ImportCancelled`. New dependency `ruzstd` (MIT) for zstd; `rappel-core` also uses `ratex-parser`.
 - Numbers are grouped everywhere ("1,000 years", "in 1,000 years"); a few places printed them without a separator.
 - Development: `scripts/screenshot.py` has `--decoration-layout` (e.g. `:close`, as GNOME and phones show window buttons).

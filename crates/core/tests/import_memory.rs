@@ -69,9 +69,9 @@ mod measure {
 
     /// The most media files an archive can hold: the entry limit (100,000)
     /// less `cards.json` and `media/`. Planned at that count; applied with
-    /// `APPLIED_MEDIA_FILES`, since the apply syncs every file it writes,
-    /// which takes minutes for 100,000 files on a disk (the apply keeps no
-    /// more per file than the plan, which is measured at the limit).
+    /// `APPLIED_MEDIA_FILES`, since the apply writes and syncs every file
+    /// (about 30 s for 100,000 small files on an SSD, ADR 0063), and keeps
+    /// no more per file than the plan, which is measured at the limit.
     const MEDIA_FILES: u32 = 99_998;
     const APPLIED_MEDIA_FILES: u32 = 5_000;
 

@@ -4,17 +4,19 @@
 //!
 //! Nothing plays until the user asks: a click on the button, its Enter or
 //! Space, or R on the review page ([`CardAudio::play_from_start`]). Only
-//! then is the file read, through [`read_media_file`]: from the media
-//! folder, by the name the core builds from a checked hash, a regular file
-//! of its kind and size, read whole on a worker thread. Those bytes, never
+//! then is the file read, through [`read_audio_for_playing`]: from the
+//! media folder, by the name the core builds from a checked hash, a
+//! regular file of its kind and size, plain audio over its whole length,
+//! read whole on a worker thread, and cut to its audio (an MP3's frames
+//! without its tags, ADR 0062). Those bytes, never
 //! the path or a URI, go to GTK's media stream
 //! (`gtk_media_file_new_for_input_stream`), which GTK 4.24 plays with
 //! `GStreamer`'s `GstPlay` (playbin3; GTK hands the source element our
 //! stream in its `source-setup`, `gtkgstmediafile.c`).
 //! So the file cannot change between the check and the play, and no
 //! `file:` or other URI reaches playbin. `GStreamer` finds the demuxer and
-//! decoder itself, in Rappel's process: see the ADR's untrusted-input
-//! rows for what that leaves.
+//! decoder itself, in Rappel's process, among the plugins `gst_env` allows
+//! (ADR 0062).
 //!
 //! One control plays at a time: starting one stops the one playing
 //! ([`stop_all`]). A control stops when it leaves the screen (`unmap`): the
@@ -33,7 +35,7 @@ use gtk::{gio, glib};
 use rappel_core::media::MediaRef;
 
 use super::audio::{State, accessible_label, button_text, time_text};
-use super::media_file::{Unreadable, check_media_file, read_media_file};
+use super::media_file::{Unreadable, check_media_file, read_audio_for_playing};
 use crate::ui::init_once;
 
 /// How long `GStreamer` may take to get a stream ready to play once it has
@@ -648,10 +650,10 @@ fn retire(stream: gtk::MediaFile) {
     RETIRING.with_borrow_mut(|retiring| retiring.push(stream));
 }
 
-/// [`read_media_file`] on a worker thread.
+/// [`read_audio_for_playing`] on a worker thread.
 async fn read_on_worker(path: PathBuf, media: MediaRef) -> Result<Vec<u8>, Unreadable> {
     // `gio::spawn_blocking` returns a panic in the closure as its error.
-    gio::spawn_blocking(move || read_media_file(&path, media))
+    gio::spawn_blocking(move || read_audio_for_playing(&path, media))
         .await
         .unwrap_or(Err(Unreadable::Refused))
 }
@@ -900,6 +902,65 @@ mod tests {
             first.play_from_start();
             stop_all();
             assert_eq!(first.state(), State::Ready);
+            window.close();
+        });
+    }
+
+    /// Set for the child of `an_mp3_with_an_id3_tag_plays_without_aborting`.
+    const ALONE: &str = "RAPPEL_TEST_AUDIO_ALONE";
+
+    /// An MP3 with an `ID3v2` tag, as most are, plays: `GStreamer` 1.28
+    /// aborted the whole process on the tag in GTK's stream
+    /// (`gstdecodebin3.c`, "assertion failed: (collection)"), so the
+    /// player is given the frames only (ADR 0062). In a process of its
+    /// own, since the failure is an abort.
+    #[test]
+    fn an_mp3_with_an_id3_tag_plays_without_aborting() {
+        if std::env::var_os(ALONE).is_some() || !super::super::playback::available() {
+            return;
+        }
+        let registry = tempfile::tempdir().unwrap();
+        let out = crate::testing::run_alone(
+            "render::audio_player::tests::an_id3_mp3_in_a_process_of_its_own",
+            |command| {
+                command
+                    .env(ALONE, "1")
+                    .env("GST_REGISTRY_1_0", registry.path().join("registry.bin"));
+            },
+        );
+        assert!(out.contains("audio-played"), "{out}");
+    }
+
+    /// The child of `an_mp3_with_an_id3_tag_plays_without_aborting`. Does
+    /// nothing in a normal run.
+    #[test]
+    fn an_id3_mp3_in_a_process_of_its_own() {
+        if std::env::var_os(ALONE).is_none() {
+            return;
+        }
+        crate::testing::with_widgets(|| {
+            let (tmp, state) = crate::testing::temporary_state();
+            let data = tmp.path().join("data");
+            let bytes = include_bytes!("../../../core/src/media/fixtures/tone-id3.mp3");
+            let media = AppState::add_media_bytes_on_worker(&data, bytes, Accept::Audio).unwrap();
+            let audio = CardAudio::new(state.media_folder().as_deref(), media, "tagged");
+            let window = on_screen(&audio);
+            audio.play_from_start();
+            let prepared = || {
+                audio
+                    .imp()
+                    .stream
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(gtk::prelude::MediaStreamExt::is_prepared)
+            };
+            let done = crate::testing::settle_until(
+                || prepared() || matches!(audio.state(), State::Failed | State::Unavailable),
+                Duration::from_secs(20),
+            );
+            assert!(done && prepared(), "{:?}", audio.state());
+            println!("audio-played");
+            audio.stop();
             window.close();
         });
     }

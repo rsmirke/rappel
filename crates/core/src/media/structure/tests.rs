@@ -235,6 +235,37 @@ fn an_ape_tag_must_fill_its_size() {
     assert_eq!(why(MediaKind::Mp3, &huge), not_filled);
 }
 
+/// A player is given an MP3's frames only: no `ID3v2` tag before them,
+/// no APE or `ID3v1` tag after (ADR 0062); the other kinds whole.
+#[test]
+fn a_player_is_given_the_frames_of_an_mp3_and_the_rest_whole() {
+    let gain = [("REPLAYGAIN_TRACK_GAIN", "-6.50 dB")];
+    let mut tagged = id3_then(&id3_then(MP3));
+    let start = tagged.len() - MP3.len();
+    tagged.extend(ape_tag(&gain, 1, 0, true));
+    tagged.extend_from_slice(b"TAG");
+    tagged.extend_from_slice(&[b' '; 125]);
+    let frames = audio_payload(MediaKind::Mp3, &tagged).unwrap();
+    assert_eq!(&tagged[frames.clone()], MP3);
+    assert_eq!(frames.start, start);
+    assert_eq!(check_structure(MediaKind::Mp3, &tagged[frames]), Ok(()));
+    // The fixture made by GStreamer's `id3v2mux`: its frames start after
+    // the tag, and are frames.
+    let frames = audio_payload(MediaKind::Mp3, MP3_ID3).unwrap();
+    assert!(frames.start > 10 && frames.end == MP3_ID3.len());
+    let header = &MP3_ID3[frames.start..frames.start + 2];
+    assert!(header[0] == 0xFF && header[1] & 0xE0 == 0xE0, "{header:?}");
+    assert_eq!(audio_payload(MediaKind::Mp3, MP3), Ok(0..MP3.len()));
+    for (kind, bytes) in fixtures().into_iter().filter(|(k, _)| *k != MediaKind::Mp3) {
+        assert_eq!(audio_payload(kind, bytes), Ok(0..bytes.len()), "{kind:?}");
+    }
+    // What is refused is refused the same way.
+    assert_eq!(
+        audio_payload(MediaKind::Mp3, &id3_then(b"#EXTM3U\n")).unwrap_err(),
+        check_structure(MediaKind::Mp3, &id3_then(b"#EXTM3U\n")).unwrap_err()
+    );
+}
+
 #[test]
 fn a_second_ogg_stream_or_bytes_after_the_last_page_are_refused() {
     // Chained: a second logical stream after the first.
@@ -625,5 +656,251 @@ proptest! {
         let kind = [MediaKind::Mp3, MediaKind::Ogg, MediaKind::Wav, MediaKind::M4a][kind];
         let _ = check_structure(kind, &bytes);
         let _ = check_structure(kind, &id3_then(&bytes));
+    }
+}
+
+// ------------------------------------------------- round 3 (ADR 0063)
+
+/// `M4A`'s own `ftyp` followed by `rest` as the top level.
+fn m4a_then(rest: &[u8]) -> Vec<u8> {
+    let ftyp_len = usize::try_from(u32::from_be_bytes(M4A[0..4].try_into().unwrap())).unwrap();
+    let mut out = M4A[..ftyp_len].to_vec();
+    out.extend_from_slice(rest);
+    out
+}
+
+/// Boxes that lie about their size, 64-bit sizes at the extremes, boxes
+/// smaller than their header and recursion deeper than the cap: each
+/// refused, none loops or overflows.
+#[test]
+fn m4a_boxes_that_lie_about_their_size_are_refused() {
+    let outside = damaged("a box outside its parent");
+    // A box claiming more than the file, 32 and 64 bits.
+    let mut huge = b"\xff\xff\xff\xffmoov".to_vec();
+    huge.extend_from_slice(&[0; 16]);
+    assert_eq!(why(MediaKind::M4a, &m4a_then(&huge)), outside);
+    for large in [u64::MAX, u64::MAX - 7, 1 << 63, 4_294_967_296, 17] {
+        let mut boxed = b"\x00\x00\x00\x01moov".to_vec();
+        boxed.extend_from_slice(&large.to_be_bytes());
+        boxed.extend_from_slice(&[0; 8]);
+        let (why_, _) = why(MediaKind::M4a, &m4a_then(&boxed));
+        assert!(why_ == outside.0 || why_.contains("cut"), "{large}: {why_}");
+    }
+    // Smaller than its own header (a size of 0 to 7, a large size under
+    // 16): never a box of no length that the walk would step on forever.
+    for small in 2_u32..8 {
+        let mut boxed = small.to_be_bytes().to_vec();
+        boxed.extend_from_slice(b"free");
+        boxed.extend_from_slice(&[0; 8]);
+        assert_eq!(why(MediaKind::M4a, &m4a_then(&boxed)), outside, "{small}");
+    }
+    for large in 0_u64..16 {
+        let mut boxed = b"\x00\x00\x00\x01free".to_vec();
+        boxed.extend_from_slice(&large.to_be_bytes());
+        assert_eq!(why(MediaKind::M4a, &m4a_then(&boxed)), outside, "{large}");
+    }
+    // A size of 0 (to the end) on a box shorter than a header.
+    assert_eq!(
+        why(MediaKind::M4a, &m4a_then(b"\x00\x00\x00\x00fr")),
+        damaged("a cut box header")
+    );
+    // 10,000 boxes nested in each other, every one in the allow-list's
+    // parents: stopped at the cap, on a small stack.
+    within(Duration::from_secs(5), "deep boxes", || {
+        let mut deep = Vec::new();
+        let levels = 10_000_u32;
+        for depth in 0..levels {
+            deep.extend_from_slice(&(8 * (levels - depth)).to_be_bytes());
+            deep.extend_from_slice(if depth % 2 == 0 { b"moov" } else { b"trak" });
+        }
+        assert!(check_structure(MediaKind::M4a, &m4a_then(&deep)).is_err());
+    });
+}
+
+/// ID3 tags that claim more than the file, or 2^28 − 1 bytes (the most a
+/// syncsafe size holds), and a chain of 100,000 empty tags: refused or
+/// stepped over in one pass.
+#[test]
+fn id3_tags_that_lie_are_refused_quickly() {
+    let longer = damaged("an ID3 tag longer than the file");
+    let mut max = b"ID3\x04\x00\x00\x7f\x7f\x7f\x7f".to_vec();
+    max.extend_from_slice(MP3);
+    assert_eq!(why(MediaKind::Mp3, &max), longer);
+    // A size with its high bit set is not syncsafe.
+    let mut unsafe_size = b"ID3\x03\x00\x00\x80\x00\x00\x00".to_vec();
+    unsafe_size.extend_from_slice(MP3);
+    assert_eq!(
+        why(MediaKind::Mp3, &unsafe_size),
+        damaged("an ID3 tag with a bad header")
+    );
+    // A footer flag on a tag that ends at the file's end.
+    let mut footer = b"ID3\x04\x00\x10\x00\x00\x00\x00".to_vec();
+    footer.extend_from_slice(&[0; 5]);
+    assert_eq!(why(MediaKind::Mp3, &footer), longer);
+    within(Duration::from_secs(5), "100,000 ID3 tags", || {
+        let mut chain = b"ID3\x04\x00\x00\x00\x00\x00\x00".repeat(100_000);
+        chain.extend_from_slice(MP3);
+        assert_eq!(
+            audio_payload(MediaKind::Mp3, &chain),
+            Ok(1_000_000..chain.len())
+        );
+    });
+}
+
+/// Ogg pages at their largest (255 segments of 255 bytes) and smallest
+/// (no segment), back to back up to 20 MB: one pass, every CRC checked.
+#[test]
+fn ogg_page_floods_are_one_pass() {
+    within(Duration::from_secs(20), "20 MB of Ogg pages", || {
+        let first_len = 27
+            + usize::from(OPUS[26])
+            + OPUS[27..27 + usize::from(OPUS[26])]
+                .iter()
+                .map(|&n| usize::from(n))
+                .sum::<usize>();
+        let page = |seq: u32, segments: &[u8]| {
+            let mut p = b"OggS\x00\x00".to_vec();
+            p.extend_from_slice(&[0; 8]);
+            p.extend_from_slice(&OPUS[14..18]);
+            p.extend_from_slice(&seq.to_le_bytes());
+            p.extend_from_slice(&[0; 4]);
+            p.push(u8::try_from(segments.len()).unwrap());
+            p.extend_from_slice(segments);
+            let body: usize = segments.iter().map(|&n| usize::from(n)).sum();
+            p.resize(p.len() + body, 0x55);
+            let crc = ogg_crc(&p);
+            p[22..26].copy_from_slice(&crc.to_le_bytes());
+            p
+        };
+        for segments in [vec![255_u8; 255], Vec::new()] {
+            let mut file = OPUS[..first_len].to_vec();
+            let mut seq = 1;
+            while file.len() < 20_000_000 && seq < 400_000 {
+                file.extend(page(seq, &segments));
+                seq += 1;
+            }
+            assert_eq!(
+                check_structure(MediaKind::Ogg, &file),
+                Ok(()),
+                "{}",
+                segments.len()
+            );
+            // One byte flipped in the last page: its CRC refuses it.
+            let last = file.len() - 1;
+            file[last] ^= 1;
+            if !segments.is_empty() {
+                assert_eq!(
+                    why(MediaKind::Ogg, &file),
+                    damaged("an Ogg page with a bad CRC")
+                );
+            }
+        }
+    });
+}
+
+/// WAV chunks whose sizes lie: past the file, `u32::MAX`, a RIFF size
+/// other than the file's, a data chunk longer than what is there.
+#[test]
+fn wav_chunks_that_lie_are_refused() {
+    let set_riff = |w: &mut Vec<u8>| {
+        let n = u32::try_from(w.len() - 8).unwrap();
+        w[4..8].copy_from_slice(&n.to_le_bytes());
+    };
+    let data_at = find(WAV, b"data");
+    let mut past = WAV.to_vec();
+    past[data_at + 4..data_at + 8].copy_from_slice(&u32::MAX.to_le_bytes());
+    assert_eq!(
+        why(MediaKind::Wav, &past),
+        damaged("a WAV chunk longer than the file")
+    );
+    let mut more = WAV.to_vec();
+    more[4..8].copy_from_slice(&u32::MAX.to_le_bytes());
+    assert_eq!(
+        why(MediaKind::Wav, &more),
+        damaged("a RIFF chunk of another length than the file")
+    );
+    let mut less = WAV.to_vec();
+    less[4..8].copy_from_slice(&4_u32.to_le_bytes());
+    assert_eq!(
+        why(MediaKind::Wav, &less),
+        damaged("a RIFF chunk of another length than the file")
+    );
+    // An unknown chunk claiming the rest of the file and one byte more.
+    let mut junk = WAV.to_vec();
+    junk.extend_from_slice(b"junk");
+    junk.extend_from_slice(&9_u32.to_le_bytes());
+    junk.extend_from_slice(&[0; 8]);
+    set_riff(&mut junk);
+    assert_eq!(
+        why(MediaKind::Wav, &junk),
+        damaged("a WAV chunk longer than the file")
+    );
+    // Two data chunks.
+    let mut twice = WAV.to_vec();
+    twice.extend_from_slice(b"data\x02\x00\x00\x00\x00\x00");
+    set_riff(&mut twice);
+    assert_eq!(
+        why(MediaKind::Wav, &twice),
+        damaged("WAV data without a format, or twice")
+    );
+}
+
+/// MP3 frames whose header gives a length of less than its own four
+/// bytes cannot exist; free format (index 0) and the reserved values are
+/// not frames: nothing makes the walk stand still.
+#[test]
+fn mp3_headers_without_a_length_are_refused() {
+    for h in [
+        [0xFF, 0xFB, 0x00, 0x00], // free format
+        [0xFF, 0xFB, 0xF0, 0x00], // bit rate 15
+        [0xFF, 0xFB, 0x9C, 0x00], // sample rate 3
+        [0xFF, 0xEB, 0x90, 0x00], // version 1 (reserved)
+        [0xFF, 0xFF, 0x90, 0x00], // layer I
+    ] {
+        let mut file = h.to_vec();
+        file.extend_from_slice(&[0; 600]);
+        assert_eq!(
+            why(MediaKind::Mp3, &file),
+            damaged("something that is not an MP3 frame"),
+            "{h:?}"
+        );
+    }
+    for version in [0xE3_u8, 0xF3, 0xFB] {
+        for rate in 0_u8..3 {
+            for index in 1_u8..15 {
+                let len = mp3_frame_len([0xFF, version, index << 4 | rate << 2, 0]).unwrap();
+                assert!(len >= 24, "{version:x} {index} {rate}: {len}");
+            }
+        }
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(300))]
+
+    /// Random mutations of the real files, each repeated to a large file
+    /// (up to 2 MB): the check never panics and stays one pass, within a
+    /// CPU-time bound on a small stack. It allocates nothing at all (no
+    /// `Vec` or `String` in the module), so it cannot use memory without
+    /// bound.
+    #[test]
+    fn mutated_files_are_checked_in_bounded_time(
+        which in 0_usize..6,
+        repeat in 1_usize..400,
+        flips in prop::collection::vec((any::<prop::sample::Index>(), any::<u8>()), 1..16),
+        splice in prop::collection::vec(any::<u8>(), 0..32),
+        at in any::<prop::sample::Index>(),
+    ) {
+        let (kind, bytes) = fixtures()[which];
+        let mut file = bytes.repeat(repeat.min(2_000_000 / bytes.len()).max(1));
+        for (i, value) in flips {
+            let i = i.index(file.len());
+            file[i] = value;
+        }
+        let i = at.index(file.len() + 1);
+        file.splice(i..i, splice);
+        within(Duration::from_secs(2), "a mutated audio file", move || {
+            let _ = audio_payload(kind, &file);
+        });
     }
 }

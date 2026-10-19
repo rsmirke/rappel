@@ -142,6 +142,25 @@ pub fn without_local_file(has_picture: bool, has_text: bool) -> WithoutLocal {
     }
 }
 
+/// Whether a paste or a drop of files that added none gives its text
+/// instead, as a text editor does (GNOME Text Editor pastes a copied
+/// file's path): every file was refused as not an image or audio file of
+/// a supported kind, or as not a file at all (a folder), and the offer has
+/// text (the files' paths or addresses). A file refused for anything else
+/// (too large, damaged, unreadable) is a refusal that says why.
+pub fn text_instead(added: usize, refusals: &[&AddMediaError], text_offered: bool) -> bool {
+    added == 0
+        && text_offered
+        && !refusals.is_empty()
+        && refusals.iter().all(|err| {
+            matches!(
+                err,
+                AddMediaError::NotAFile
+                    | AddMediaError::Store(Error::MediaRefused(MediaProblem::NotMedia))
+            )
+        })
+}
+
 /// What the editor says when a file taken as `accept` cannot be added,
 /// in words.
 pub fn add_failed_text(err: &AddMediaError, accept: Accept) -> String {
@@ -245,6 +264,23 @@ mod tests {
     use std::io;
 
     use super::*;
+
+    #[test]
+    fn files_that_are_not_media_paste_as_their_text() {
+        let not_media = AddMediaError::Store(Error::MediaRefused(MediaProblem::NotMedia));
+        let folder = AddMediaError::NotAFile;
+        let large = AddMediaError::TooLarge;
+        let damaged = AddMediaError::Store(Error::MediaRefused(MediaProblem::Malformed));
+        assert!(text_instead(0, &[&not_media], true));
+        assert!(text_instead(0, &[&not_media, &folder], true));
+        // Something was added, no text is offered, or a refusal says more.
+        assert!(!text_instead(1, &[&not_media], true));
+        assert!(!text_instead(0, &[&not_media], false));
+        assert!(!text_instead(0, &[&not_media, &large], true));
+        assert!(!text_instead(0, &[&damaged], true));
+        assert!(!text_instead(0, &[&AddMediaError::NotLocal], true));
+        assert!(!text_instead(0, &[], true));
+    }
 
     fn media(n: u8, kind: MediaKind) -> MediaRef {
         MediaRef::new([n; 32], kind)

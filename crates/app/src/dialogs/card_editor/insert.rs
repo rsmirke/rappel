@@ -21,8 +21,8 @@
 //! kept, so the drop target takes no audio MIME type.
 //!
 //! An added file stays in the media folder whether or not the card is then
-//! saved: it is content-addressed and harmless, and the clean-up of unused
-//! media (phase 2, slice 5) removes it.
+//! saved: it is content-addressed and harmless, and Clean Up Media in
+//! Preferences removes it (ADR 0057).
 
 use adw::prelude::*;
 use adw::subclass::prelude::*;
@@ -248,16 +248,24 @@ impl CardEditor {
     async fn take(&self, view: &sourceview5::View, mark: gtk::TextMark, taken: Taken) {
         let buffer = view.buffer();
         match taken {
-            Taken::Media(incoming, accept) => {
-                self.add_media(view, mark, incoming, accept).await;
-                return;
+            Taken::Media(incoming, accept, instead) => {
+                let added = self
+                    .add_media_or(view, &mark, incoming, accept, instead.is_some())
+                    .await;
+                match (added, instead) {
+                    (Added::NotMedia, Some(Instead::Text(text))) => {
+                        insert_text(&buffer, &mark, &text);
+                    }
+                    // At the mark: where the paste was asked, even if the
+                    // cursor moved while the files were read.
+                    (Added::NotMedia, Some(Instead::Clipboard)) => {
+                        let at = buffer.iter_at_mark(&mark);
+                        buffer.paste_clipboard(&view.clipboard(), Some(&at), view.is_editable());
+                    }
+                    _ => {}
+                }
             }
-            Taken::Text(Some(text)) => {
-                let mut at = buffer.iter_at_mark(&mark);
-                buffer.begin_user_action();
-                buffer.insert(&mut at, &text);
-                buffer.end_user_action();
-            }
+            Taken::Text(Some(text)) => insert_text(&buffer, &mark, &text),
             // The text view's own paste, which this handler stopped: the
             // same call its class handler makes (`gtk_text_view_paste_clipboard`).
             Taken::Text(None) => {
@@ -279,12 +287,28 @@ impl CardEditor {
         incoming: Vec<Incoming>,
         accept: Accept,
     ) {
+        self.add_media_or(view, &mark, incoming, accept, false)
+            .await;
+        view.buffer().delete_mark(&mark);
+    }
+
+    /// [`Self::add_media`], leaving the mark; with `text_offered`, a paste
+    /// or drop whose files are none of them media says nothing and returns
+    /// [`Added::NotMedia`], for its text to go in instead.
+    async fn add_media_or(
+        &self,
+        view: &sourceview5::View,
+        mark: &gtk::TextMark,
+        incoming: Vec<Incoming>,
+        accept: Accept,
+        text_offered: bool,
+    ) -> Added {
         let imp = self.imp();
         let Some(data_dir) = imp.state.get().map(|state| state.data_dir().to_path_buf()) else {
-            view.buffer().delete_mark(&mark);
-            return;
+            return Added::Done;
         };
         let mut added: Vec<MediaRef> = Vec::new();
+        let mut refusals: Vec<AddMediaError> = Vec::new();
         let mut failure = None;
         for item in incoming {
             let data_dir = data_dir.clone();
@@ -307,19 +331,40 @@ impl CardEditor {
                 Ok(Ok(media)) => added.push(media),
                 Ok(Err(err)) => {
                     failure.get_or_insert_with(|| media::add_failed_text(&err, accept));
+                    refusals.push(err);
                 }
                 Err(worker::Panicked) => {
                     failure.get_or_insert_with(|| media::could_not_add(accept));
                 }
             }
         }
+        let refused: Vec<&AddMediaError> = refusals.iter().collect();
+        if media::text_instead(added.len(), &refused, text_offered) {
+            return Added::NotMedia;
+        }
         if let Some(message) = failure {
             imp.media_errors
                 .show(&*imp.toast_overlay, "adding media", &message);
         }
-        insert_references(view, &mark, &added);
-        view.buffer().delete_mark(&mark);
+        insert_references(view, mark, &added);
+        Added::Done
     }
+}
+
+/// What [`CardEditor::add_media_or`] did.
+enum Added {
+    /// Added what it could and said what it could not.
+    Done,
+    /// None of the files was media: nothing done, the text goes in.
+    NotMedia,
+}
+
+/// `text` inserted at `mark` as one user action (one Ctrl+Z).
+fn insert_text(buffer: &gtk::TextBuffer, mark: &gtk::TextMark, text: &str) {
+    let mut at = buffer.iter_at_mark(mark);
+    buffer.begin_user_action();
+    buffer.insert(&mut at, text);
+    buffer.end_user_action();
 }
 
 /// A mark at the cursor of `view`, which stays where it is while text is
@@ -363,12 +408,23 @@ const OFFER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 /// What a paste or a drop gives, once read.
 #[derive(Debug)]
 enum Taken {
-    /// Media to add, files as the [`Accept`] takes them.
-    Media(Vec<Incoming>, Accept),
+    /// Media to add, files as the [`Accept`] takes them, and the text the
+    /// offer has, given instead if no file is media ([`media::text_instead`]).
+    Media(Vec<Incoming>, Accept, Option<Instead>),
     /// Text instead: a drop's (read here), or the clipboard's (`None`:
     /// pasted by the text view's own code).
     Text(Option<String>),
     Nothing,
+}
+
+/// The text a paste or a drop of files gives instead of them.
+#[derive(Debug)]
+enum Instead {
+    /// The clipboard's, pasted by the text view's own code.
+    Clipboard,
+    /// A drop's, read with the files (a drop cannot be read once
+    /// finished).
+    Text(String),
 }
 
 /// Where pasted or dropped media come from: the same questions of
@@ -423,14 +479,22 @@ impl Offer {
                 let files = self.read_files().await;
                 let local = files.iter().filter(|f| local_path(f).is_some()).count();
                 if local > 0 {
+                    let instead = if !self.has_text() {
+                        None
+                    } else if let Self::Drop(_) = self {
+                        self.read_text().await.map(Instead::Text)
+                    } else {
+                        Some(Instead::Clipboard)
+                    };
                     return Taken::Media(
                         files.into_iter().map(Incoming::File).collect(),
                         Accept::Any,
+                        instead,
                     );
                 }
                 match media::without_local_file(self.has_picture(), self.has_text()) {
                     WithoutLocal::Picture => {
-                        Taken::Media(vec![self.read_picture().await], Accept::Image)
+                        Taken::Media(vec![self.read_picture().await], Accept::Image, None)
                     }
                     WithoutLocal::Text => match self {
                         Self::Clipboard(_) => Taken::Text(None),
@@ -440,12 +504,14 @@ impl Offer {
                             .map_or(Taken::Nothing, |text| Taken::Text(Some(text))),
                     },
                     WithoutLocal::Refuse if files.is_empty() => Taken::Nothing,
-                    WithoutLocal::Refuse => {
-                        Taken::Media(files.into_iter().map(Incoming::File).collect(), Accept::Any)
-                    }
+                    WithoutLocal::Refuse => Taken::Media(
+                        files.into_iter().map(Incoming::File).collect(),
+                        Accept::Any,
+                        None,
+                    ),
                 }
             }
-            Offered::Picture => Taken::Media(vec![self.read_picture().await], Accept::Image),
+            Offered::Picture => Taken::Media(vec![self.read_picture().await], Accept::Image, None),
             Offered::Text => Taken::Nothing,
         }
     }
@@ -794,7 +860,11 @@ mod tests {
                 .map(|path| Incoming::File(gio::File::for_path(path)))
                 .into_iter()
                 .collect();
-            block_on(editor.take(view, cursor_mark(view), Taken::Media(files, Accept::Any)));
+            block_on(editor.take(
+                view,
+                cursor_mark(view),
+                Taken::Media(files, Accept::Any, None),
+            ));
             let buffer = &*imp.front_buffer;
             let (start, end) = buffer.bounds();
             let text = buffer.text(&start, &end, false).to_string();
@@ -803,6 +873,59 @@ mod tests {
             assert!(parts[0].starts_with("![](media:") && parts[0].ends_with(".png)"));
             assert!(parts[1].starts_with("[](media:") && parts[1].ends_with(".wav)"));
             assert!(imp.media_errors.is_empty());
+        });
+    }
+
+    /// A copied or dropped file that is neither an image nor audio (a text
+    /// file, a folder) goes in as the text the offer has, its path, as a
+    /// text editor pastes it; with no text offered it is refused as
+    /// before.
+    #[test]
+    fn files_that_are_not_media_go_in_as_their_text() {
+        crate::testing::with_widgets(|| {
+            let (tmp, _state, _deck, editor, _saved) = super::super::tests::editor_over(None);
+            let imp = editor.imp();
+            let view = &*imp.front_view;
+            let notes = tmp.path().join("notes.txt");
+            std::fs::write(&notes, "plain text").unwrap();
+            let path = notes.to_string_lossy().into_owned();
+            let files = || vec![Incoming::File(gio::File::for_path(&notes))];
+            // A drop: the text read with the files.
+            block_on(editor.take(
+                view,
+                cursor_mark(view),
+                Taken::Media(files(), Accept::Any, Some(Instead::Text(path.clone()))),
+            ));
+            let buffer = &*imp.front_buffer;
+            let text = |b: &sourceview5::Buffer| {
+                let (start, end) = b.bounds();
+                b.text(&start, &end, false).to_string()
+            };
+            assert_eq!(text(buffer), path);
+            assert!(imp.media_errors.is_empty());
+            buffer.undo();
+            assert_eq!(buffer.char_count(), 0);
+            // A paste: no refusal; the text view's own paste puts the
+            // clipboard's text in (`gtk_text_buffer_paste_clipboard`, the
+            // path the editor takes for a plain text paste too).
+            block_on(editor.take(
+                view,
+                cursor_mark(view),
+                Taken::Media(files(), Accept::Any, Some(Instead::Clipboard)),
+            ));
+            assert!(imp.media_errors.is_empty());
+            // No text offered: refused, as before.
+            let back = &*imp.back_view;
+            block_on(editor.take(
+                back,
+                cursor_mark(back),
+                Taken::Media(files(), Accept::Any, None),
+            ));
+            assert_eq!(
+                imp.media_errors.shown_text().as_deref(),
+                Some("This file is not an image or audio file of a supported kind")
+            );
+            assert_eq!(imp.back_buffer.char_count(), 0);
         });
     }
 

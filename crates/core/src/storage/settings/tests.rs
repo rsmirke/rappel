@@ -359,7 +359,7 @@ fn folder_with_history(tmp: &tempfile::TempDir) -> (std::path::PathBuf, Vec<Stri
 /// whether it reset anything.
 fn opened(reset: SettingReset) -> (Store, bool) {
     match reset.then {
-        AfterReset::Opened(store) => (store, reset.was_reset),
+        AfterReset::Opened(store) => (*store, reset.was_reset),
         AfterReset::Damaged(key) => panic!("{key} is still damaged"),
     }
 }

@@ -10,7 +10,7 @@
 //! its kind's limit (10 MB for an image, 20 MB for audio). Its first bytes
 //! must be of the reference's kind (`MediaKind::detect`), and an audio
 //! file read for playing must be plain audio of its kind over its whole
-//! length (`check_structure`, ADR 0056): a file stored before that check
+//! length (`audio_payload`, ADR 0056): a file stored before that check
 //! existed, or put in the folder by hand, is refused here before a byte
 //! reaches `GStreamer`. What is checked
 //! is what is read: the bytes go to the decoder, never the path, so the
@@ -18,9 +18,10 @@
 
 use std::fs;
 use std::io::{self, Read};
+use std::ops::Range;
 use std::path::Path;
 
-use rappel_core::media::{DETECT_BYTES, MediaKind, MediaRef, check_structure};
+use rappel_core::media::{DETECT_BYTES, MediaKind, MediaRef, audio_payload};
 
 /// Why a media file is not read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,6 +61,22 @@ fn open_checked(path: &Path, kind: MediaKind) -> Result<(fs::File, u64), Unreada
 /// bytes are of `media`'s kind. A file that grew past the limit after the
 /// check is refused (one byte past it is read, no more).
 pub fn read_media_file(path: &Path, media: MediaRef) -> Result<Vec<u8>, Unreadable> {
+    read_checked(path, media).map(|(bytes, _)| bytes)
+}
+
+/// The bytes of the audio file `media` at `path` that `GStreamer` is
+/// given: [`read_media_file`]'s, cut to what `audio_payload` keeps (an
+/// MP3's frames without its tags: `GStreamer` 1.28 aborts the process on
+/// an `ID3v2` tag in GTK's stream, ADR 0062).
+pub fn read_audio_for_playing(path: &Path, media: MediaRef) -> Result<Vec<u8>, Unreadable> {
+    let (mut bytes, payload) = read_checked(path, media)?;
+    bytes.truncate(payload.end);
+    bytes.drain(..payload.start);
+    Ok(bytes)
+}
+
+/// [`read_media_file`], with the part a player is given.
+fn read_checked(path: &Path, media: MediaRef) -> Result<(Vec<u8>, Range<usize>), Unreadable> {
     let kind = media.kind();
     let (file, len) = open_checked(path, kind)?;
     let limit = kind.max_bytes();
@@ -71,11 +88,13 @@ pub fn read_media_file(path: &Path, media: MediaRef) -> Result<Vec<u8>, Unreadab
     if too_large || MediaKind::detect(&bytes) != Some(kind) {
         return Err(Unreadable::Refused);
     }
-    if let Err(why) = check_structure(kind, &bytes) {
-        tracing::debug!("a media file is refused: {}", why.why);
-        return Err(Unreadable::Refused);
+    match audio_payload(kind, &bytes) {
+        Ok(payload) => Ok((bytes, payload)),
+        Err(why) => {
+            tracing::debug!("a media file is refused: {}", why.why);
+            Err(Unreadable::Refused)
+        }
     }
-    Ok(bytes)
 }
 
 /// Whether the media file `media` at `path` could be read: the checks of

@@ -164,6 +164,30 @@ pub fn settle_until(done: impl Fn() -> bool, timeout: Duration) -> bool {
     }
 }
 
+/// Runs the test `name` (its full path) alone in a new process of this
+/// test binary, with `configure` applied to the command (its environment),
+/// fails the calling test unless it passed, and returns its standard
+/// output (printed with `--nocapture`). For what needs a process of its
+/// own: GTK types not registered yet, `GStreamer` started with given
+/// variables, a locale, or code that may bring the process down. The
+/// child test tells itself apart by a variable `configure` sets, and
+/// does nothing in a normal run.
+pub fn run_alone(name: &str, configure: impl FnOnce(&mut std::process::Command)) -> String {
+    let exe = std::env::current_exe().expect("the test binary has a path");
+    let mut command = std::process::Command::new(exe);
+    command.args(["--exact", name, "--test-threads=1", "--nocapture"]);
+    configure(&mut command);
+    let output = command.output().expect("the test binary runs again");
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert!(
+        output.status.success() && stdout.contains("1 passed"),
+        "{name} failed in a process of its own ({}):\n{stdout}\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    stdout
+}
+
 /// The calling thread's CPU time (user and system) from
 /// `/proc/thread-self/schedstat`, whose first field is its `sum_exec_runtime`
 /// in nanoseconds (Linux `fs/proc/base.c`, `proc_pid_schedstat`), or `None`
@@ -334,6 +358,32 @@ fn judge(used: Duration, limit: Duration, slowdown: impl FnOnce() -> f64) -> Res
         ))
     }
 }
+
+/// [`cpu_within`] for work that can be run again from the same state:
+/// `measure` runs it and returns the CPU time it used, on this thread. A
+/// time over `limit`, even at the slowdown measured then, is measured
+/// again, up to [`TRIES`] times in all, and the first verdict within the
+/// bound passes. A burst of load during one run (the slowdown is measured
+/// after the work, and the reference does not slow down exactly as the
+/// work does, ADR 0049) then fails nothing, while a regression, slow every
+/// time, still fails (ADR 0063).
+pub fn cpu_within_retried(
+    limit: Duration,
+    mut measure: impl FnMut() -> Duration,
+) -> Result<Duration, String> {
+    let mut last = String::new();
+    for _ in 0..TRIES {
+        let used = measure();
+        match cpu_within(used, limit) {
+            Ok(()) => return Ok(used),
+            Err(message) => last = message,
+        }
+    }
+    Err(format!("{last} (measured {TRIES} times)"))
+}
+
+/// How many times [`cpu_within_retried`] measures before it fails.
+pub const TRIES: usize = 3;
 
 /// Fails the test unless `used`, a CPU time of this thread, is within
 /// `limit` ([`cpu_within`]). Call it on the thread that did the work: for

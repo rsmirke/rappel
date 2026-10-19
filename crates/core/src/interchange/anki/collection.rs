@@ -21,6 +21,8 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use rusqlite::limits::Limit;
 use rusqlite::types::ValueRef;
@@ -160,15 +162,42 @@ fn int_of(value: ValueRef<'_>) -> Option<i64> {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Runs just before the integrity check, so tests can cancel during it.
+    pub(super) static BEFORE_CHECK: crate::test_support::Hook = const { std::cell::RefCell::new(None) };
+}
+
+/// Before the integrity check (a test hook; nothing otherwise).
+fn before_check() {
+    #[cfg(test)]
+    BEFORE_CHECK.with_borrow_mut(|hook| {
+        if let Some(hook) = hook {
+            hook();
+        }
+    });
+}
+
 impl Collection {
     /// Opens the collection at `path` read-only and defensively, checks it
     /// and its version.
-    pub(super) fn open(path: &Path, limits: &AnkiLimits) -> Result<Self, AnkiProblem> {
+    /// Every statement stops (an error) once `interrupt` is true: a
+    /// progress handler polls it every 1,000 steps of SQLite's machine, so
+    /// a long statement (the integrity check, a sort of a large table) can
+    /// be cancelled (ADR 0063).
+    pub(super) fn open(
+        path: &Path,
+        limits: &AnkiLimits,
+        interrupt: &Arc<AtomicBool>,
+    ) -> Result<Self, AnkiProblem> {
         let conn = Connection::open_with_flags(
             path,
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )
         .map_err(sql)?;
+        let interrupt = Arc::clone(interrupt);
+        conn.progress_handler(1_000, Some(move || interrupt.load(Ordering::Relaxed)))
+            .map_err(sql)?;
         for (config, on) in [
             (DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true),
             (DbConfig::SQLITE_DBCONFIG_TRUSTED_SCHEMA, false),
@@ -206,6 +235,7 @@ impl Collection {
         // expressions either.
         conn.pragma_update(None, "ignore_check_constraints", true)
             .map_err(sql)?;
+        before_check();
         let check: String = conn
             .query_row("PRAGMA quick_check(1)", [], |r| r.get(0))
             .map_err(|_| AnkiProblem::Damaged("the collection is not a database".to_owned()))?;

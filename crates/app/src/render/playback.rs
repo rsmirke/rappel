@@ -95,6 +95,16 @@ pub fn playback_found(dirs: &[PathBuf], exists: impl Fn(&Path) -> bool) -> bool 
     dirs.iter().any(|dir| exists(&dir.join(PLUGIN)))
 }
 
+/// Whether the plugin `name` (`libgst<name>.so`, as `GStreamer` names the
+/// file of a plugin) is in one of the folders `GStreamer` looks in here
+/// (tests: which formats can play at all).
+#[cfg(test)]
+pub fn plugin_installed(name: &str) -> bool {
+    plugin_dirs(&this_env())
+        .iter()
+        .any(|dir| dir.join(format!("libgst{name}.so")).is_file())
+}
+
 /// The folder of `libgstreamer-1.0` in the text of `/proc/self/maps`.
 pub fn library_dir_from_maps(maps: &str) -> Option<PathBuf> {
     maps.lines()
@@ -156,7 +166,8 @@ impl Drop for Forced {
 /// Whether [`PLUGIN`] was found, once per run.
 static AVAILABLE: OnceLock<bool> = OnceLock::new();
 
-/// Whether audio can be played here: [`PLUGIN`] is where `GStreamer` looks.
+/// Whether audio can be played here: `GStreamer` is restricted to Rappel's
+/// plugins (`gst_env::restricted`) and [`PLUGIN`] is where it looks.
 /// Found once per run (a few file checks); the first `false` is logged.
 pub fn available() -> bool {
     #[cfg(test)]
@@ -164,6 +175,10 @@ pub fn available() -> bool {
         return value;
     }
     *AVAILABLE.get_or_init(|| {
+        // GStreamer without Rappel's allow-list plays nothing (ADR 0062).
+        if !crate::gst_env::restricted() {
+            return false;
+        }
         let dirs = plugin_dirs(&this_env());
         let found = playback_found(&dirs, Path::is_file);
         if !found {

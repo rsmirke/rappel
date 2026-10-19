@@ -54,8 +54,8 @@ fn main() -> glib::ExitCode {
         )
         .init();
     // Before GTK or GStreamer are loaded, and before any thread: may start
-    // the program again in place (ADR 0056).
-    gst_env::ensure_demoted();
+    // the program again in place (ADR 0056, ADR 0062).
+    gst_env::ensure_restricted();
     // Before GTK starts, which sets the locale and builds the first
     // translated layouts (ADR 0059).
     i18n::init();

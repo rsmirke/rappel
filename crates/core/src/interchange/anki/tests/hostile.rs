@@ -608,3 +608,76 @@ fn a_package_of_20000_cards_imports_quickly() {
         env.assert_no_temp();
     });
 }
+
+// ------------------------------------------------- round 3 (ADR 0063)
+
+/// The largest SQLite pages (64 KiB), a header that claims two billion
+/// pages, the WAL format flags, unknown format flags, and 5,000 tables:
+/// each read or refused as damaged, quickly, nothing written.
+#[test]
+fn sqlite_files_at_their_extremes_are_read_or_refused_quickly() {
+    // 64 KiB pages: an ordinary database.
+    let mut b = one_basic();
+    b.sql("PRAGMA journal_mode = DELETE; PRAGMA page_size = 65536; VACUUM;");
+    let big_pages = b.build(Container::Legacy);
+    let mut env = Env::new();
+    assert_eq!(env.import(&big_pages).unwrap().cards, 1);
+
+    let good = one_basic().collection();
+    let with_header = |at: usize, bytes: &[u8]| {
+        let mut c = good.clone();
+        c[at..at + bytes.len()].copy_from_slice(bytes);
+        let mut b = one_basic();
+        b.raw("collection.anki21", &c);
+        b.build(Container::Legacy)
+    };
+    // The page count in the header (offset 28): SQLite trusts it only
+    // with a matching change counter; else the file's size.
+    let lying = with_header(28, &0x7FFF_FFFF_u32.to_be_bytes());
+    // Read and write versions 2 (WAL): set back to a rollback journal in
+    // the copy (ADR 0061), so the database reads.
+    let wal = with_header(18, &[2, 2]);
+    // An unknown file format: refused as damaged.
+    let unknown = with_header(18, &[9, 9]);
+    for (what, package) in [
+        ("lying page count", lying),
+        ("WAL", wal),
+        ("unknown format", unknown),
+    ] {
+        let env = Env::new();
+        let planned = within(Duration::from_secs(10), "an odd SQLite header", move || {
+            env.plan(&package).map(|p| p.summary().cards)
+        });
+        match what {
+            "WAL" => assert!(planned.is_ok(), "{what}: {planned:?}"),
+            // Read or refused as damaged, never anything else.
+            _ => assert!(
+                matches!(
+                    planned,
+                    Ok(_) | Err(Error::AnkiRefused(AnkiProblem::Damaged(_)))
+                ),
+                "{what}: {planned:?}"
+            ),
+        }
+    }
+
+    // 5,000 tables beside Anki's: the schema and the check stay quick.
+    let mut b = one_basic();
+    let mut tables = String::new();
+    for i in 0..5_000 {
+        tables.push_str("CREATE TABLE t");
+        tables.push_str(&i.to_string());
+        tables.push_str(" (a, b, c);");
+    }
+    b.sql(&tables);
+    let package = b.build(Container::Legacy);
+    let env = Env::new();
+    let planned = within(Duration::from_secs(20), "5,000 tables", move || {
+        env.plan(&package).map(|p| p.summary().cards)
+    });
+    // Past the collection's table limit: refused, from the schema.
+    assert!(
+        matches!(&planned, Err(Error::AnkiRefused(AnkiProblem::Damaged(why))) if why.contains("too many tables")),
+        "{planned:?}"
+    );
+}
