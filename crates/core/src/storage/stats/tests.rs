@@ -400,12 +400,23 @@ proptest! {
         let before_all = stats_of(&store, Scope::All);
         let before_decks: Vec<Stats> = decks.iter().map(|d| stats_of(&store, Scope::Deck(d))).collect();
         let before_info = store.card_info(&cards[card], NOW).unwrap();
+        let before_log = store.review_events(&cards[card]).unwrap();
         let at = clock + 60_000;
         let entry = if review {
             let grade = if pass { Grade::Pass } else { Grade::Fail };
             store.record_review(&cards[card], grade, Duration::from_secs(5), at).unwrap()
         } else {
-            store.reset_card(&cards[card], at).unwrap()
+            match store.reset_card(&cards[card], at) {
+                Ok(entry) => entry,
+                // A new card has nothing to reset, and nothing is written.
+                Err(Error::CardAlreadyNew(_)) => {
+                    prop_assert_eq!(store.card_info(&cards[card], NOW).unwrap(), before_info);
+                    prop_assert_eq!(store.review_events(&cards[card]).unwrap(), before_log);
+                    assert_same(&before_all, &stats_of(&store, Scope::All));
+                    return Ok(());
+                }
+                Err(err) => panic!("reset failed: {err}"),
+            }
         };
         store.undo(&cards[card], &entry.id, at + 1).unwrap();
         assert_same(&before_all, &stats_of(&store, Scope::All));

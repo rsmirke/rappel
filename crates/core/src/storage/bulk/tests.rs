@@ -18,6 +18,15 @@ fn setup() -> (Store, String, String, Vec<String>) {
     (store, maths, art, ids)
 }
 
+/// Reviews each of `ids` once at `at`, so that a reset has progress to undo.
+fn study(store: &mut Store, ids: &[String], at: i64) {
+    for id in ids {
+        store
+            .record_review(id, Grade::Pass, Duration::ZERO, at)
+            .unwrap();
+    }
+}
+
 fn deck_of(store: &Store, id: &str) -> String {
     store.card(id).unwrap().deck_id
 }
@@ -188,7 +197,9 @@ fn a_bulk_reset_makes_cards_new_and_its_undo_brings_them_back() {
     assert_eq!(before.len(), 2);
 
     let events = store.reset_cards(&ids, T0 + 2 * DAY_MS).unwrap();
-    assert_eq!(events.len(), 3);
+    // The third card was new: left alone, with nothing written.
+    assert_eq!(events.len(), 2);
+    assert_eq!(store.review_events(&ids[2]).unwrap(), []);
     assert_eq!(schedule_table(&store).len(), 0);
     for id in &ids {
         assert!(matches!(
@@ -203,8 +214,29 @@ fn a_bulk_reset_makes_cards_new_and_its_undo_brings_them_back() {
 }
 
 #[test]
+fn a_bulk_reset_of_new_cards_writes_nothing() {
+    let (mut store, _, _, ids) = setup();
+    // Reviewed and undone: new again.
+    let review = store
+        .record_review(&ids[0], Grade::Pass, Duration::ZERO, T0)
+        .unwrap();
+    store.undo(&ids[0], &review.id, T0 + 1).unwrap();
+    let logs: Vec<_> = ids
+        .iter()
+        .map(|id| store.review_events(id).unwrap())
+        .collect();
+    assert_eq!(store.reset_cards(&ids, T0 + 2).unwrap(), []);
+    let after: Vec<_> = ids
+        .iter()
+        .map(|id| store.review_events(id).unwrap())
+        .collect();
+    assert_eq!(after, logs);
+}
+
+#[test]
 fn a_card_studied_since_its_reset_is_skipped_by_the_undo() {
     let (mut store, _, _, ids) = setup();
+    study(&mut store, &ids, T0);
     let events = store.reset_cards(&ids, T0 + 1).unwrap();
     store
         .record_review(&ids[1], Grade::Pass, Duration::ZERO, T0 + 2)
@@ -213,9 +245,9 @@ fn a_card_studied_since_its_reset_is_skipped_by_the_undo() {
     let skipped = store.undo_entries(&events, T0 + 4).unwrap();
     assert_eq!(skipped, &ids[1..]);
     // The card studied since keeps its review.
-    assert_eq!(store.review_events(&ids[1]).unwrap().len(), 2);
-    // The first card's reset is cancelled.
-    assert_eq!(store.review_events(&ids[0]).unwrap().len(), 2);
+    assert_eq!(store.review_events(&ids[1]).unwrap().len(), 3);
+    // The first card's reset is cancelled: review, reset, undo.
+    assert_eq!(store.review_events(&ids[0]).unwrap().len(), 3);
 }
 
 #[test]
@@ -300,6 +332,7 @@ fn restoring_a_tag_skips_deleted_cards_and_refuses_an_unknown_tag() {
 #[test]
 fn undoing_an_entry_twice_skips_it_the_second_time() {
     let (mut store, _, _, ids) = setup();
+    study(&mut store, &ids, T0);
     let events = store.reset_cards(&ids, T0 + 1).unwrap();
     assert_eq!(store.undo_entries(&events, T0 + 2).unwrap().len(), 0);
     assert_eq!(store.undo_entries(&events, T0 + 3).unwrap(), ids);

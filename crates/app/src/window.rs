@@ -5,16 +5,17 @@ use std::path::{Path, PathBuf};
 use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::{gio, glib};
-use rappel_core::domain::Card;
+use rappel_core::domain::{Card, SettingKey};
 use rappel_core::storage::Restored;
 
 use crate::dialogs::card_editor::CardEditor;
+use crate::i18n::{fill, gettext};
 use crate::pages::{BrowserPage, DeckPage, DecksPage, Recovered};
-use crate::startup::{Problem, data_folder_line, too_new_text};
+use crate::startup::{Problem, data_folder_line, setting_reset_text, too_new_text};
 use crate::state::AppState;
 use crate::transfer;
-use crate::ui::nav;
-use crate::ui::toast::{persistent_toast, warning_message};
+use crate::ui::toast::{info_toast, persistent_toast, warning_message};
+use crate::ui::{nav, worker};
 use crate::window_state;
 
 /// The two jobs of the primary menu.
@@ -27,6 +28,11 @@ enum Transfer {
 /// The window actions that start a [`Transfer`].
 const TRANSFER_ACTIONS: [&str; 2] = ["win.export", "win.import"];
 
+/// The icons of the "too new" and "could not start" pages, as in
+/// `data/window.blp`, given back after a short window took them off.
+const TOO_NEW_ICON: &str = "software-update-available-symbolic";
+const ERROR_ICON: &str = "dialog-error-symbolic";
+
 mod imp {
     use std::cell::{Cell, OnceCell};
 
@@ -34,7 +40,7 @@ mod imp {
     use gtk::glib;
     use gtk::prelude::*;
 
-    use crate::pages::{DeckPage, DecksPage, RecoveryPage};
+    use crate::pages::{DeckPage, DecksPage, RecoveryPage, SettingPage};
     use crate::state::AppState;
 
     #[derive(Debug, Default, gtk::CompositeTemplate)]
@@ -51,6 +57,8 @@ mod imp {
         #[template_child]
         pub recovery_page: TemplateChild<RecoveryPage>,
         #[template_child]
+        pub setting_page: TemplateChild<SettingPage>,
+        #[template_child]
         pub too_new_page: TemplateChild<adw::StatusPage>,
         #[template_child]
         pub too_new_path: TemplateChild<gtk::Label>,
@@ -58,6 +66,10 @@ mod imp {
         pub error_page: TemplateChild<adw::StatusPage>,
         #[template_child]
         pub error_details: TemplateChild<gtk::Label>,
+        #[template_child]
+        pub too_new_short: TemplateChild<adw::Breakpoint>,
+        #[template_child]
+        pub error_short: TemplateChild<adw::Breakpoint>,
         /// Set once, when the database is open (at startup or after a
         /// restore). Pages and dialogs get a clone from here.
         pub state: OnceCell<AppState>,
@@ -75,6 +87,7 @@ mod imp {
             // The template uses these types, so they must be registered first.
             DecksPage::ensure_type();
             RecoveryPage::ensure_type();
+            SettingPage::ensure_type();
             klass.bind_template();
             // Enabled once the deck list is shown.
             klass.install_action("win.new-deck", None, |window, _, _| {
@@ -137,6 +150,21 @@ mod imp {
             for action in super::TRANSFER_ACTIONS {
                 window.action_set_enabled(action, false);
             }
+            // The on-screen keyboard never covers the focused field
+            // (ADR 0058).
+            crate::ui::scroll::install(&*window);
+            // The "too new" and "could not start" pages on a short window
+            // (ADR 0058).
+            crate::ui::breakpoint::compact_status_page(
+                &self.too_new_short,
+                &self.too_new_page,
+                super::TOO_NEW_ICON,
+            );
+            crate::ui::breakpoint::compact_status_page(
+                &self.error_short,
+                &self.error_page,
+                super::ERROR_ICON,
+            );
         }
     }
     impl WidgetImpl for RappelWindow {}
@@ -205,6 +233,16 @@ impl RappelWindow {
         // Checked before keeping the state, so a failure leaves the window
         // without one (and a later retry could still call this).
         if let Err(err) = state.list_decks(rappel_core::time::now_ms()) {
+            if let rappel_core::Error::DamagedSetting { key, .. } = err {
+                // Damaged after the open checked it (another process): the
+                // same page as at startup. The state is not kept, so the
+                // reset opens the database on its own.
+                self.show_problem(Problem::DamagedSetting {
+                    key,
+                    data_dir: state.data_dir().to_path_buf(),
+                });
+                return;
+            }
             self.decks_unreadable(&err, state.data_dir());
             return;
         }
@@ -223,6 +261,7 @@ impl RappelWindow {
         }
         tracing::debug!("showing the main page");
         imp.stack.set_visible_child_name("main");
+        self.tidy_media_trash();
         // Only at startup, before the window is shown; not after a restore.
         if !self.is_mapped() {
             self.restore_state();
@@ -234,6 +273,38 @@ impl RappelWindow {
         for action in TRANSFER_ACTIONS {
             self.action_set_enabled(action, true);
         }
+    }
+
+    /// Brings back the media trash's files the database uses and purges
+    /// the old ones nothing uses (ADR 0057), on a worker after the main
+    /// page is shown, so it never holds the window back. At startup and
+    /// after a restore. Only logged: the user asked for nothing.
+    fn tidy_media_trash(&self) {
+        let Some(data_dir) = self.imp().state.get().map(|s| s.data_dir().to_path_buf()) else {
+            return;
+        };
+        glib::spawn_future_local(glib::clone!(
+            #[weak(rename_to = window)]
+            self,
+            async move {
+                let result = worker::run(&window, move || {
+                    AppState::tidy_media_trash_on_worker(&data_dir)
+                })
+                .await;
+                match result {
+                    Ok(Ok(tidied)) => {
+                        if tidied.blocked {
+                            tracing::warn!(
+                                "the media trash was not purged: a backup cannot be read"
+                            );
+                        }
+                        tracing::debug!(?tidied, "media trash tidied");
+                    }
+                    Ok(Err(err)) => tracing::warn!("tidying the media trash failed: {err}"),
+                    Err(_) => tracing::warn!("tidying the media trash stopped unexpectedly"),
+                }
+            }
+        ));
     }
 
     /// Applies the size, maximised state and open deck saved when the
@@ -363,18 +434,24 @@ impl RappelWindow {
             crate::ui::toast::show_error(
                 self,
                 "opening All Cards",
-                &format!("The cards could not be read: {err}"),
+                // Translators: a toast: what is before ":" is its title, the
+                // rest is behind Details. {error} is why, in English.
+                &crate::ui::text::with_error(
+                    &gettext("The cards could not be read: {error}"),
+                    &err,
+                ),
             );
         }
     }
 
-    /// After a reset or its undo: the counts of every open deck page and of
-    /// the deck list.
+    /// After a reset or its undo: the counts and the new cards of every open
+    /// deck page, and the deck list.
     pub fn study_changed(&self) {
         let imp = self.imp();
         for page in self.pages() {
             if let Some(deck) = page.downcast_ref::<DeckPage>() {
                 deck.update_study();
+                deck.refresh_new_flags();
             } else if let Some(browser) = page.downcast_ref::<BrowserPage>() {
                 // A deck page's Undo (suspend, reset) changed cards it lists.
                 browser.requery();
@@ -402,7 +479,7 @@ impl RappelWindow {
     fn decks_unreadable(&self, err: &rappel_core::Error, data_dir: &Path) {
         tracing::error!("cannot list decks: {err}");
         self.show_problem(Problem::Failed {
-            message: "The decks could not be read.".to_owned(),
+            message: gettext("The decks could not be read."),
             details: err.to_string(),
             data_dir: Some(data_dir.to_path_buf()),
         });
@@ -444,6 +521,24 @@ impl RappelWindow {
                         data_dir: dir.clone(),
                     })
                 ));
+                imp.recovery_page.set_on_damaged_setting(glib::clone!(
+                    #[weak(rename_to = window)]
+                    self,
+                    #[strong]
+                    data_dir,
+                    move |key, how, replaced, set_aside| {
+                        window.show_problem(Problem::DamagedSetting {
+                            key,
+                            data_dir: data_dir.clone(),
+                        });
+                        // The files were moved all the same: say where.
+                        window.add_toast(persistent_toast(&recovered_message(
+                            how,
+                            replaced.as_deref(),
+                            set_aside.as_deref(),
+                        )));
+                    }
+                ));
                 imp.recovery_page.show(
                     reason,
                     data_dir,
@@ -454,6 +549,23 @@ impl RappelWindow {
                     ),
                 );
                 imp.stack.set_visible_child_name("recovery");
+            }
+            Problem::DamagedSetting { key, data_dir } => {
+                imp.setting_page.show(
+                    key,
+                    data_dir,
+                    glib::clone!(
+                        #[weak(rename_to = window)]
+                        self,
+                        move |dir, store, key, was_reset| {
+                            window.setting_reset(dir, store, key, was_reset);
+                        }
+                    ),
+                );
+                imp.stack.set_visible_child_name("setting");
+                // After the page is the visible one: its only action takes
+                // the keyboard, as Start Fresh does on the recovery page.
+                imp.setting_page.focus_action();
             }
             Problem::TooNew {
                 found,
@@ -485,6 +597,19 @@ impl RappelWindow {
         }
     }
 
+    /// After the setting page reset the damaged setting: the main page, and
+    /// a toast that says what was reset to what.
+    fn setting_reset(
+        &self,
+        data_dir: PathBuf,
+        store: rappel_core::storage::Store,
+        key: SettingKey,
+        was_reset: bool,
+    ) {
+        self.show_main(AppState::new(data_dir, store));
+        self.add_toast(info_toast(&setting_reset_text(key, was_reset)));
+    }
+
     fn restored(&self, data_dir: PathBuf, restored: Restored, how: Recovered) {
         let message = recovered_message(
             how,
@@ -497,24 +622,38 @@ impl RappelWindow {
 }
 
 /// The toast after the recovery page got a database: what happened, where
-/// the previous database was kept, and where an unusable restore copy was
-/// (`set_aside`, ADR 0050, row 35).
+/// the previous database was kept, and where the copy an interrupted restore
+/// had left waiting was kept (`set_aside`): Start Fresh moves one that could
+/// not be used (ADR 0050, row 35), a restore sets any aside (ADR 0052).
 fn recovered_message(how: Recovered, replaced: Option<&Path>, set_aside: Option<&Path>) -> String {
-    let done = match how {
-        Recovered::Backup => "Backup restored",
-        Recovered::Finished => "Restore finished",
-        Recovered::Fresh => "Started with an empty database",
+    // The first sentence is the toast's title when the paths make the text
+    // too long for it, so it is short (`ui::toast::toast_text`).
+    let (done, short) = match how {
+        Recovered::Backup => (gettext("Backup restored"), gettext("Backup restored")),
+        Recovered::Finished => (gettext("Restore finished"), gettext("Restore finished")),
+        Recovered::Fresh => (
+            gettext("Started with an empty database"),
+            gettext("Started fresh"),
+        ),
     };
     let mut message = match replaced {
-        Some(path) => format!(
-            "{done}. The previous database was kept as {}",
-            path.display()
+        Some(path) => fill(
+            // Translators: a toast: its first sentence is its title, the
+            // rest is behind Details. {title} is "Backup restored" or the
+            // like, {path} a file's path.
+            &gettext("{title}. The previous database was kept as {path}"),
+            &[("title", &short), ("path", &path.display().to_string())],
         ),
-        None => done.to_owned(),
+        None if set_aside.is_some() => short,
+        None => done,
     };
     if let Some(path) = set_aside {
-        message.push_str(". The restore copy that could not be used was kept as ");
-        message.push_str(&path.display().to_string());
+        message = fill(
+            // Translators: a toast's text goes on: {message} is what came
+            // before ("Backup restored"), {path} a file's path.
+            &gettext("{message}. The copy an earlier restore left waiting was kept as {path}"),
+            &[("message", &message), ("path", &path.display().to_string())],
+        );
     }
     message
 }
@@ -615,7 +754,7 @@ mod tests {
         );
         assert_eq!(
             recovered_message(Recovered::Fresh, Some(kept), None),
-            "Started with an empty database. The previous database was kept as \
+            "Started fresh. The previous database was kept as \
              /data/rappel.sqlite3.replaced-20261015-120000"
         );
         assert_eq!(
@@ -625,10 +764,66 @@ mod tests {
         let copy = Path::new("/data/rappel.sqlite3.restore.refused-20261015-120000");
         assert_eq!(
             recovered_message(Recovered::Fresh, Some(kept), Some(copy)),
-            "Started with an empty database. The previous database was kept as \
-             /data/rappel.sqlite3.replaced-20261015-120000. The restore copy that could not be \
-             used was kept as /data/rappel.sqlite3.restore.refused-20261015-120000"
+            "Started fresh. The previous database was kept as \
+             /data/rappel.sqlite3.replaced-20261015-120000. The copy an earlier restore left \
+             waiting was kept as /data/rappel.sqlite3.restore.refused-20261015-120000"
         );
+        let aside = Path::new("/data/rappel.sqlite3.restore.set-aside-20261015-120000");
+        assert_eq!(
+            recovered_message(Recovered::Backup, Some(kept), Some(aside)),
+            "Backup restored. The previous database was kept as \
+             /data/rappel.sqlite3.replaced-20261015-120000. The copy an earlier restore left \
+             waiting was kept as /data/rappel.sqlite3.restore.set-aside-20261015-120000"
+        );
+        // Each fits a toast whole, or starts with a title that does, in
+        // English and in French.
+        let check = || {
+            for how in [Recovered::Backup, Recovered::Finished, Recovered::Fresh] {
+                for replaced in [None, Some(kept)] {
+                    for set_aside in [None, Some(aside)] {
+                        let text = recovered_message(how, replaced, set_aside);
+                        if let crate::ui::toast::ToastText::Detailed { title, .. } =
+                            crate::ui::toast::toast_text(&text)
+                        {
+                            assert_ne!(title, crate::ui::toast::fallback_title(), "{text}");
+                        }
+                    }
+                }
+            }
+        };
+        check();
+        crate::i18n::tests::in_french(check);
+    }
+
+    /// A damaged stored setting at startup shows "A Setting Is Damaged" with
+    /// Reset This Setting focused; the reset shows the main page (ADR 0052).
+    #[test]
+    fn a_damaged_setting_at_startup_can_be_reset_from_its_page() {
+        crate::testing::with_widgets(|| {
+            let tmp = tempfile::tempdir().expect("a temporary directory");
+            let data = crate::pages::damaged_setting_folder(
+                &tmp,
+                &[rappel_core::domain::SettingKey::DesiredRetention],
+            );
+            let err = AppState::open(data.clone()).expect_err("the open is refused");
+            let problem = crate::startup::open_problem(&err, &data);
+            let window: RappelWindow = glib::Object::new();
+            window.show_problem(problem);
+            let imp = window.imp();
+            assert_eq!(imp.stack.visible_child_name().as_deref(), Some("setting"));
+            let focus = focus_of(&window);
+            let button = focus
+                .downcast::<gtk::Button>()
+                .expect("a button has the focus");
+            assert_eq!(button.label().as_deref(), Some("_Reset This Setting"));
+
+            glib::MainContext::default().block_on(imp.setting_page.reset());
+
+            assert_eq!(imp.stack.visible_child_name().as_deref(), Some("main"));
+            let settings = imp.state.get().expect("a database is open").settings();
+            assert!(settings.is_ok());
+            window.destroy();
+        });
     }
 
     /// Finish Restore on a waiting copy from a newer Rappel shows the "too

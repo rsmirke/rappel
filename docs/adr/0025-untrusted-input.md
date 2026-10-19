@@ -4,6 +4,7 @@
 - Date: 2026-10-16
 - Amended by: ADR 0049 (time bounds are on CPU time at the speed of the machine they were set on, with a separate wall-clock hang timeout)
 - Amended by: ADR 0050 (round 2: the entry points added since #47, rows 15 to 29 in core and 30 to 38 in the app)
+- Amended by: ADR 0053 (rows 7 and 9: the archive is read by our own code, not the zip crate's reader; zip64 end records are read, at most 100,000 entries; nesting past 1,024 levels is refused; the import streams, and its budget is 200 MiB at the limits)
 
 ## Context
 

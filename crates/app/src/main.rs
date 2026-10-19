@@ -1,7 +1,11 @@
 //! Rappel: a native GNOME flashcard app.
 
 mod clock;
+#[cfg(test)]
+mod desktop_files;
 mod dialogs;
+mod gst_env;
+mod i18n;
 mod pages;
 mod render;
 mod startup;
@@ -49,6 +53,12 @@ fn main() -> glib::ExitCode {
                 .from_env_lossy(),
         )
         .init();
+    // Before GTK or GStreamer are loaded, and before any thread: may start
+    // the program again in place (ADR 0056, ADR 0062).
+    gst_env::ensure_restricted();
+    // Before GTK starts, which sets the locale and builds the first
+    // translated layouts (ADR 0059).
+    i18n::init();
 
     if let Err(err) = gio::resources_register_include!("rappel.gresource") {
         tracing::error!("failed to register bundled resources: {err}");

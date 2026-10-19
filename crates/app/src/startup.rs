@@ -6,7 +6,9 @@ use std::path::{Path, PathBuf};
 
 use rappel_core::Error;
 use rappel_core::data_dir::{self, BuildProfile, DataDirEnv};
+use rappel_core::domain::{SettingKey, Settings};
 
+use crate::i18n::{fill, gettext};
 use crate::state::AppState;
 
 /// Why the database needs a backup restored before the app can continue.
@@ -28,13 +30,13 @@ pub enum RecoveryReason {
 }
 
 impl RecoveryReason {
-    pub fn title(self) -> &'static str {
+    pub fn title(self) -> String {
         match self {
-            Self::Damaged => "Database Is Damaged",
-            Self::NotRappel => "Not a Rappel Database",
-            Self::MissingFile => "Database File Is Missing",
-            Self::InterruptedRestore => "Restore Did Not Finish",
-            Self::UnusableRestoreCopy => "Restore Copy Cannot Be Used",
+            Self::Damaged => gettext("Database Is Damaged"),
+            Self::NotRappel => gettext("Not a Rappel Database"),
+            Self::MissingFile => gettext("Database File Is Missing"),
+            Self::InterruptedRestore => gettext("Restore Did Not Finish"),
+            Self::UnusableRestoreCopy => gettext("Restore Copy Cannot Be Used"),
         }
     }
 
@@ -42,32 +44,32 @@ impl RecoveryReason {
     /// its `description_text`, which knows whether there are backups and,
     /// for [`Self::UnusableRestoreCopy`] without any, says what Start Fresh
     /// does instead of asking for a backup.
-    pub fn description(self) -> &'static str {
+    pub fn description(self) -> String {
         match self {
-            Self::Damaged => {
+            Self::Damaged => gettext(
                 "Rappel found damage in its database and did not open it, so nothing in it was \
                  changed. Restore a backup to continue. The damaged database is kept in the \
-                 data folder, not deleted."
-            }
-            Self::NotRappel => {
+                 data folder, not deleted.",
+            ),
+            Self::NotRappel => gettext(
                 "The database file was not made by Rappel, so Rappel did not open it. Restore a \
-                 backup to continue. The file is kept in the data folder, not deleted."
-            }
-            Self::MissingFile => {
+                 backup to continue. The file is kept in the data folder, not deleted.",
+            ),
+            Self::MissingFile => gettext(
                 "The database file is missing but its journal is still there, so Rappel did not \
                  start an empty database. Restore a backup to continue. The journal is kept in \
-                 the data folder, not deleted."
-            }
-            Self::InterruptedRestore => {
+                 the data folder, not deleted.",
+            ),
+            Self::InterruptedRestore => gettext(
                 "A restore was interrupted before it finished. Its checked copy is waiting in \
                  the data folder: Finish Restore installs it, or you can restore a backup \
-                 instead. The previous database is kept in the data folder, not deleted."
-            }
-            Self::UnusableRestoreCopy => {
+                 instead. The previous database is kept in the data folder, not deleted.",
+            ),
+            Self::UnusableRestoreCopy => gettext(
                 "A restore was interrupted, and the copy it left waiting is damaged or was not \
                  made by this version of Rappel. Restore a backup to continue; the copy and the \
-                 previous database stay in the data folder."
-            }
+                 previous database stay in the data folder.",
+            ),
         }
     }
 }
@@ -87,6 +89,9 @@ pub enum Problem {
         supported: u32,
         data_dir: PathBuf,
     },
+    /// A stored setting is damaged (ADR 0052): the page offers to reset it
+    /// to its default, after a backup.
+    DamagedSetting { key: SettingKey, data_dir: PathBuf },
     /// Anything else: a short message, the full error, and the data folder
     /// when it is known.
     Failed {
@@ -134,39 +139,124 @@ fn prepare_data_dir() -> rappel_core::Result<PathBuf> {
 
 /// "Data folder: …", the line under a problem that names the data folder.
 pub fn data_folder_line(dir: &Path) -> String {
-    format!("Data folder: {}", dir.display())
+    // Translators: {folder} is the path of Rappel's data folder.
+    fill(
+        &gettext("Data folder: {folder}"),
+        &[("folder", &dir.display().to_string())],
+    )
 }
 
 /// The "too new" page's description: the database is version `found`, and
 /// this build supports up to `supported`.
 pub fn too_new_text(found: i64, supported: u32) -> String {
-    format!(
-        "This database was made by a newer version of Rappel (database version {found}; \
-         this version supports up to {supported}). Update Rappel to open it. The database \
-         has not been changed."
+    fill(
+        // Translators: {found} and {supported} are database version numbers.
+        &gettext(
+            "This database was made by a newer version of Rappel (database version {found}; \
+             this version supports up to {supported}). Update Rappel to open it. The database \
+             has not been changed.",
+        ),
+        &[
+            ("found", &found.to_string()),
+            ("supported", &supported.to_string()),
+        ],
     )
+}
+
+/// The setting's name as Preferences shows it.
+pub fn setting_name(key: SettingKey) -> String {
+    match key {
+        SettingKey::DesiredRetention => gettext("Desired Retention"),
+        SettingKey::MaxNewPerDay => gettext("New Cards per Day"),
+        SettingKey::MaxReviewsPerDay => gettext("Reviews per Day"),
+        SettingKey::DayStartHour => gettext("Day Starts At"),
+    }
+}
+
+/// The setting's default, as Preferences shows a value: "90%", "20",
+/// "200", "04:00".
+pub fn setting_default(key: SettingKey) -> String {
+    let defaults = Settings::default();
+    match key {
+        SettingKey::DesiredRetention => {
+            crate::ui::text::percent(f64::from(defaults.desired_retention))
+        }
+        // Under 1,000, so no digit grouping.
+        SettingKey::MaxNewPerDay => defaults.max_new_per_day.to_string(),
+        SettingKey::MaxReviewsPerDay => defaults.max_reviews_per_day.to_string(),
+        SettingKey::DayStartHour => {
+            crate::dialogs::preferences::hour_label(defaults.day_start_hour)
+        }
+    }
+}
+
+/// The page's description: which setting, that the database was left
+/// alone, and what Reset This Setting does.
+pub fn damaged_setting_text(key: SettingKey) -> String {
+    fill(
+        // Translators: {setting} is a setting's name as Preferences shows
+        // it ("Desired Retention"), {default} its default value ("90%").
+        &gettext(
+            "The stored value of “{setting}” in Preferences cannot be read, so Rappel did not \
+             open the database. Reset This Setting makes a backup first, then sets it back to \
+             its default, {default}. Your decks, cards and review history are not changed.",
+        ),
+        &[
+            ("setting", &setting_name(key)),
+            ("default", &setting_default(key)),
+        ],
+    )
+}
+
+/// The toast once the setting page is done with `key`: reset to its
+/// default, or (`was_reset` false) found readable again meanwhile, so left
+/// as it was.
+pub fn setting_reset_text(key: SettingKey, was_reset: bool) -> String {
+    if was_reset {
+        fill(
+            // Translators: a toast: its first sentence is its title, the
+            // rest is behind Details. {setting} is a setting's name,
+            // {default} its default value.
+            &gettext("Setting reset. “{setting}” was reset to {default}; a backup was made first."),
+            &[
+                ("setting", &setting_name(key)),
+                ("default", &setting_default(key)),
+            ],
+        )
+    } else {
+        fill(
+            // Translators: a toast: its first sentence is its title, the
+            // rest is behind Details. {setting} is a setting's name.
+            &gettext("Setting not changed. “{setting}” can be read again."),
+            &[("setting", &setting_name(key))],
+        )
+    }
 }
 
 /// The screen for a data directory that could not be resolved or created.
 pub fn data_dir_problem(err: &Error) -> Problem {
     let (message, data_dir) = match err {
         Error::DebugUsesReleaseDir { path, .. } => (
-            "This debug build refused to use the data folder of an installed Rappel (or of Cards, its former name).",
+            gettext(
+                "This debug build refused to use the data folder of an installed Rappel (or of \
+                 Cards, its former name).",
+            ),
             Some(path.clone()),
         ),
-        Error::CreateDir { path, .. } => {
-            ("The data folder could not be created.", Some(path.clone()))
-        }
+        Error::CreateDir { path, .. } => (
+            gettext("The data folder could not be created."),
+            Some(path.clone()),
+        ),
         Error::NotADirectory(path) => (
-            "The data folder path points to a file, not a folder.",
+            gettext("The data folder path points to a file, not a folder."),
             Some(path.clone()),
         ),
-        Error::RelativeDataDir(_) => ("RAPPEL_DATA_DIR must be an absolute path.", None),
-        Error::NoHomeDir => ("The data folder could not be found.", None),
-        _ => ("The data folder could not be used.", None),
+        Error::RelativeDataDir(_) => (gettext("RAPPEL_DATA_DIR must be an absolute path."), None),
+        Error::NoHomeDir => (gettext("The data folder could not be found."), None),
+        _ => (gettext("The data folder could not be used."), None),
     };
     Problem::Failed {
-        message: message.to_owned(),
+        message,
         details: err.to_string(),
         data_dir,
     }
@@ -180,6 +270,12 @@ pub fn open_problem(err: &Error, data_dir: &Path) -> Problem {
         Error::NotARappelDatabase => RecoveryReason::NotRappel,
         Error::OrphanedSidecar(_) => RecoveryReason::MissingFile,
         Error::InterruptedRestore(_) => RecoveryReason::InterruptedRestore,
+        Error::DamagedSetting { key, .. } => {
+            return Problem::DamagedSetting {
+                key: *key,
+                data_dir,
+            };
+        }
         Error::UnsupportedVersion { found, supported } => {
             return Problem::TooNew {
                 found: *found,
@@ -189,7 +285,7 @@ pub fn open_problem(err: &Error, data_dir: &Path) -> Problem {
         }
         _ => {
             return Problem::Failed {
-                message: "The database could not be opened.".to_owned(),
+                message: gettext("The database could not be opened."),
                 details: err.to_string(),
                 data_dir: Some(data_dir),
             };
@@ -249,6 +345,51 @@ mod tests {
             open_problem(&Error::InterruptedRestore(partial), &dir()),
             recovery(RecoveryReason::InterruptedRestore)
         );
+    }
+
+    #[test]
+    fn a_damaged_setting_offers_to_reset_it() {
+        let err = Error::DamagedSetting {
+            key: SettingKey::MaxNewPerDay,
+            value: "\"lots\"".into(),
+        };
+        assert_eq!(
+            open_problem(&err, &dir()),
+            Problem::DamagedSetting {
+                key: SettingKey::MaxNewPerDay,
+                data_dir: dir(),
+            }
+        );
+    }
+
+    #[test]
+    fn the_damaged_setting_texts_name_it_and_its_default() {
+        let names: Vec<(String, String)> = SettingKey::ALL
+            .iter()
+            .map(|&k| (setting_name(k), setting_default(k)))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                ("Desired Retention".to_owned(), "90%".to_owned()),
+                ("New Cards per Day".to_owned(), "20".to_owned()),
+                ("Reviews per Day".to_owned(), "200".to_owned()),
+                ("Day Starts At".to_owned(), "04:00".to_owned()),
+            ]
+        );
+        assert_eq!(
+            setting_reset_text(SettingKey::DesiredRetention, true),
+            "Setting reset. “Desired Retention” was reset to 90%; a backup was made first."
+        );
+        assert_eq!(
+            setting_reset_text(SettingKey::MaxNewPerDay, false),
+            "Setting not changed. “New Cards per Day” can be read again."
+        );
+        let text = damaged_setting_text(SettingKey::DayStartHour);
+        assert!(text.starts_with("The stored value of “Day Starts At” in Preferences"));
+        assert!(text.contains("makes a backup first"));
+        assert!(text.contains("its default, 04:00."));
+        assert!(text.ends_with("are not changed."));
     }
 
     #[test]

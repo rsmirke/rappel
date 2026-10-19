@@ -10,6 +10,8 @@
 //! selection mode a click opens the editor, and a list view with a
 //! selection model selects on a click instead.
 
+use crate::i18n::gettext;
+use crate::ui::text::with_error;
 use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::{gio, glib};
@@ -49,6 +51,8 @@ mod imp {
     #[properties(wrapper_type = super::BrowserPage)]
     #[template(resource = "/io/github/rsmirke/Rappel/browser_page.ui")]
     pub struct BrowserPage {
+        #[template_child]
+        pub empty_short: TemplateChild<adw::Breakpoint>,
         #[template_child]
         pub breakpoint: TemplateChild<adw::Breakpoint>,
         #[template_child]
@@ -208,7 +212,7 @@ glib::wrapper! {
 #[derive(Debug, Clone)]
 enum Bulk {
     Suspend(bool),
-    Move { deck_id: String, deck_name: String },
+    Move { deck_id: String },
     AddTags(Vec<String>),
     RemoveTag(Tag),
     Reset,
@@ -221,7 +225,12 @@ type UndoFn = Box<dyn Fn(&AppState) -> rappel_core::Result<usize>>;
 /// A bulk action that was done: what to tell, how many cards it changed
 /// and how to take it back. The undo returns how many cards it restored.
 struct Done {
+    /// The Undo toast's title: short, so it fits beside Undo at 360 px
+    /// (ADR 0058).
     text: String,
+    /// More to say, in a toast of its own after it (which gets Details
+    /// when long): the cards Add Tags left out.
+    note: Option<String>,
     total: usize,
     undo: UndoFn,
 }
@@ -238,15 +247,17 @@ fn perform(
         Bulk::Suspend(suspended) => {
             let changed = state.set_suspended(ids, suspended)?;
             Done {
+                note: None,
                 text: text::suspended_text(changed.len(), suspended),
                 total: changed.len(),
                 undo: Box::new(move |s| s.restore_suspended(&changed, !suspended)),
             }
         }
-        Bulk::Move { deck_id, deck_name } => {
+        Bulk::Move { deck_id } => {
             let moved = state.move_cards(ids, &deck_id)?;
             Done {
-                text: text::moved_text(moved.len(), &deck_name),
+                note: None,
+                text: text::moved_text(moved.len()),
                 total: moved.len(),
                 undo: Box::new(move |s| s.unmove_cards(&moved)),
             }
@@ -261,18 +272,10 @@ fn perform(
                     text::no_room_text(limit)
                 }));
             }
-            // Only the tags that went on some card are named.
-            let linked: std::collections::HashSet<&str> =
-                added.links.iter().map(|(_, id)| id.as_str()).collect();
-            let put: Vec<String> = added
-                .tags
-                .iter()
-                .filter(|t| linked.contains(t.id.as_str()))
-                .map(|t| t.name.clone())
-                .collect();
             let links = added.links;
             Done {
-                text: text::tags_added_text(&put, added.cards.len(), added.full.len(), limit),
+                text: text::tags_added_text(added.cards.len()),
+                note: text::tags_left_out_text(added.full.len(), limit),
                 total: added.cards.len(),
                 undo: Box::new(move |s| s.release_tags(&links)),
             }
@@ -280,14 +283,19 @@ fn perform(
         Bulk::RemoveTag(tag) => {
             let changed = state.remove_tag_from_cards(ids, &tag.id)?;
             Done {
-                text: text::tag_removed_text(changed.len(), &tag.name),
+                note: None,
+                text: text::tag_removed_text(changed.len()),
                 total: changed.len(),
                 undo: Box::new(move |s| s.restore_tag_on_cards(&changed, &tag.id)),
             }
         }
         Bulk::Reset => {
             let events = state.reset_cards(ids, now)?;
+            if events.is_empty() {
+                return Ok(Err(text::no_progress_text(ids.len())));
+            }
             Done {
+                note: None,
                 text: text::reset_text(events.len()),
                 total: events.len(),
                 undo: Box::new(move |s| {
@@ -300,6 +308,7 @@ fn perform(
             state.delete_cards(ids)?;
             let ids = ids.to_vec();
             Done {
+                note: None,
                 text: text::deleted_text(ids.len()),
                 total: ids.len(),
                 undo: Box::new(move |s| s.undelete_cards(&ids)),
@@ -325,6 +334,9 @@ impl BrowserPage {
         imp.card_list
             .set_model(Some(&gtk::NoSelection::new(Some(store.clone()))));
         imp.card_list.set_factory(Some(&page.row_factory()));
+        // The empty state on a short window (ADR 0058); its icon changes
+        // with the state, so only `compact`.
+        crate::ui::breakpoint::compact_when(&imp.empty_short, &*imp.empty_page);
         for filter in [&*imp.deck_filter, &*imp.tag_filter, &*imp.state_filter] {
             dropdown::shrinkable(filter);
         }
@@ -348,7 +360,11 @@ impl BrowserPage {
     /// Reads the rows again, after an import.
     pub fn reload_all(&self) {
         if let Err(err) = self.load_filters(None) {
-            self.error_toast(&format!("The decks could not be read: {err}"));
+            // Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+            self.error_toast(&with_error(
+                &gettext("The decks could not be read: {error}"),
+                &err,
+            ));
         }
         self.requery();
     }
@@ -587,28 +603,31 @@ impl BrowserPage {
     // --- reading ---------------------------------------------------------
 
     /// Fills the deck and tag drop-downs, keeping what was chosen (or
-    /// choosing `deck_id`).
+    /// choosing `deck_id`). The tag filter lists the tags in use, and the
+    /// chosen one even if no card has it any more (`text::filter_tags`,
+    /// ADR 0052).
     fn load_filters(&self, deck_id: Option<&str>) -> rappel_core::Result<()> {
         let imp = self.imp();
         let Some(state) = imp.state.get() else {
             return Ok(());
         };
         let decks = state.decks()?;
-        let tags = state.tags()?;
         let kept_deck = text::filter_choice(imp.deck_filter.selected(), imp.decks.borrow().len())
             .map(|i| imp.decks.borrow()[i].id.clone());
-        let kept_tag = text::filter_choice(imp.tag_filter.selected(), imp.tags.borrow().len())
-            .map(|i| imp.tags.borrow()[i].id.clone());
+        let kept = text::filter_choice(imp.tag_filter.selected(), imp.tags.borrow().len())
+            .map(|i| imp.tags.borrow()[i].clone());
+        let kept_tag = kept.as_ref().map(|t| t.id.clone());
+        let tags = text::filter_tags(state.used_tags()?, kept);
         let want_deck = deck_id.map(str::to_owned).or(kept_deck);
 
         imp.quiet.set(true);
         dropdown::set_labels(
             &imp.deck_filter,
-            &labels(text::ALL_DECKS, decks.iter().map(|d| &d.name)),
+            &labels(&text::all_decks(), decks.iter().map(|d| &d.name)),
         );
         dropdown::set_labels(
             &imp.tag_filter,
-            &labels(text::ALL_TAGS, tags.iter().map(|t| &t.name)),
+            &labels(&text::all_tags(), tags.iter().map(|t| &t.name)),
         );
         let position =
             |found: Option<usize>| found.map_or(0, |i| u32::try_from(i + 1).unwrap_or(0));
@@ -658,7 +677,11 @@ impl BrowserPage {
     /// stay chosen if they are still listed.
     pub fn requery(&self) {
         if let Err(err) = self.load_rows() {
-            self.error_toast(&format!("The cards could not be read: {err}"));
+            // Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+            self.error_toast(&with_error(
+                &gettext("The cards could not be read: {error}"),
+                &err,
+            ));
         }
     }
 
@@ -704,10 +727,10 @@ impl BrowserPage {
             None => imp.content_stack.set_visible_child_name("list"),
             Some((icon, title, description)) => {
                 imp.empty_page.set_icon_name(Some(icon));
-                imp.empty_page.set_title(title);
-                imp.empty_page.set_description(Some(description));
-                imp.empty_button.set_label(if empty == Empty::NoCards {
-                    text::GO_TO_DECKS
+                imp.empty_page.set_title(&title);
+                imp.empty_page.set_description(Some(&description));
+                imp.empty_button.set_label(&if empty == Empty::NoCards {
+                    text::go_to_decks()
                 } else {
                     let (searched, filtered) = text::searched_and_filtered(&query);
                     text::clear_label(searched, filtered)
@@ -906,38 +929,45 @@ impl BrowserPage {
             "browser.add-tags",
             "browser.remove-tag",
             "browser.suspend-selected",
-            "browser.reset-selected",
             "browser.delete-selected",
         ] {
             self.action_set_enabled(action, n > 0);
         }
+        let chosen = self.chosen_items();
+        self.action_set_enabled(
+            "browser.reset-selected",
+            text::reset_offered(chosen.iter().map(BrowseItem::is_new)),
+        );
         // Tags is a menu button, which does not follow its menu's actions.
         imp.tags_button.set_sensitive(n > 0);
-        let choice = self.suspend_choice();
+        let choice = text::suspend_choice(chosen.iter().map(BrowseItem::suspended));
         let (label, accessible) = text::suspend_labels(choice);
-        imp.suspend_button.set_tooltip_text(Some(label));
+        imp.suspend_button.set_tooltip_text(Some(&label));
         imp.suspend_button
-            .update_property(&[gtk::accessible::Property::Label(accessible)]);
+            .update_property(&[gtk::accessible::Property::Label(&accessible)]);
         imp.suspend_content.set_icon_name(match choice {
             SuspendChoice::Suspend => "media-playback-pause-symbolic",
             SuspendChoice::Unsuspend => "media-playback-start-symbolic",
         });
         imp.suspend_content
-            .set_label(if self.compact() { "" } else { label });
+            .set_label(if self.compact() { "" } else { &label });
     }
 
     fn suspend_choice(&self) -> SuspendChoice {
+        text::suspend_choice(self.chosen_items().iter().map(BrowseItem::suspended))
+    }
+
+    /// The listed items that are chosen, in list order.
+    fn chosen_items(&self) -> Vec<BrowseItem> {
         let imp = self.imp();
         let Some(store) = imp.items.get() else {
-            return SuspendChoice::Suspend;
+            return Vec::new();
         };
         let selection = imp.selection.borrow();
-        text::suspend_choice(
-            (0..store.n_items())
-                .filter_map(|p| self.item(p))
-                .filter(|i| selection.contains(&i.id()))
-                .map(|i| i.suspended()),
-        )
+        (0..store.n_items())
+            .filter_map(|p| self.item(p))
+            .filter(|i| selection.contains(&i.id()))
+            .collect()
     }
 
     // --- one card --------------------------------------------------------
@@ -1008,12 +1038,20 @@ impl BrowserPage {
                 }
                 // A new tag may be in the filter's list.
                 if let Err(err) = self.load_filters(None) {
-                    self.error_toast(&format!("The tags could not be read: {err}"));
+                    // Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+                    self.error_toast(&with_error(
+                        &gettext("The tags could not be read: {error}"),
+                        &err,
+                    ));
                 }
             }
             Saved::Added(_) => {
                 if let Err(err) = self.load_filters(None) {
-                    self.error_toast(&format!("The tags could not be read: {err}"));
+                    // Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+                    self.error_toast(&with_error(
+                        &gettext("The tags could not be read: {error}"),
+                        &err,
+                    ));
                 }
                 self.requery();
             }
@@ -1060,8 +1098,14 @@ impl BrowserPage {
             async move {
                 let names: Vec<String> = decks.iter().map(|d| d.name.clone()).collect();
                 let body = text::move_body(ids.len());
-                let Some(i) =
-                    browser_dialogs::choose(&page, "Move Cards", &body, "_Move", &names).await
+                let Some(i) = browser_dialogs::choose(
+                    &page,
+                    &gettext("Move Cards"),
+                    &body,
+                    &gettext("_Move"),
+                    &names,
+                )
+                .await
                 else {
                     return;
                 };
@@ -1070,7 +1114,6 @@ impl BrowserPage {
                         &ids,
                         Bulk::Move {
                             deck_id: deck.id.clone(),
-                            deck_name: deck.name.clone(),
                         },
                     );
                 }
@@ -1078,16 +1121,19 @@ impl BrowserPage {
         ));
     }
 
-    /// Asks for tags in the card editor's tag entry, with every tag as a
-    /// suggestion (the tag filter's list, read again on every change), and
-    /// puts them on the chosen cards (ADR 0051). Returns the dialog (tests
-    /// answer it).
+    /// Asks for tags in the card editor's tag entry, with the tags in use
+    /// as suggestions (ADR 0051, 0052), and puts them on the chosen cards.
+    /// Returns the dialog (tests answer it).
     fn add_tags(&self) -> Option<adw::AlertDialog> {
         let ids = self.chosen_ids();
         if ids.is_empty() {
             return None;
         }
-        let all = self.imp().tags.borrow().clone();
+        let state = self.imp().state.get()?;
+        let all = state.used_tags().unwrap_or_else(|err| {
+            tracing::warn!("the tags could not be read for suggestions: {err}");
+            Vec::new()
+        });
         let body = text::add_tags_body(ids.len());
         browser_dialogs::add_tags(
             self,
@@ -1128,8 +1174,14 @@ impl BrowserPage {
             async move {
                 let names: Vec<String> = tags.iter().map(|t| t.name.clone()).collect();
                 let body = text::remove_tag_body(ids.len());
-                let Some(i) =
-                    browser_dialogs::choose(&page, "Remove Tag", &body, "_Remove", &names).await
+                let Some(i) = browser_dialogs::choose(
+                    &page,
+                    &gettext("Remove Tag"),
+                    &body,
+                    &gettext("_Remove"),
+                    &names,
+                )
+                .await
                 else {
                     return;
                 };
@@ -1154,18 +1206,24 @@ impl BrowserPage {
                 self.refocus(first, first_id.as_deref());
                 self.offer_undo(state, done);
             }
-            Ok(Err(notice)) => show_toast_from(self, info_toast(&notice)),
+            Ok(Err(notice)) => {
+                // Nothing was written, but the rows may be stale (a card
+                // reset elsewhere still offering Reset Progress).
+                self.requery();
+                show_toast_from(self, info_toast(&notice));
+            }
             Err(rappel_core::Error::CardNotFound(_) | rappel_core::Error::DeckNotFound(_)) => {
                 // Another window or an import removed a card or a deck: the
                 // list shown is old. Nothing was written (the write is all or
-                // nothing).
-                if let Err(err) = self.load_filters(None) {
-                    self.error_toast(&format!("The decks could not be read: {err}"));
-                }
+                // nothing). `changed` reads the filters and the rows again.
                 self.changed();
                 show_toast_from(self, info_toast(&text::stale_text()));
             }
-            Err(err) => self.error_toast(&format!("The cards could not be changed: {err}")),
+            // Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+            Err(err) => self.error_toast(&with_error(
+                &gettext("The cards could not be changed: {error}"),
+                &err,
+            )),
         }
     }
 
@@ -1193,6 +1251,15 @@ impl BrowserPage {
     /// this one goes.
     fn changed(&self) {
         self.imp().dirty.set(true);
+        // The tags in use may have changed (a tag added, taken off, or on
+        // deleted cards only), and the tag filter lists those.
+        if let Err(err) = self.load_filters(None) {
+            // Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+            self.error_toast(&with_error(
+                &gettext("The decks and tags could not be read: {error}"),
+                &err,
+            ));
+        }
         self.requery();
     }
 
@@ -1205,10 +1272,15 @@ impl BrowserPage {
             .and_downcast::<RappelWindow>()
             .map(|w| w.downgrade());
         let title = done.text.clone();
+        let note = done.note.clone();
         let toast = undo_toast(&title, move || {
             undo(&state, &done, &page, window.as_ref());
         });
         show_toast_from(self, toast);
+        // Queued after the Undo toast, which has the high priority.
+        if let Some(note) = note {
+            show_toast_from(self, info_toast(&note));
+        }
     }
 
     fn error_toast(&self, message: &str) {
@@ -1246,7 +1318,8 @@ fn undo(
             }
         }
         Err(err) => {
-            let message = format!("The change could not be undone: {err}");
+            // Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+            let message = with_error(&gettext("The change could not be undone: {error}"), &err);
             match window {
                 Some(window) => show_error(&window, "a card operation", &message),
                 None => crate::ui::toast::log_failure("a card operation", &message),
@@ -1361,10 +1434,9 @@ mod tests {
         // Move.
         let bulk = Bulk::Move {
             deck_id: art.id.clone(),
-            deck_name: art.name.clone(),
         };
         let done = perform(&state, &ids, bulk, now).unwrap().unwrap();
-        assert_eq!(done.text, "3 cards moved to Art");
+        assert_eq!(done.text, "3 cards moved");
         assert_eq!(state.card(&ids[0]).unwrap().deck_id, art.id);
         assert_eq!((done.undo)(&state).unwrap(), 3);
         assert_eq!(state.card(&ids[0]).unwrap().deck_id, maths);
@@ -1373,7 +1445,7 @@ mod tests {
         let done = perform(&state, &ids, Bulk::AddTags(tags(&["hard"])), now)
             .unwrap()
             .unwrap();
-        assert_eq!(done.text, "Tag “hard” added to 3 cards");
+        assert_eq!(done.text, "3 cards tagged");
         assert_eq!(state.card_tags(&ids[1]).unwrap().len(), 2);
         assert_eq!((done.undo)(&state).unwrap(), 3);
         assert_eq!(rows(&state), before);
@@ -1381,7 +1453,7 @@ mod tests {
         // Undo takes off the others.
         let bulk = Bulk::AddTags(tags(&["Algebra", "hard", "exam"]));
         let done = perform(&state, &ids, bulk, now).unwrap().unwrap();
-        assert_eq!(done.text, "2 tags added to 3 cards");
+        assert_eq!(done.text, "3 cards tagged");
         assert_eq!(state.card_tags(&ids[1]).unwrap().len(), 3);
         assert_eq!((done.undo)(&state).unwrap(), 3);
         assert_eq!(rows(&state), before);
@@ -1394,7 +1466,7 @@ mod tests {
         let done = perform(&state, &ids, Bulk::RemoveTag(algebra), now)
             .unwrap()
             .unwrap();
-        assert_eq!(done.text, "Tag “algebra” removed from 3 cards");
+        assert_eq!(done.text, "3 cards untagged");
         assert_eq!(state.card_tags(&ids[1]).unwrap().len(), 0);
         assert_eq!((done.undo)(&state).unwrap(), 3);
         assert_eq!(rows(&state), before);
@@ -1421,7 +1493,7 @@ mod tests {
         let done = perform(&state, &ids[..2], Bulk::Reset, now)
             .unwrap()
             .unwrap();
-        assert_eq!(done.text, "Progress reset for 2 cards");
+        assert_eq!(done.text, "2 cards reset");
         state
             .record_review(&ids[0], Grade::Pass, Duration::ZERO, now)
             .unwrap();
@@ -1457,9 +1529,10 @@ mod tests {
         let done = perform(&state, &ids, Bulk::AddTags(tags(&["x"])), now)
             .unwrap()
             .unwrap();
+        assert_eq!(done.text, "2 cards tagged");
         assert_eq!(
-            done.text,
-            "Tag “x” added to 2 cards; 1 card left out, as a card can have at most 100 tags"
+            done.note.as_deref(),
+            Some("1 card left out. A card can have at most 100 tags")
         );
         assert_eq!(state.card_tags(&ids[0]).unwrap().len(), MAX_TAGS_PER_CARD);
         assert_eq!((done.undo)(&state).unwrap(), 2);
@@ -1621,6 +1694,46 @@ mod tests {
             assert_eq!(page.suspend_choice(), SuspendChoice::Unsuspend);
             page.toggle(&ids[2]);
             assert_eq!(page.suspend_choice(), SuspendChoice::Suspend);
+        });
+    }
+
+    #[test]
+    fn reset_is_offered_only_for_cards_with_progress() {
+        crate::testing::with_widgets(|| {
+            let (_tmp, state, ids, _) = state_with_cards();
+            let now = rappel_core::time::now_ms();
+            state
+                .record_review(&ids[1], Grade::Pass, Duration::ZERO, now - DAY_MS)
+                .unwrap();
+            // Suspended, which its status shows instead of New.
+            state.set_suspended(&ids[0..1], true).unwrap();
+            let page = page_over(&state, None);
+            // Without a root a button stays insensitive whatever its action
+            // says (seen with GTK 4.24, see the review page's `can_undo`).
+            let _window = gtk::Window::builder().child(&page).build();
+            let imp = page.imp();
+            page.choose_mode(true);
+            page.toggle(&ids[0]);
+            page.toggle(&ids[2]);
+            assert!(!imp.reset_button.is_sensitive(), "only new cards chosen");
+            page.toggle(&ids[1]);
+            assert!(imp.reset_button.is_sensitive());
+            let item = |id: &str| page.position(id).and_then(|p| page.item(p)).unwrap();
+            assert!(item(&ids[0]).is_new() && item(&ids[2]).is_new());
+            assert!(!item(&ids[1]).is_new());
+
+            // Reset elsewhere: the stale row's reset writes nothing, says
+            // so, and the row catches up.
+            state.reset_card(&ids[1], now).unwrap();
+            assert!(!item(&ids[1]).is_new());
+            let log = state.review_events(&ids[1]).unwrap();
+            assert_eq!(
+                perform(&state, &ids[1..2], Bulk::Reset, now).unwrap().err(),
+                Some(text::no_progress_text(1))
+            );
+            page.run(&ids[1..2], Bulk::Reset);
+            assert_eq!(state.review_events(&ids[1]).unwrap(), log);
+            assert!(item(&ids[1]).is_new());
         });
     }
 

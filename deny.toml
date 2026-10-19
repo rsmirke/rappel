@@ -15,8 +15,26 @@ yanked = "deny"
 # REVIEW BY 2027-01-16 (cargo-deny has no expiry field). Review sooner when
 # RaTeX, ab_glyph or fontdb update, and remove the entry once RaTeX moves
 # to `skrifa`.
+#
+# RUSTSEC-2024-0436 (`paste`), RUSTSEC-2026-0371 (`zbus_names`) and the
+# `zvariant` / `zvariant_derive` notices of the same announcement (ADR 0055):
+# unmaintained, not vulnerable, with no fixed version. They reach us only
+# through glycin (the image decoder): `paste` is a build-time macro of
+# glycin-common and gufo-common. The z* crates are zbus 5's D-Bus types,
+# merged into zbus 6; glycin talks to its loader process over a private
+# socket with them (never the session or system bus), so **zvariant parses
+# the replies of the loader, which a hostile image may have taken over: it
+# sits on the sandbox boundary, inside Rappel's process**. Not a known flaw,
+# but the reason to keep watching. REVIEW ON EVERY GLYCIN RELEASE (and by
+# 2027-01-16 at the latest); remove them when glycin moves to zbus 6 and off
+# `paste` (glycin 4.0.3 still has the same tree). The maintainer is asked
+# to confirm them in docs/briefs/QUESTIONS.md.
 ignore = [
     { id = "RUSTSEC-2026-0192", reason = "ttf-parser is unmaintained, not vulnerable; it parses only the bundled KaTeX fonts and installed system fonts. Review by 2027-01-16 (ADR 0021)." },
+    { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained, not vulnerable; a build-time macro of glycin's crates. Review on every glycin release, by 2027-01-16 at the latest (ADR 0055)." },
+    { id = "RUSTSEC-2026-0370", reason = "zvariant is unmaintained (merged into zbus 6), not vulnerable; it parses the replies of glycin's loader process, so it sits on the sandbox boundary. Review on every glycin release, by 2027-01-16 at the latest; remove when glycin moves to zbus 6 (ADR 0055)." },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names is unmaintained (merged into zbus 6), not vulnerable; through glycin only. Review on every glycin release, by 2027-01-16 at the latest; remove when glycin moves to zbus 6 (ADR 0055)." },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive is unmaintained (merged into zbus 6), not vulnerable; through glycin only. Review on every glycin release, by 2027-01-16 at the latest; remove when glycin moves to zbus 6 (ADR 0055)." },
 ]
 
 [licenses]

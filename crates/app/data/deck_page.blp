@@ -74,21 +74,34 @@ template $RappelDeckPage: Adw.NavigationPage {
         Gtk.StackPage {
           name: "empty";
 
-          child: Adw.StatusPage {
-            icon-name: "document-new-symbolic";
-            title: _("No Cards Yet");
-            description: _("Add a card to start learning");
+          // Short (a phone held sideways, or the on-screen keyboard up), the
+          // empty state is `compact` so its button stays on screen (ADR 0058;
+          // `ui::breakpoint`). A bin of its own: the condition is on the
+          // room the page leaves it.
+          child: Adw.BreakpointBin {
+            width-request: 300;
+            height-request: 200;
 
-            child: Gtk.Button empty_add_button {
-              label: _("_Add Card");
-              use-underline: true;
-              action-name: "deck.new-card";
-              halign: center;
+            Adw.Breakpoint empty_short {
+              condition ("max-height: 400sp")
+            }
 
-              styles [
-                "pill",
-                "suggested-action",
-              ]
+            child: Adw.StatusPage empty_status {
+              icon-name: "document-new-symbolic";
+              title: _("No Cards Yet");
+              description: _("Add a card to start learning");
+
+              child: Gtk.Button empty_add_button {
+                label: _("_Add Card");
+                use-underline: true;
+                action-name: "deck.new-card";
+                halign: center;
+
+                styles [
+                  "pill",
+                  "suggested-action",
+                ]
+              };
             };
           };
         }

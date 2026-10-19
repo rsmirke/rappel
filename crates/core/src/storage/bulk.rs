@@ -319,8 +319,10 @@ impl Store {
         Ok(linked)
     }
 
-    /// Resets the cards `ids` at `now` (see [`Self::reset_card`]). Returns
-    /// the entries written, one per card, for [`Self::undo_entries`].
+    /// Resets the cards `ids` at `now` (see [`Self::reset_card`]). A card
+    /// that is already new is left alone, with nothing written for it.
+    /// Returns the entries written, one per card that was reset (empty if
+    /// every card was new), for [`Self::undo_entries`].
     ///
     /// # Errors
     /// [`Error::CardNotFound`] if an id is not a live card; id and SQLite
@@ -333,7 +335,11 @@ impl Store {
         ensure_live_cards(&tx, &ids)?;
         let mut events = Vec::with_capacity(ids.len());
         for id in &ids {
-            events.push(reset_in(&tx, &mut self.ids, id, now)?);
+            match reset_in(&tx, &mut self.ids, id, now) {
+                Ok(event) => events.push(event),
+                Err(Error::CardAlreadyNew(_)) => {}
+                Err(err) => return Err(err),
+            }
         }
         tx.commit()?;
         Ok(events)

@@ -2,15 +2,20 @@
 //! and never sees SQL or rusqlite (ADR 0011).
 
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use rappel_core::domain::{
-    Card, CardState, Deck, DeckSummary, Grade, ReviewEvent, Settings, Tag, TaggedCard,
+    Card, CardState, Deck, DeckSummary, Grade, ReviewEvent, SettingKey, Settings, Tag, TaggedCard,
 };
-use rappel_core::interchange::{ExportSummary, ImportPlan, ImportReport};
+use rappel_core::interchange::{
+    AnkiPlan, AnkiReport, ExportSummary, FileKind, ImportPlan, ImportReport, file_kind,
+};
+use rappel_core::media::{CleanedUp, MediaRef, TrashTidied, UnusedMedia};
 use rappel_core::scheduling::StudyInput;
 use rappel_core::stats::{CardInfo, DayGrid, Stats};
 use rappel_core::storage::{
@@ -35,6 +40,45 @@ pub struct StatsData {
     /// Where each of the days ahead begins, today first
     /// (`STATS_AHEAD_DAYS` of them).
     pub ahead_starts: Vec<i64>,
+}
+
+/// What the editor takes from a file or bytes (ADR 0055, 0056).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Accept {
+    /// Only an image (Insert Image…, a picture): `Store::add_image`.
+    Image,
+    /// Only audio (Insert Audio…): `Store::add_audio`.
+    Audio,
+    /// An image or audio, whichever the first bytes say (files pasted or
+    /// dropped): `Store::add_media`.
+    Any,
+}
+
+/// Why a media file could not be added in the editor.
+#[derive(Debug)]
+pub enum AddMediaError {
+    /// Not a file on this computer (a URL a drop or the clipboard gave):
+    /// never read.
+    NotLocal,
+    /// Not a regular file (a folder, a pipe, a device).
+    NotAFile,
+    /// A picture from the clipboard or a drop larger than an image may be.
+    TooLarge,
+    /// The file could not be opened or read.
+    Unreadable(std::io::Error),
+    /// The store refused it or failed (`Store::add_media` and its kinds).
+    Store(rappel_core::Error),
+}
+
+/// The path of `file` if it is a file on this computer: a `file:` URI
+/// with a path. Decided without any IO.
+pub fn local_path(file: &gtk::gio::File) -> Option<PathBuf> {
+    use gtk::prelude::*;
+    if file.has_uri_scheme("file") {
+        file.path()
+    } else {
+        None
+    }
 }
 
 /// A cheap-to-clone handle on the open database, shared by the window and
@@ -102,6 +146,17 @@ impl AppState {
         storage::start_fresh(data_dir, None)
     }
 
+    /// Puts the default back for the damaged stored setting `key` in
+    /// `data_dir`, after a backup, and opens the database (see
+    /// [`storage::reset_setting`], ADR 0052). Blocking; runs on a worker
+    /// thread, before any database is open.
+    pub fn reset_setting_unopened(
+        data_dir: &Path,
+        key: SettingKey,
+    ) -> rappel_core::Result<storage::SettingReset> {
+        storage::reset_setting(data_dir, key)
+    }
+
     /// Exports the database in `data_dir` to `path` (see
     /// [`Store::export_to`]). Blocking; runs on a worker thread, on its own
     /// connection ([`Store::open_concurrent`], ADR 0018), so the window's
@@ -117,10 +172,40 @@ impl AppState {
         Store::open_concurrent(data_dir)?.plan_import(path)
     }
 
+    /// Whether `path` is a Rappel export or an Anki package, by its name,
+    /// else by its content ([`file_kind`]). Blocking: it may read the
+    /// file's list of entries.
+    pub fn file_kind_on_worker(path: &Path) -> Option<FileKind> {
+        file_kind(path)
+    }
+
+    /// Reads the Anki package `path` and compares it with the database in
+    /// `data_dir` (see [`Store::plan_anki_import`]); stops when `cancel` is
+    /// set. Blocking; on its own connection like [`Self::export_on_worker`].
+    pub fn plan_anki_import_on_worker(
+        data_dir: &Path,
+        path: &Path,
+        cancel: &AtomicBool,
+    ) -> rappel_core::Result<AnkiPlan> {
+        Store::open_concurrent(data_dir)?.plan_anki_import(path, cancel)
+    }
+
+    /// Applies an Anki import `plan` (see [`Store::apply_anki_import`]);
+    /// writes nothing if `cancel` is set before it commits. Blocking; on
+    /// its own connection like [`Self::export_on_worker`].
+    pub fn apply_anki_import_on_worker(
+        data_dir: &Path,
+        plan: &AnkiPlan,
+        cancel: &AtomicBool,
+    ) -> rappel_core::Result<AnkiReport> {
+        Store::open_concurrent(data_dir)?.apply_anki_import(plan, cancel)
+    }
+
     /// Applies `plan` to the database in `data_dir` (see
     /// [`Store::apply_import`]). Blocking; on its own connection like
     /// [`Self::export_on_worker`]. A change made meanwhile on the main
-    /// connection refuses it with `ImportPlanStale`.
+    /// connection refuses it with `ImportPlanStale`, and a change to the
+    /// file since it was checked with `ImportFileChanged`.
     pub fn apply_import_on_worker(
         data_dir: &Path,
         plan: &ImportPlan,
@@ -135,6 +220,100 @@ impl AppState {
     /// [`Self::export_on_worker`].
     pub fn set_desired_retention_on_worker(data_dir: &Path, value: f32) -> rappel_core::Result<()> {
         Store::open_concurrent(data_dir)?.set_desired_retention(value)
+    }
+
+    /// Copies the media file `file` into the media store of the database
+    /// in `data_dir` (see [`Store::add_media`]), if it is of a kind
+    /// `accept` takes, and returns its reference. Blocking (a file of up
+    /// to 20 MB is hashed, copied and synced); runs on a worker thread, on
+    /// its own connection like [`Self::export_on_worker`].
+    ///
+    /// Only a file on this computer is read ([`local_path`]): a `GFile`
+    /// from a drop or the clipboard can be any URI (`https:`, `sftp:`,
+    /// `smb:`), and reading one through `GVfs` would fetch it over the
+    /// network (SPEC principle 5). A file of the document portal is a
+    /// local path. It is opened without blocking (a pipe would otherwise
+    /// hang the open) and must be a regular file, checked on the open
+    /// handle, before a byte is read.
+    pub fn add_media_on_worker(
+        data_dir: &Path,
+        file: &gtk::gio::File,
+        accept: Accept,
+    ) -> Result<MediaRef, AddMediaError> {
+        use std::os::unix::fs::OpenOptionsExt;
+        let path = local_path(file).ok_or(AddMediaError::NotLocal)?;
+        let opened = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(&path)
+            .map_err(AddMediaError::Unreadable)?;
+        let meta = opened.metadata().map_err(AddMediaError::Unreadable)?;
+        if !meta.file_type().is_file() {
+            return Err(AddMediaError::NotAFile);
+        }
+        Self::add_to_store(data_dir, opened, accept)
+    }
+
+    /// [`Self::add_media_on_worker`] for bytes (a pasted or dropped
+    /// picture, as the other program gave it).
+    pub fn add_media_bytes_on_worker(
+        data_dir: &Path,
+        bytes: &[u8],
+        accept: Accept,
+    ) -> Result<MediaRef, AddMediaError> {
+        Self::add_to_store(data_dir, bytes, accept)
+    }
+
+    fn add_to_store(
+        data_dir: &Path,
+        reader: impl std::io::Read,
+        accept: Accept,
+    ) -> Result<MediaRef, AddMediaError> {
+        Store::open_concurrent(data_dir)
+            .and_then(|store| match accept {
+                Accept::Image => store.add_image(reader),
+                Accept::Audio => store.add_audio(reader),
+                Accept::Any => store.add_media(reader),
+            })
+            .map_err(AddMediaError::Store)
+    }
+
+    /// The media files no card uses in `data_dir`, and their size (see
+    /// [`Store::unused_media`], ADR 0057). Blocking (every card is read);
+    /// on its own connection like [`Self::export_on_worker`].
+    pub fn unused_media_on_worker(data_dir: &Path) -> rappel_core::Result<UnusedMedia> {
+        Store::open_concurrent(data_dir)?.unused_media()
+    }
+
+    /// Moves the media files no card uses in `data_dir` to the trash (see
+    /// [`Store::clean_up_media`]). Blocking; on its own connection like
+    /// [`Self::export_on_worker`].
+    pub fn clean_up_media_on_worker(data_dir: &Path) -> rappel_core::Result<CleanedUp> {
+        Store::open_concurrent(data_dir)?.clean_up_media()
+    }
+
+    /// Puts back what `cleaned` moved, as far as it can (see
+    /// [`Store::undo_clean_up`]). Blocking; on its own connection.
+    pub fn undo_clean_up_on_worker(
+        data_dir: &Path,
+        cleaned: &CleanedUp,
+    ) -> rappel_core::Result<usize> {
+        Store::open_concurrent(data_dir)?.undo_clean_up(cleaned)
+    }
+
+    /// At startup: brings back the trash's files the database uses and
+    /// purges the old ones nothing uses (see [`Store::tidy_media_trash`]).
+    /// Blocking (it may read every backup); on its own connection.
+    pub fn tidy_media_trash_on_worker(data_dir: &Path) -> rappel_core::Result<TrashTidied> {
+        // A temporary copy an Anki import left after a crash goes too.
+        rappel_core::interchange::remove_stale_anki_temps(data_dir);
+        Store::open_concurrent(data_dir)?.tidy_media_trash()
+    }
+
+    /// The media folder, where card images and audio are read from (it may not
+    /// exist yet). `None` for a store without a data directory.
+    pub fn media_folder(&self) -> Option<PathBuf> {
+        self.0.store.borrow().media_folder().map(Path::to_path_buf)
     }
 
     /// The data directory the database lives in.
@@ -222,7 +401,14 @@ impl AppState {
             .edit_card_with_tags(id, front, back, tag_names)
     }
 
+    /// The tags a live card has, for the suggestions and the tag filter
+    /// (see [`Store::used_tags`], ADR 0052).
+    pub fn used_tags(&self) -> rappel_core::Result<Vec<Tag>> {
+        self.0.store.borrow().used_tags()
+    }
+
     /// Every tag, unused ones too (see [`Store::tags`]).
+    #[cfg(test)]
     pub fn tags(&self) -> rappel_core::Result<Vec<Tag>> {
         self.0.store.borrow().tags()
     }
@@ -355,6 +541,11 @@ impl AppState {
     /// A card's properties and history at `now` (see [`Store::card_info`]).
     pub fn card_info(&self, card_id: &str, now: i64) -> rappel_core::Result<CardInfo> {
         self.0.store.borrow().card_info(card_id, now)
+    }
+
+    /// The ids of a deck's new cards (see [`Store::new_card_ids`]).
+    pub fn new_card_ids(&self, deck_id: &str) -> rappel_core::Result<HashSet<String>> {
+        self.0.store.borrow().new_card_ids(deck_id)
     }
 
     /// A card's scheduling state (see [`Store::card_state`]).

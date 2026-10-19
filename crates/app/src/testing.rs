@@ -76,6 +76,15 @@ pub fn on_main_context<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static
 /// run the tests in a desktop session or under `xvfb-run -a` (ADR 0024).
 pub fn with_gtk<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
     on_main_context(|| {
+        // `gtk_init` would call `setlocale (LC_ALL, "")` while other test
+        // threads read the locale (GLib's date formats, `strftime`):
+        // glibc's `setlocale` is "MT-Unsafe const:locale" (GNU C Library
+        // manual, "Setting the Locale"), so the tests keep the C locale.
+        // Not in the child process that reads the French catalog through
+        // the C library: it runs that one test alone and needs the locale.
+        if !gtk::is_initialized() && !crate::i18n::tests::real_gettext() {
+            gtk::disable_setlocale();
+        }
         gtk::init().expect("GTK needs a display for this test; run it under `xvfb-run -a`");
         f()
     })
@@ -105,6 +114,38 @@ pub fn temporary_state() -> (tempfile::TempDir, crate::state::AppState) {
     (tmp, state)
 }
 
+/// A real WAV of `samples` samples of 8 kHz, 8-bit mono silence (one
+/// second is 8,000).
+pub fn wav_bytes(samples: u32) -> Vec<u8> {
+    let mut out = b"RIFF".to_vec();
+    out.extend_from_slice(&(36 + samples).to_le_bytes());
+    out.extend_from_slice(b"WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00");
+    out.extend_from_slice(&8_000_u32.to_le_bytes());
+    out.extend_from_slice(&8_000_u32.to_le_bytes());
+    out.extend_from_slice(b"\x01\x00\x08\x00data");
+    out.extend_from_slice(&samples.to_le_bytes());
+    out.resize(
+        out.len() + usize::try_from(samples).expect("a small file"),
+        128,
+    );
+    out
+}
+
+/// A real PNG of `w` × `h` grey pixels, encoded by GDK (needs GTK).
+pub fn png_bytes(w: i32, h: i32) -> Vec<u8> {
+    use gtk::gdk;
+    use gtk::prelude::*;
+    let pixels = vec![0x80_u8; usize::try_from(w * h * 4).expect("a small image")];
+    let texture = gdk::MemoryTexture::new(
+        w,
+        h,
+        gdk::MemoryFormat::R8g8b8a8,
+        &glib::Bytes::from_owned(pixels),
+        usize::try_from(w * 4).expect("a small image"),
+    );
+    texture.save_to_png_bytes().to_vec()
+}
+
 /// Runs the default main context until `done` holds or `timeout` has
 /// passed, and says whether `done` held. For waiting on GTK (a widget being
 /// mapped), not for timing: the timeout only stops a test that would hang.
@@ -121,6 +162,30 @@ pub fn settle_until(done: impl Fn() -> bool, timeout: Duration) -> bool {
         }
         thread::sleep(Duration::from_millis(5));
     }
+}
+
+/// Runs the test `name` (its full path) alone in a new process of this
+/// test binary, with `configure` applied to the command (its environment),
+/// fails the calling test unless it passed, and returns its standard
+/// output (printed with `--nocapture`). For what needs a process of its
+/// own: GTK types not registered yet, `GStreamer` started with given
+/// variables, a locale, or code that may bring the process down. The
+/// child test tells itself apart by a variable `configure` sets, and
+/// does nothing in a normal run.
+pub fn run_alone(name: &str, configure: impl FnOnce(&mut std::process::Command)) -> String {
+    let exe = std::env::current_exe().expect("the test binary has a path");
+    let mut command = std::process::Command::new(exe);
+    command.args(["--exact", name, "--test-threads=1", "--nocapture"]);
+    configure(&mut command);
+    let output = command.output().expect("the test binary runs again");
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert!(
+        output.status.success() && stdout.contains("1 passed"),
+        "{name} failed in a process of its own ({}):\n{stdout}\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    stdout
 }
 
 /// The calling thread's CPU time (user and system) from
@@ -293,6 +358,32 @@ fn judge(used: Duration, limit: Duration, slowdown: impl FnOnce() -> f64) -> Res
         ))
     }
 }
+
+/// [`cpu_within`] for work that can be run again from the same state:
+/// `measure` runs it and returns the CPU time it used, on this thread. A
+/// time over `limit`, even at the slowdown measured then, is measured
+/// again, up to [`TRIES`] times in all, and the first verdict within the
+/// bound passes. A burst of load during one run (the slowdown is measured
+/// after the work, and the reference does not slow down exactly as the
+/// work does, ADR 0049) then fails nothing, while a regression, slow every
+/// time, still fails (ADR 0063).
+pub fn cpu_within_retried(
+    limit: Duration,
+    mut measure: impl FnMut() -> Duration,
+) -> Result<Duration, String> {
+    let mut last = String::new();
+    for _ in 0..TRIES {
+        let used = measure();
+        match cpu_within(used, limit) {
+            Ok(()) => return Ok(used),
+            Err(message) => last = message,
+        }
+    }
+    Err(format!("{last} (measured {TRIES} times)"))
+}
+
+/// How many times [`cpu_within_retried`] measures before it fails.
+pub const TRIES: usize = 3;
 
 /// Fails the test unless `used`, a CPU time of this thread, is within
 /// `limit` ([`cpu_within`]). Call it on the thread that did the work: for

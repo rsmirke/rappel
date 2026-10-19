@@ -10,8 +10,10 @@ use adw::prelude::*;
 use rappel_core::content::plain_summary;
 
 use self::text::{History, Memory};
+use crate::i18n::gettext;
 use crate::state::AppState;
 use crate::ui::dialog;
+use crate::ui::text::with_error;
 use crate::ui::time::date_time;
 use crate::ui::toast::show_error;
 use crate::widgets::HistoryRow;
@@ -26,6 +28,11 @@ struct Built {
         expect(dead_code, reason = "only the tests look into the history list")
     )]
     history: gtk::ListBox,
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "only the tests look into the tags row")
+    )]
+    tags: adw::ActionRow,
 }
 
 /// Why the dialog could not be built.
@@ -57,7 +64,12 @@ pub fn open(
         Err(Failure::Read(err)) => show_error(
             parent,
             "reading a card's information",
-            &format!("The card's information could not be read: {err}"),
+            // Translators: a toast: what is before ":" is its title, the
+            // rest is behind Details. {error} is why, in English.
+            &with_error(
+                &gettext("The card’s information could not be read: {error}"),
+                &err,
+            ),
         ),
     }
 }
@@ -67,6 +79,7 @@ pub(crate) struct Layout {
     dialog: adw::Dialog,
     created: adw::ActionRow,
     edited: adw::ActionRow,
+    tags: adw::ActionRow,
     status: adw::ActionRow,
     reviews: adw::ActionRow,
     pass_rate: adw::ActionRow,
@@ -94,6 +107,7 @@ impl Layout {
             dialog::object(&builder, FILE, "history_list"),
             dialog::object(&builder, FILE, "history_note"),
         );
+        let tags = row("tags_row");
         let (created, edited, status, reviews, pass_rate, lapses) = (
             row("created_row"),
             row("edited_row"),
@@ -112,6 +126,7 @@ impl Layout {
             dialog: dialog?,
             created: created?,
             edited: edited?,
+            tags: tags?,
             status: status?,
             reviews: reviews?,
             pass_rate: pass_rate?,
@@ -135,6 +150,7 @@ fn build(state: &AppState, card_id: &str, now: i64) -> Result<Built, Failure> {
         dialog: card_dialog,
         created,
         edited,
+        tags,
         status,
         reviews,
         pass_rate,
@@ -147,11 +163,20 @@ fn build(state: &AppState, card_id: &str, now: i64) -> Result<Built, Failure> {
         history: list,
         note,
     } = Layout::load().map_err(|_| Failure::Layout)?;
+    let tag_names: Vec<String> = state
+        .card_tags(card_id)
+        .map_err(Failure::Read)?
+        .into_iter()
+        .map(|tag| tag.name)
+        .collect();
 
     // Card text is untrusted: plain text in labels with markup off.
     front.set_label(&plain_summary(&card.front_md));
     created.set_subtitle(&date_time(info.created_at));
     edited.set_subtitle(&date_time(info.updated_at));
+    let tags_value = text::tags_text(&tag_names);
+    tags.set_visible(tags_value.is_some());
+    tags.set_subtitle(tags_value.as_deref().unwrap_or(""));
 
     let Memory {
         status: new_status,
@@ -161,7 +186,7 @@ fn build(state: &AppState, card_id: &str, now: i64) -> Result<Built, Failure> {
         scheduled,
     } = text::memory(&info, now, &date_time);
     status.set_visible(new_status.is_some());
-    status.set_subtitle(new_status.unwrap_or(""));
+    status.set_subtitle(new_status.as_deref().unwrap_or(""));
     reviews.set_subtitle(&reviews_text);
     pass_rate.set_subtitle(&pass_rate_text);
     lapses.set_subtitle(&lapses_text);
@@ -179,6 +204,7 @@ fn build(state: &AppState, card_id: &str, now: i64) -> Result<Built, Failure> {
     Ok(Built {
         dialog: card_dialog,
         history: list,
+        tags,
     })
 }
 
@@ -187,11 +213,11 @@ fn fill_history(list: &gtk::ListBox, note: &gtk::Label, history: &History) {
         list.append(&HistoryRow::new(
             line.mark.icon(),
             line.mark.css_class(),
-            line.title,
+            &line.title,
             &line.subtitle,
         ));
     }
-    if let Some(empty) = history.empty {
+    if let Some(empty) = history.empty.as_deref() {
         list.append(&HistoryRow::new("", "", empty, ""));
     }
     note.set_label(history.note.as_deref().unwrap_or(""));
@@ -263,6 +289,35 @@ mod tests {
             };
             assert_eq!(history_titles(&built.history), ["Not studied yet"]);
             assert_eq!(built.dialog.title(), "Card Information");
+            assert!(!built.tags.is_visible(), "no tags, no row");
+        });
+    }
+
+    /// Every tag is named in full: on a phone, the row's cut pills and
+    /// "+N" have no tooltip (ADR 0058).
+    #[test]
+    fn the_tags_are_named_in_full() {
+        crate::testing::with_widgets(|| {
+            let (_tmp, state) = crate::testing::temporary_state();
+            let deck = state.create_deck("Deck").unwrap();
+            let long = "a tag name much longer than a pill shows";
+            let id = state
+                .add_card_with_tags(
+                    &deck.id,
+                    "front",
+                    "back",
+                    &[long.to_owned(), "maths".to_owned()],
+                )
+                .unwrap()
+                .card
+                .id;
+            let Ok(built) = build(&state, &id, rappel_core::time::now_ms()) else {
+                panic!("the dialog is built");
+            };
+            assert!(built.tags.is_visible());
+            let value = built.tags.subtitle().unwrap_or_default();
+            assert!(value.contains(long), "{value}");
+            assert!(value.contains("maths"), "{value}");
         });
     }
 

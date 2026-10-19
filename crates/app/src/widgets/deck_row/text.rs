@@ -21,7 +21,8 @@
 
 use rappel_core::domain::DeckSummary;
 
-use crate::ui::text::{due_count, interval_text, new_count, unit_count};
+use crate::i18n::{fill, gettext, ngettext};
+use crate::ui::text::{counted_units, due_count, interval_text, list_separator, new_count};
 use crate::ui::time::{DAY_MS, HOUR_MS, MINUTE_MS};
 
 /// The line under a deck's name, in parts: the due count (accent colour),
@@ -44,14 +45,19 @@ impl RowText {
 
     /// The row's accessible label: "Scratch, 12 due, 5 new".
     pub fn accessible_label(&self, name: &str) -> String {
-        format!("{name}, {}", self.spoken)
+        // Translators: a deck row for screen readers: {name} is the deck's
+        // name, {line} "12 due, 5 new".
+        fill(
+            &gettext("{name}, {line}"),
+            &[("name", name), ("line", &self.spoken)],
+        )
     }
 
-    fn status(shown: &str, spoken: &str) -> Self {
+    fn status(shown: String, spoken: String) -> Self {
         Self {
             due: None,
-            other: Some(shown.to_owned()),
-            spoken: spoken.to_owned(),
+            other: Some(shown),
+            spoken,
         }
     }
 }
@@ -68,7 +74,7 @@ pub fn row_text(summary: &DeckSummary, now: i64, next_day: i64) -> RowText {
             .into_iter()
             .flatten()
             .collect::<Vec<_>>()
-            .join(", ");
+            .join(&list_separator());
         return RowText {
             due: due_text,
             other: new_text,
@@ -76,31 +82,40 @@ pub fn row_text(summary: &DeckSummary, now: i64, next_day: i64) -> RowText {
         };
     }
     if summary.card_count == 0 {
-        return RowText::status("No cards yet", "no cards yet");
+        return RowText::status(gettext("No cards yet"), gettext("no cards yet"));
     }
     if summary.suspended_count >= summary.card_count {
-        return RowText::status("All cards suspended", "all cards suspended");
+        return RowText::status(
+            gettext("All cards suspended"),
+            gettext("all cards suspended"),
+        );
     }
     let held_back = summary.held_back_count > 0;
     match summary.next_change_at {
         // The limits hold cards back until the next study day, and nothing
         // comes before it: say so rather than name a later review.
-        Some(at) if held_back && at >= next_day => {
-            RowText::status("Done for today", "done for today")
-        }
+        Some(at) if held_back && at >= next_day => done_for_today(),
         Some(at) => {
             let (shown, spoken) = when(at, now, next_day);
             RowText {
                 due: None,
-                other: Some(format!("Next review {shown}")),
-                spoken: format!("next review {spoken}"),
+                // Translators: under a deck's name; {when} is "in 25 min",
+                // "tomorrow" or "in 4 days".
+                other: Some(fill(&gettext("Next review {when}"), &[("when", &shown)])),
+                // Translators: the same for screen readers; {when} is "in 25
+                // minutes", "tomorrow" or "in 4 days".
+                spoken: fill(&gettext("next review {when}"), &[("when", &spoken)]),
             }
         }
-        None if held_back => RowText::status("Done for today", "done for today"),
+        None if held_back => done_for_today(),
         // Every card that is not suspended is new (counted or held back),
         // due now (counted or held back) or due later; kept for safety.
-        None => RowText::status("Nothing to study", "nothing to study"),
+        None => RowText::status(gettext("Nothing to study"), gettext("nothing to study")),
     }
+}
+
+fn done_for_today() -> RowText {
+    RowText::status(gettext("Done for today"), gettext("done for today"))
 }
 
 fn widen(n: u32) -> usize {
@@ -114,28 +129,52 @@ fn widen(n: u32) -> usize {
 fn when(at: i64, now: i64, next_day: i64) -> (String, String) {
     let delta = at.saturating_sub(now).max(0);
     let minutes = ((delta + MINUTE_MS / 2) / MINUTE_MS).max(1);
+    // Translators: when something comes; {interval} is "25 min", "3 days".
+    let within = |interval: String| fill(&gettext("in {interval}"), &[("interval", &interval)]);
     if minutes < 60 {
         return (
-            format!("in {minutes} min"),
-            format!("in {}", unit_count(minutes, "minute", "minutes")),
+            // Translators: an interval in minutes ("10 min").
+            within(counted_units(
+                |n| ngettext("{count} min", "{count} min", n),
+                minutes,
+            )),
+            within(counted_units(
+                // Translators: an interval in minutes, in words for screen
+                // readers ("25 minutes").
+                |n| ngettext("{count} minute", "{count} minutes", n),
+                minutes,
+            )),
         );
     }
     if at < next_day || delta < 12 * HOUR_MS {
         let hours = ((delta + HOUR_MS / 2) / HOUR_MS).clamp(1, 23);
         return (
-            format!("in {hours} h"),
-            format!("in {}", unit_count(hours, "hour", "hours")),
+            // Translators: an interval in hours ("5 h").
+            within(counted_units(
+                |n| ngettext("{count} h", "{count} h", n),
+                hours,
+            )),
+            within(counted_units(
+                // Translators: an interval in hours, in words for screen
+                // readers ("3 hours").
+                |n| ngettext("{count} hour", "{count} hours", n),
+                hours,
+            )),
         );
     }
     let days = at.saturating_sub(next_day) / DAY_MS + 1;
     if days <= 1 {
-        ("tomorrow".to_owned(), "tomorrow".to_owned())
+        (gettext("tomorrow"), gettext("tomorrow"))
     } else if days < 60 {
-        let text = format!("in {}", unit_count(days, "day", "days"));
+        // Translators: an interval in days ("3 days").
+        let text = within(counted_units(
+            |n| ngettext("{count} day", "{count} days", n),
+            days,
+        ));
         (text.clone(), text)
     } else {
         // "in 3 months", "in 1.5 years": the same words either way.
-        let text = format!("in {}", interval_text(delta));
+        let text = within(interval_text(delta));
         (text.clone(), text)
     }
 }

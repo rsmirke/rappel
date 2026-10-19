@@ -4,6 +4,7 @@
     <!-- Compiled from data/*.blp by build.rs into $OUT_DIR/ui. -->
     <file preprocess="xml-stripblanks">window.ui</file>
     <file preprocess="xml-stripblanks">recovery_page.ui</file>
+    <file preprocess="xml-stripblanks">setting_page.ui</file>
     <file preprocess="xml-stripblanks">backup_row.ui</file>
     <file preprocess="xml-stripblanks">restore_dialog.ui</file>
     <file preprocess="xml-stripblanks">start_fresh_dialog.ui</file>
@@ -17,6 +18,7 @@
     <file preprocess="xml-stripblanks">browser_page.ui</file>
     <file preprocess="xml-stripblanks">browser_dialogs.ui</file>
     <file preprocess="xml-stripblanks">card_editor.ui</file>
+    <file preprocess="xml-stripblanks">image_dialog.ui</file>
     <file preprocess="xml-stripblanks">tag_suggestions.ui</file>
     <file preprocess="xml-stripblanks">discard_dialog.ui</file>
     <file preprocess="xml-stripblanks">review_page.ui</file>
@@ -24,6 +26,7 @@
     <file preprocess="xml-stripblanks">import_dialog.ui</file>
     <file preprocess="xml-stripblanks">preferences_dialog.ui</file>
     <file preprocess="xml-stripblanks">retention_dialog.ui</file>
+    <file preprocess="xml-stripblanks">clean_up_media_dialog.ui</file>
     <file preprocess="xml-stripblanks">chart_card.ui</file>
     <file preprocess="xml-stripblanks">stats_page.ui</file>
     <file preprocess="xml-stripblanks">card_info_dialog.ui</file>

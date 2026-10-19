@@ -9,12 +9,13 @@ mod settings;
 mod tag;
 
 pub use tag::{
-    MAX_TAG_NAME_BYTES, Tag, TagFieldError, TaggedCard, check_tag_name, parse_tag_field, search_key,
+    MAX_TAG_NAME_BYTES, MAX_TAGS_PER_CARD, Tag, TagFieldError, TaggedCard, check_tag_name,
+    parse_tag_field, search_key,
 };
 
 pub use settings::{
     DEFAULT_DESIRED_RETENTION, DESIRED_RETENTION_RANGE, MAX_DAILY_LIMIT, MAX_DAY_START_HOUR,
-    Settings,
+    SettingKey, Settings,
 };
 
 /// The answer to a review. Rappel has exactly two grades (SPEC §6).

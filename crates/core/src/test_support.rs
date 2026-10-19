@@ -63,6 +63,34 @@ pub(crate) fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
     PathBuf::from(name)
 }
 
+/// A small PNG for media tests: the signature, an `IHDR` chunk and `n`
+/// as the image's width, so files made with different `n` differ. Not a
+/// valid image: only its kind matters to the media store (ADR 0054).
+pub(crate) fn png_bytes(n: u32) -> Vec<u8> {
+    let mut out = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
+    out.extend_from_slice(&n.to_be_bytes());
+    out.extend_from_slice(&[0, 0, 0, 1, 8, 6, 0, 0, 0]);
+    out
+}
+
+/// A small WAV for media tests: a RIFF/WAVE header and `n` as the sample
+/// rate, then `n % 64 + 1` bytes of silence (and the pad byte a chunk of
+/// odd length has, so it is a whole WAV, `check_structure`).
+pub(crate) fn wav_bytes(n: u32) -> Vec<u8> {
+    let data = (n % 64 + 1) as usize;
+    let pad = data % 2;
+    let mut out = b"RIFF".to_vec();
+    out.extend_from_slice(&u32::try_from(36 + data + pad).unwrap().to_le_bytes());
+    out.extend_from_slice(b"WAVEfmt \x10\0\0\0\x01\0\x01\0");
+    out.extend_from_slice(&n.to_le_bytes());
+    out.extend_from_slice(&n.to_le_bytes());
+    out.extend_from_slice(b"\x01\0\x08\0data");
+    out.extend_from_slice(&u32::try_from(data).unwrap().to_le_bytes());
+    out.extend(std::iter::repeat_n(0x80, data));
+    out.extend(std::iter::repeat_n(0, pad));
+    out
+}
+
 /// The stack hostile input is parsed on in tests: a quarter of what a
 /// spawned thread gets by default (2 MiB) and a sixteenth of the main
 /// thread's usual 8 MiB, so a recursion that only just passes here has a
@@ -237,6 +265,32 @@ fn judge(used: Duration, limit: Duration, slowdown: impl FnOnce() -> f64) -> Res
     }
 }
 
+/// [`cpu_within`] for work that can be run again from the same state:
+/// `measure` runs it and returns the CPU time it used, on this thread. A
+/// time over `limit`, even at the slowdown measured then, is measured
+/// again, up to [`TRIES`] times in all, and the first verdict within the
+/// bound passes. A burst of load during one run (the slowdown is measured
+/// after the work, and the reference does not slow down exactly as the
+/// work does, ADR 0049) then fails nothing, while a regression, slow every
+/// time, still fails (ADR 0063).
+pub(crate) fn cpu_within_retried(
+    limit: Duration,
+    mut measure: impl FnMut() -> Duration,
+) -> Result<Duration, String> {
+    let mut last = String::new();
+    for _ in 0..TRIES {
+        let used = measure();
+        match cpu_within(used, limit) {
+            Ok(()) => return Ok(used),
+            Err(message) => last = message,
+        }
+    }
+    Err(format!("{last} (measured {TRIES} times)"))
+}
+
+/// How many times [`cpu_within_retried`] measures before it fails.
+pub(crate) const TRIES: usize = 3;
+
 /// Fails the test unless `used`, a CPU time of this thread, is within
 /// `limit` ([`cpu_within`]). Call it on the thread that did the work.
 #[track_caller]
@@ -334,6 +388,33 @@ fn reference_work_is_long_enough_to_time() {
     assert!(slowdown() >= 1.0);
 }
 
+/// A slow measurement is taken again; a time slow every time fails after
+/// [`TRIES`] measurements.
+#[test]
+fn a_time_over_its_bound_is_measured_again() {
+    let limit = Duration::from_millis(100);
+    let mut calls = 0;
+    let got = cpu_within_retried(limit, || {
+        calls += 1;
+        if calls < 3 {
+            Duration::from_secs(1_000)
+        } else {
+            Duration::from_millis(50)
+        }
+    });
+    assert_eq!(got, Ok(Duration::from_millis(50)));
+    assert_eq!(calls, 3);
+    let mut calls = 0;
+    assert!(
+        cpu_within_retried(limit, || {
+            calls += 1;
+            Duration::from_secs(1_000)
+        })
+        .is_err()
+    );
+    assert_eq!(calls, TRIES);
+}
+
 #[test]
 fn a_time_within_its_limit_passes_without_measuring_the_slowdown() {
     let limit = Duration::from_millis(100);
@@ -406,4 +487,30 @@ fn a_cpu_clock_that_does_not_move_is_not_trusted() {
         cpu_time_between(at(None, None), at(None, None), ms(7)),
         ms(7)
     );
+}
+
+/// A test hook: code a test runs at a point of the code under test,
+/// through a thread-local (`import::BEFORE_READ`, the Anki import's
+/// `AFTER_CARD`, `BEFORE_COMMIT`, `BEFORE_CHECK`).
+pub(crate) type Hook = std::cell::RefCell<Option<Box<dyn FnMut()>>>;
+
+/// Sets `hook` to `f` on this thread until the returned guard is dropped,
+/// even if the test panics meanwhile, so a later test on the thread never
+/// runs it.
+#[must_use = "the hook is set as long as the guard lives"]
+pub(crate) fn set_hook(
+    hook: &'static std::thread::LocalKey<Hook>,
+    f: impl FnMut() + 'static,
+) -> HookGuard {
+    hook.with_borrow_mut(|h| *h = Some(Box::new(f)));
+    HookGuard(hook)
+}
+
+/// Clears its hook when dropped ([`set_hook`]).
+pub(crate) struct HookGuard(&'static std::thread::LocalKey<Hook>);
+
+impl Drop for HookGuard {
+    fn drop(&mut self) {
+        self.0.with_borrow_mut(|h| *h = None);
+    }
 }

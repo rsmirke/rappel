@@ -3,7 +3,7 @@
 //! try studying without waiting days (ADR 0014).
 //!
 //! ```text
-//! cargo run -p rappel-core --example fill_scratch_db -- /tmp/rappel-scratch [count] [--due N] [--markdown] [--math] [--tags] [--suspended N]
+//! cargo run -p rappel-core --example fill_scratch_db -- /tmp/rappel-scratch [count] [--due N] [--markdown] [--math] [--tags] [--suspended N] [--media] [--unused-media] [--demo] [--anki PACKAGE]
 //! RAPPEL_DATA_DIR=/tmp/rappel-scratch cargo run -p rappel
 //! ```
 //!
@@ -19,7 +19,23 @@
 //! cards of the first deck get tags (ADR 0029): a few names that differ by
 //! accents and case, one card with a very long list, every fifth card none.
 //! With `--suspended N`, the last N cards of the first deck are suspended
-//! (ADR 0035), so they never overlap the first `--due N` ones.
+//! (ADR 0035), so they never overlap the first `--due N` ones. With
+//! `--media`, it adds the deck "Media" (ADR 0054): cards showing small
+//! images it draws itself (a square, a wide and a tall PNG), two playing a
+//! one-second WAV tone (on the back, and on the front among text), two
+//! naming files that are not there (an image and a sound, ADR 0056), and
+//! one with a remote image, which is shown as text; the same files every
+//! run. With `--unused-media`, it adds three media files that no card
+//! names (three PNGs), for Clean Up Media in Preferences (ADR 0057).
+//! With `--demo`, it adds six decks that look like a real collection, for
+//! the store screenshots (ADR 0060): world capitals, French words,
+//! chemical elements, art history, calculus with formulas and flags drawn
+//! as images, with tags and a month of review history, so some cards are
+//! due and the statistics have days to show. `fill_scratch_db -- <dir> 0 --demo` adds only those.
+//! With `--anki PACKAGE`, it imports that Anki package (`.apkg` or
+//! `.colpkg`) as Import… does (ADR 0061), last; `fill_scratch_db -- <dir>
+//! 0 --anki crates/core/src/interchange/anki/fixtures/current.apkg` imports
+//! only the test package Anki made.
 //! The directory
 //! must be absolute and is never one of the
 //! app's own data directories, release or debug: this is for throwaway
@@ -55,7 +71,7 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<String, String> {
-    let usage = "usage: fill_scratch_db <absolute scratch dir> [count] [--due N] [--markdown] [--math] [--tags] [--suspended N]";
+    let usage = "usage: fill_scratch_db <absolute scratch dir> [count] [--due N] [--markdown] [--math] [--tags] [--suspended N] [--media] [--unused-media] [--demo] [--anki PACKAGE]";
     let number = |arg: Option<std::ffi::OsString>| {
         arg.as_ref()
             .and_then(|n| n.to_str())
@@ -65,7 +81,8 @@ fn run() -> Result<String, String> {
     let mut args = std::env::args_os().skip(1);
     let dir = PathBuf::from(args.next().ok_or(usage)?);
     let (mut count, mut due, mut markdown, mut math, mut tags) = (None, 0, false, false, false);
-    let mut suspended = 0;
+    let (mut suspended, mut media, mut unused_media, mut demo) = (0, false, false, false);
+    let mut anki: Option<PathBuf> = None;
     while let Some(arg) = args.next() {
         if arg == "--due" {
             due = number(args.next())?;
@@ -77,6 +94,14 @@ fn run() -> Result<String, String> {
             tags = true;
         } else if arg == "--suspended" {
             suspended = number(args.next())?;
+        } else if arg == "--media" {
+            media = true;
+        } else if arg == "--unused-media" {
+            unused_media = true;
+        } else if arg == "--demo" {
+            demo = true;
+        } else if arg == "--anki" {
+            anki = Some(PathBuf::from(args.next().ok_or(usage)?));
         } else if count.is_none() {
             count = Some(number(Some(arg))?);
         } else {
@@ -84,25 +109,15 @@ fn run() -> Result<String, String> {
         }
     }
     let count = count.unwrap_or(DEFAULT_COUNT);
-    if count == 0 && !markdown && !math {
-        return Err("nothing to add: count is 0 and no --markdown or --math".to_owned());
+    if count == 0 && !markdown && !math && !media && !unused_media && !demo && anki.is_none() {
+        return Err(
+            "nothing to add: count is 0 and no --markdown, --math, --media, --unused-media, --demo \
+             or --anki"
+                .to_owned(),
+        );
     }
-    if due > count {
-        return Err(format!("--due {due} is more than the {count} cards"));
-    }
-    if due.saturating_add(suspended) > count {
-        return Err(format!(
-            "--due {due} and --suspended {suspended} are more than the {count} cards"
-        ));
-    }
-    if !dir.is_absolute() {
-        return Err(format!("{} is not an absolute path", dir.display()));
-    }
-    // `..` through a folder that does not exist yet would defeat the
-    // comparison below (it cannot be resolved before it is created).
-    if dir.components().any(|c| c == Component::ParentDir) {
-        return Err(format!("{} must not contain `..`", dir.display()));
-    }
+    check_counts(count, due, suspended)?;
+    check_dir(&dir)?;
     refuse_app_data_dirs(&dir)?;
 
     ensure_data_dir(&dir).map_err(|e| e.to_string())?;
@@ -132,11 +147,460 @@ fn run() -> Result<String, String> {
         }
         added.push(format!("{} cards to “{}”", cards.len(), deck.name));
     }
+    if media {
+        added.push(fill_media_deck(&mut store)?);
+    }
+    if unused_media {
+        for bytes in [png(300, 300)?, png(900, 500)?, png(200, 700)?] {
+            store.add_media_bytes(&bytes).map_err(|e| e.to_string())?;
+        }
+        added.push("3 media files no card uses".to_owned());
+    }
+    if demo {
+        added.push(fill_demo(&mut store)?);
+    }
+    if let Some(package) = anki {
+        added.push(import_anki(&mut store, &package)?);
+    }
     Ok(format!(
         "Added {} in {}",
         added.join(" and "),
         dir.display()
     ))
+}
+
+/// `--due` and `--suspended` fit in `count` cards.
+fn check_counts(count: usize, due: usize, suspended: usize) -> Result<(), String> {
+    if due > count {
+        return Err(format!("--due {due} is more than the {count} cards"));
+    }
+    if due.saturating_add(suspended) > count {
+        return Err(format!(
+            "--due {due} and --suspended {suspended} are more than the {count} cards"
+        ));
+    }
+    Ok(())
+}
+
+/// The scratch directory is absolute and has no `..`.
+fn check_dir(dir: &std::path::Path) -> Result<(), String> {
+    if !dir.is_absolute() {
+        return Err(format!("{} is not an absolute path", dir.display()));
+    }
+    // `..` through a folder that does not exist yet would defeat the
+    // comparison of `refuse_app_data_dirs` (it cannot be resolved before it
+    // is created).
+    if dir.components().any(|c| c == Component::ParentDir) {
+        return Err(format!("{} must not contain `..`", dir.display()));
+    }
+    Ok(())
+}
+
+/// `--anki`: imports `package` as Import… does. Returns what to report.
+fn import_anki(store: &mut Store, package: &std::path::Path) -> Result<String, String> {
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    let plan = store
+        .plan_anki_import(package, &cancel)
+        .map_err(|e| e.to_string())?;
+    let report = store
+        .apply_anki_import(&plan, &cancel)
+        .map_err(|e| e.to_string())?;
+    Ok(format!(
+        "{} cards and {} reviews from {}",
+        report.cards,
+        report.reviews,
+        package.display()
+    ))
+}
+
+/// The "Media" deck for `--media`: images drawn here, a WAV tone, a
+/// missing file and a remote image. Returns what to report.
+fn fill_media_deck(store: &mut Store) -> Result<String, String> {
+    let deck = store.create_deck("Media").map_err(|e| e.to_string())?;
+    let add = |bytes: &[u8]| {
+        store
+            .add_media_bytes(bytes)
+            .map(|m| m.reference())
+            .map_err(|e| e.to_string())
+    };
+    let square = add(&png(64, 64)?)?;
+    let wide = add(&png(600, 80)?)?;
+    let tall = add(&png(80, 400)?)?;
+    let large = add(&png(1600, 1000)?)?;
+    let tone = add(&wav_tone())?;
+    // Files that were never added: 64 zeros of hash.
+    let missing = format!("media:{}.png", "0".repeat(64));
+    let missing_audio = format!("media:{}.wav", "0".repeat(64));
+    let cards = [
+        (
+            format!("![A square of colours]({square})"),
+            "A 64 × 64 PNG".to_owned(),
+        ),
+        (
+            "Which way is it wider?".to_owned(),
+            format!("![A wide band of colours]({wide})\n\nWider than tall."),
+        ),
+        (
+            format!("![A tall band of colours]({tall})"),
+            "Taller than wide".to_owned(),
+        ),
+        (
+            "What does a large picture look like?".to_owned(),
+            format!("![A large gradient]({large})\n\nScaled down to the card's width."),
+        ),
+        (
+            "What do you hear?".to_owned(),
+            format!("[A 440 Hz tone]({tone})"),
+        ),
+        (
+            format!("Listen: [the tone on the front]({tone})\n\nWhich note is it?"),
+            "A (440 Hz)".to_owned(),
+        ),
+        (
+            format!("[A sound that is not there]({missing_audio})"),
+            "Shown as not available".to_owned(),
+        ),
+        (
+            format!("![A file that is not there]({missing})"),
+            "Shown as missing".to_owned(),
+        ),
+        (
+            "![A remote image](https://example.org/cat.png)".to_owned(),
+            "Shown as text, never fetched".to_owned(),
+        ),
+    ];
+    for (front, back) in &cards {
+        store
+            .add_card(&deck.id, front, back)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(format!(
+        "{} cards and 5 media files to “{}”",
+        cards.len(),
+        deck.name
+    ))
+}
+
+/// A deck of `--demo`: its name, the tags of every card, and its cards as
+/// (front, back).
+type DemoDeck = (
+    &'static str,
+    &'static [&'static str],
+    &'static [(&'static str, &'static str)],
+);
+
+/// The decks of `--demo` but the flags, whose fronts get their image in
+/// [`fill_demo`].
+const DEMO_DECKS: [DemoDeck; 5] = [
+    (
+        "World Capitals",
+        &["geography"],
+        &[
+            ("What is the capital of Portugal?", "Lisbon"),
+            ("What is the capital of Canada?", "Ottawa"),
+            ("What is the capital of Australia?", "Canberra"),
+            ("What is the capital of Kenya?", "Nairobi"),
+            ("What is the capital of Japan?", "Tokyo"),
+            ("What is the capital of Peru?", "Lima"),
+            ("What is the capital of Norway?", "Oslo"),
+            ("What is the capital of Morocco?", "Rabat"),
+            ("What is the capital of Vietnam?", "Hanoi"),
+            ("What is the capital of New Zealand?", "Wellington"),
+            ("What is the capital of Turkey?", "Ankara"),
+            ("What is the capital of Brazil?", "Brasília"),
+        ],
+    ),
+    (
+        "French Vocabulary",
+        &["french", "words"],
+        &[
+            (
+                "the library",
+                "**la bibliothèque**\n\n*Je vais à la bibliothèque.*",
+            ),
+            ("the weather", "**le temps**\n\n*Quel temps fait-il ?*"),
+            (
+                "to remember",
+                "**se souvenir de**\n\n*Je me souviens de toi.*",
+            ),
+            ("the key", "**la clé**"),
+            ("tomorrow", "**demain**"),
+            ("the bakery", "**la boulangerie**"),
+            ("to forget", "**oublier**"),
+            ("the train station", "**la gare**"),
+            ("slowly", "**lentement**"),
+            ("the neighbour", "**le voisin**, **la voisine**"),
+            ("to wait", "**attendre**\n\n*J’attends le bus.*"),
+            ("the weekend", "**le week-end**"),
+        ],
+    ),
+    (
+        "Chemical Elements",
+        &["chemistry"],
+        &[
+            ("Which element has the symbol **Fe**?", "Iron"),
+            ("Which element has the symbol **Na**?", "Sodium"),
+            ("Which element has the symbol **K**?", "Potassium"),
+            ("Which element has the symbol **Ag**?", "Silver"),
+            ("Which element has the symbol **W**?", "Tungsten"),
+            ("Which element has atomic number 6?", "Carbon"),
+            ("Which element has atomic number 8?", "Oxygen"),
+            ("Which noble gas is the lightest?", "Helium"),
+        ],
+    ),
+    (
+        "Art History",
+        &["art"],
+        &[
+            (
+                "Who painted *The Starry Night*?",
+                "Vincent van Gogh, in 1889",
+            ),
+            (
+                "Who painted *Girl with a Pearl Earring*?",
+                "Johannes Vermeer, around 1665",
+            ),
+            ("Who sculpted *The Thinker*?", "Auguste Rodin"),
+            ("Who painted *Las Meninas*?", "Diego Velázquez, in 1656"),
+            (
+                "Who painted *The Persistence of Memory*?",
+                "Salvador Dalí, in 1931",
+            ),
+            (
+                "Who painted *Impression, Sunrise*?",
+                "Claude Monet, in 1872",
+            ),
+        ],
+    ),
+    (
+        "Calculus",
+        &["maths"],
+        &[
+            ("What is the derivative of $\\sin x$?", "$\\cos x$"),
+            (
+                "What is the derivative of $e^{x^2}$?",
+                "$2x\\,e^{x^2}$, by the chain rule",
+            ),
+            (
+                "Compute $$\\int_0^1 x^2 \\,\\mathrm{d}x$$",
+                "$$\\frac{1}{3}$$",
+            ),
+            ("What is $$\\lim_{x \\to 0} \\frac{\\sin x}{x}$$?", "$1$"),
+            (
+                "State the fundamental theorem of calculus.",
+                "If $F' = f$ on $[a, b]$, then\n\n$$\\int_a^b f(x)\\,\\mathrm{d}x = F(b) - F(a)$$",
+            ),
+            (
+                "What is the Taylor series of $e^x$ at $0$?",
+                "$$e^x = \\sum_{n=0}^{\\infty} \\frac{x^n}{n!}$$",
+            ),
+            (
+                "Integrate by parts: $$\\int x\\,e^x \\,\\mathrm{d}x$$",
+                "$$(x - 1)\\,e^x + C$$",
+            ),
+            (
+                "What does $$\\sum_{k=1}^{n} k$$ equal?",
+                "$$\\frac{n(n+1)}{2}$$",
+            ),
+        ],
+    ),
+];
+
+/// The flags of `--demo`: the country, the stripes' colours, and whether
+/// they are vertical.
+const DEMO_FLAGS: [(&str, [[u8; 3]; 3], bool); 6] = [
+    (
+        "France",
+        [[0, 85, 164], [255, 255, 255], [239, 65, 53]],
+        true,
+    ),
+    (
+        "Italy",
+        [[0, 146, 70], [255, 255, 255], [206, 43, 55]],
+        true,
+    ),
+    (
+        "Ireland",
+        [[22, 155, 98], [255, 255, 255], [255, 136, 62]],
+        true,
+    ),
+    ("Germany", [[0, 0, 0], [221, 0, 0], [255, 206, 0]], false),
+    (
+        "the Netherlands",
+        [[174, 28, 40], [255, 255, 255], [33, 70, 139]],
+        false,
+    ),
+    ("Belgium", [[0, 0, 0], [253, 218, 36], [239, 51, 64]], true),
+];
+
+/// The `--demo` decks, with a month of history: every card but the last
+/// two of each deck was learned some days ago and reviewed a few times
+/// since, failing now and then, so some are due today and the statistics
+/// have days to show. The same content every run (the dates follow the
+/// clock). Returns what to report.
+fn fill_demo(store: &mut Store) -> Result<String, String> {
+    let now = now_ms();
+    let mut cards = 0;
+    let mut add_deck = |store: &mut Store,
+                        name: &str,
+                        tags: &[&str],
+                        sides: &[(String, String)]|
+     -> Result<(), String> {
+        let deck = store.create_deck(name).map_err(|e| e.to_string())?;
+        let tags: Vec<String> = tags.iter().map(|&t| t.to_owned()).collect();
+        for (i, (front, back)) in sides.iter().enumerate() {
+            let card = store
+                .add_card_with_tags(&deck.id, front, back, &tags)
+                .map_err(|e| e.to_string())?;
+            if i + 2 < sides.len() {
+                for (grade, at, seconds) in demo_history(cards + i, now) {
+                    store
+                        .record_review(&card.card.id, grade, Duration::from_secs(seconds), at)
+                        .map_err(|e| e.to_string())?;
+                }
+            }
+        }
+        cards += sides.len();
+        Ok(())
+    };
+    for (name, tags, sides) in DEMO_DECKS {
+        let sides: Vec<(String, String)> = sides
+            .iter()
+            .map(|&(front, back)| (front.to_owned(), back.to_owned()))
+            .collect();
+        add_deck(store, name, tags, &sides)?;
+    }
+    let mut flags = Vec::new();
+    for (country, stripes, vertical) in DEMO_FLAGS {
+        let image = store
+            .add_media_bytes(&flag_png(stripes, vertical)?)
+            .map_err(|e| e.to_string())?;
+        flags.push((
+            format!(
+                "Which country has this flag?\n\n![A flag]({})",
+                image.reference()
+            ),
+            country
+                .strip_prefix("the ")
+                .map_or_else(|| country.to_owned(), |rest| format!("The {rest}")),
+        ));
+    }
+    add_deck(store, "Flags", &["geography"], &flags)?;
+    Ok(format!("{cards} cards in 6 demo decks"))
+}
+
+/// The past reviews of demo card `i`: (grade, time, seconds taken). Learned
+/// between 5 and 29 days ago, then reviewed after 1, 3 and 8 days while
+/// that is in the past; about one review in six is a Fail.
+fn demo_history(i: usize, now: i64) -> Vec<(Grade, i64, u64)> {
+    let days_ago = 5 + (i * 7) % 25;
+    let mut day = i64::try_from(days_ago).unwrap_or(0);
+    // In the evening, a few minutes apart.
+    let at = |day: i64, n: usize| {
+        now - day * DAY_MS - 3 * 3_600_000 + i64::try_from(n).unwrap_or(0) * 40_000
+    };
+    let mut reviews = vec![(Grade::Pass, at(day, i), 12)];
+    for (n, gap) in (1..).zip([1, 3, 8]) {
+        day -= gap;
+        if day < 1 {
+            break;
+        }
+        let grade = if (i + n).is_multiple_of(6) {
+            Grade::Fail
+        } else {
+            Grade::Pass
+        };
+        let seconds = 4 + u64::try_from((i * 5 + n * 3) % 11).unwrap_or(0);
+        reviews.push((grade, at(day, i), seconds));
+    }
+    reviews
+}
+
+/// A 300 × 200 PNG of a flag of three stripes, vertical or horizontal.
+fn flag_png(stripes: [[u8; 3]; 3], vertical: bool) -> Result<Vec<u8>, String> {
+    let (width, height) = (300, 200);
+    encode_png(width, height, |x, y| {
+        let band = if vertical {
+            x * 3 / width
+        } else {
+            y * 3 / height
+        };
+        stripes[usize::try_from(band).unwrap_or(0).min(2)]
+    })
+}
+
+/// A `width` × `height` RGB PNG of a colour gradient.
+fn png(width: u32, height: u32) -> Result<Vec<u8>, String> {
+    encode_png(width, height, |x, y| {
+        let red = u8::try_from(x * 255 / width.max(1)).unwrap_or(u8::MAX);
+        let green = u8::try_from(y * 255 / height.max(1)).unwrap_or(u8::MAX);
+        [red, green, 160]
+    })
+}
+
+/// A `width` × `height` RGB PNG whose pixel (x, y) is `pixel(x, y)`, encoded
+/// here (an `IHDR`, one zlib-compressed `IDAT` of unfiltered rows, an
+/// `IEND`).
+fn encode_png(
+    width: u32,
+    height: u32,
+    pixel: impl Fn(u32, u32) -> [u8; 3],
+) -> Result<Vec<u8>, String> {
+    use flate2::Compression;
+    use flate2::write::ZlibEncoder;
+    let mut rows = Vec::new();
+    for y in 0..height {
+        rows.push(0); // Filter: none.
+        for x in 0..width {
+            rows.extend_from_slice(&pixel(x, y));
+        }
+    }
+    let mut zlib = ZlibEncoder::new(Vec::new(), Compression::default());
+    zlib.write_all(&rows).map_err(|e| e.to_string())?;
+    let data = zlib.finish().map_err(|e| e.to_string())?;
+    let mut header = width.to_be_bytes().to_vec();
+    header.extend_from_slice(&height.to_be_bytes());
+    // 8 bits per channel, RGB, deflate, no filter method, no interlace.
+    header.extend_from_slice(&[8, 2, 0, 0, 0]);
+    let mut out = b"\x89PNG\r\n\x1a\n".to_vec();
+    for (kind, body) in [(b"IHDR", header), (b"IDAT", data), (b"IEND", Vec::new())] {
+        let len = u32::try_from(body.len()).map_err(|e| e.to_string())?;
+        out.extend_from_slice(&len.to_be_bytes());
+        let start = out.len();
+        out.extend_from_slice(kind);
+        out.extend_from_slice(&body);
+        let crc = crc32fast::hash(&out[start..]);
+        out.extend_from_slice(&crc.to_be_bytes());
+    }
+    Ok(out)
+}
+
+/// One second of a 440 Hz tone (a triangle wave), 8 kHz, 8-bit mono WAV.
+fn wav_tone() -> Vec<u8> {
+    const RATE: u32 = 8_000;
+    let samples: Vec<u8> = (0..RATE)
+        .map(|i| {
+            let phase = (i * 440 * 256 / RATE) % 256;
+            let rise = if phase < 128 { phase } else { 255 - phase };
+            u8::try_from(68 + rise * 120 / 127).unwrap_or(128)
+        })
+        .collect();
+    let data = u32::try_from(samples.len()).unwrap_or(u32::MAX);
+    let mut out = b"RIFF".to_vec();
+    out.extend_from_slice(&(36 + data).to_le_bytes());
+    out.extend_from_slice(b"WAVEfmt ");
+    out.extend_from_slice(&16u32.to_le_bytes());
+    // PCM, mono, the rate, bytes per second, block align 1, 8 bits.
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&RATE.to_le_bytes());
+    out.extend_from_slice(&RATE.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&8u16.to_le_bytes());
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(&data.to_le_bytes());
+    out.extend_from_slice(&samples);
+    out
 }
 
 /// The first deck: `count` cards, the first `due` of them with a past review

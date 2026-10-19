@@ -9,6 +9,11 @@ use crate::error::{Error, Result};
 /// The longest tag name, in UTF-8 bytes once trimmed.
 pub const MAX_TAG_NAME_BYTES: usize = 256;
 
+/// The most tags the editor's field lets a card have (ADR 0050, row 30),
+/// and the most an Anki import keeps from a note (ADR 0061). The store has
+/// no limit: a card imported from a `.rappel` file keeps all its tags.
+pub const MAX_TAGS_PER_CARD: usize = 100;
+
 /// A tag. Tags are never deleted: one no card uses any more stays, so the
 /// same name later gets the same id back.
 #[derive(Debug, Clone, PartialEq, Eq)]

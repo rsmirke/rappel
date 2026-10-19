@@ -21,7 +21,9 @@ use adw::prelude::*;
 use gtk::{gio, glib};
 
 use crate::dialogs::{browser_dialogs, card_editor, card_info, deck_name_dialog, preferences};
-use crate::pages::{BrowserPage, DeckPage, DecksPage, RecoveryPage, ReviewPage, StatsPage};
+use crate::pages::{
+    BrowserPage, DeckPage, DecksPage, RecoveryPage, ReviewPage, SettingPage, StatsPage,
+};
 use crate::ui::dialog;
 use crate::widgets::{
     BackupRow, CardRow, DeckRow, HistoryRow, TagEntry, TagPills, TagSuggestions,
@@ -62,6 +64,12 @@ const CHECKS: &[(&str, Load)] = &[
     ("deck_row.blp", Load::Template(template::<DeckRow>)),
     ("decks_page.blp", Load::Template(template::<DecksPage>)),
     (
+        "clean_up_media_dialog.blp",
+        Load::Plain(|| {
+            loads("clean_up_media_dialog", dialog::CLEAN_UP_MEDIA.load().err());
+        }),
+    ),
+    (
         "delete_card_dialog.blp",
         Load::Plain(|| {
             loads("delete_card_dialog", dialog::DELETE_CARD.load().err());
@@ -74,6 +82,12 @@ const CHECKS: &[(&str, Load)] = &[
         }),
     ),
     ("history_row.blp", Load::Template(template::<HistoryRow>)),
+    (
+        "image_dialog.blp",
+        Load::Plain(|| {
+            loads("image_dialog", crate::render::full_size_layout().err());
+        }),
+    ),
     (
         "import_dialog.blp",
         Load::Plain(|| {
@@ -103,6 +117,7 @@ const CHECKS: &[(&str, Load)] = &[
         }),
     ),
     ("review_page.blp", Load::Template(template::<ReviewPage>)),
+    ("setting_page.blp", Load::Template(template::<SettingPage>)),
     (
         "shortcuts-dialog.blp",
         Load::Plain(|| {
@@ -224,23 +239,9 @@ fn plain_layouts_load_in_a_fresh_process() {
     if std::env::var_os(FRESH_PROCESS).is_some() {
         return;
     }
-    let exe = std::env::current_exe().expect("the test binary has a path");
-    let output = std::process::Command::new(exe)
-        .args([
-            "--exact",
-            "ui_files::plain_layouts_in_a_new_process",
-            "--test-threads=1",
-        ])
-        .env(FRESH_PROCESS, "1")
-        .output()
-        .expect("the test binary runs again");
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        output.status.success() && stdout.contains("1 passed"),
-        "the plain layouts failed in a fresh process ({}):\n{stdout}\n{}",
-        output.status,
-        String::from_utf8_lossy(&output.stderr)
-    );
+    crate::testing::run_alone("ui_files::plain_layouts_in_a_new_process", |command| {
+        command.env(FRESH_PROCESS, "1");
+    });
 }
 
 /// The child of `plain_layouts_load_in_a_fresh_process`: loads every plain

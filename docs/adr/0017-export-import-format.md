@@ -10,6 +10,7 @@
 - Amended by: ADR 0018 (limits enforced when writing), ADR 0020 (export extension), ADR 0026 (which backups an import can push out)
 - Amended: 2026-10-17, format version 2: tags, card tags, log entry kinds (ADR 0028, 0029) and the settings (ADR 0027); version 1 is no longer read
 - Amended: 2026-10-17, a tag with the name of a database tag is mapped onto it instead of being a conflict
+- Amended by: ADR 0053 (streaming import: the file may be 2 GiB and is read from disk, entry by entry; the plan keeps a fingerprint of the file and a digest of its decisions instead of the document, and the apply reads the file again; zip64 end records are read; the checks and merge rules are unchanged)
 
 ## Context
 

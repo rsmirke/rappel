@@ -25,6 +25,7 @@ use crate::data_dir::ensure_data_dir;
 use crate::error::{Error, Result};
 use crate::id::IdGen;
 use crate::time::now_ms;
+pub(crate) use backup::backup_names;
 pub use backup::{BackupInfo, list_backups};
 use backup::{check_rows, has_backup_for_day};
 pub(crate) use backup::{create_backup, prune_backups};
@@ -34,8 +35,10 @@ pub use restore::{Restored, finish_restore, is_unusable_copy, restore_backup, st
 pub(crate) use schedule::rebuild_cards;
 pub(crate) use search::index_card_in;
 pub use search::{BrowseQuery, BrowseRow, CardStatus, MAX_QUERY_BYTES, StateFilter};
+pub use settings::{AfterReset, SettingReset, reset_setting};
 pub(crate) use settings::{StoredSettings, replace_settings, scheduler_in, stored_settings};
 pub use stats::Scope;
+pub(crate) use tags::find_or_create_tag;
 
 /// File name of the database inside the data directory.
 pub(crate) const DB_FILE_NAME: &str = "rappel.sqlite3";
@@ -56,10 +59,14 @@ const FILE_MODE: u32 = 0o600;
 pub struct Store {
     pub(crate) conn: Connection,
     /// Issues the ids of new decks, cards and review events.
-    ids: IdGen,
+    pub(crate) ids: IdGen,
     /// Where backups go; `None` only for in-memory test stores, which
     /// cannot be backed up (an import then refuses to run).
     pub(crate) backup_dir: Option<PathBuf>,
+    /// The media folder (`<data dir>/media`, made when the first file is
+    /// added); `None` only for in-memory test stores, which then cannot
+    /// add or import media (ADR 0054).
+    pub(crate) media_dir: Option<PathBuf>,
     /// Problems [`Store::open`] met that did not stop it, for the UI.
     open_warnings: Vec<OpenWarning>,
 }
@@ -94,13 +101,19 @@ impl Store {
     ///    made if none exists for today (UTC); that one failing only logs a
     ///    warning. Old backups are pruned by the rule in ADR 0026, never
     ///    deleting the one just made.
-    /// 5. Pending migrations run, one transaction each.
+    /// 5. Pending migrations run, one transaction each. Then every file of
+    ///    the media trash the database has a row for goes back to the media
+    ///    folder (ADR 0057).
+    /// 6. The stored settings are read and checked, so a damaged value stops
+    ///    the open here, naming its key, and not later by chance in the
+    ///    first read that needs it (ADR 0052). [`reset_setting`] puts its
+    ///    default back.
     ///
     /// # Errors
     /// [`Error::IntegrityCheckFailed`], [`Error::UnsupportedVersion`],
     /// [`Error::NotARappelDatabase`], [`Error::OrphanedSidecar`], [`Error::InterruptedRestore`],
-    /// [`Error::Migration`], [`Error::ForeignKeyViolation`], backup errors,
-    /// and IO or SQLite errors.
+    /// [`Error::Migration`], [`Error::ForeignKeyViolation`],
+    /// [`Error::DamagedSetting`], backup errors, and IO or SQLite errors.
     pub fn open(data_dir: &Path) -> Result<Self> {
         Self::open_with(
             &data_dir.join(DB_FILE_NAME),
@@ -124,6 +137,27 @@ impl Store {
     /// restore passes the backup it installed (#8), finishing an
     /// interrupted restore keeps them all (#50).
     fn open_protecting(
+        db_path: &Path,
+        backup_dir: &Path,
+        now_ms: i64,
+        migrations: &[Migration],
+        protect: Protect<'_>,
+    ) -> Result<Self> {
+        Self::open_unchecked(db_path, backup_dir, now_ms, migrations, protect)?.checked()
+    }
+
+    /// The store, once its stored settings are checked: step 6 of
+    /// [`Store::open`]. It runs after the migrations, so it reads the
+    /// current schema; no migration from 0006, which made the settings
+    /// table, on reads the settings (`settings::tests`).
+    fn checked(self) -> Result<Self> {
+        stored_settings(&self.conn)?;
+        Ok(self)
+    }
+
+    /// Steps 0 to 5 of [`Store::open`], without the settings check: for
+    /// [`reset_setting`], which opens a database whose setting is damaged.
+    fn open_unchecked(
         db_path: &Path,
         backup_dir: &Path,
         now_ms: i64,
@@ -155,7 +189,37 @@ impl Store {
         let mut store = Self::from_connection(conn);
         store.open_warnings = warnings;
         store.backup_dir = Some(backup_dir.to_path_buf());
+        store.media_dir = media_dir_of(db_path);
+        if !is_new {
+            store.recover_trashed_rows(now_ms);
+        }
         Ok(store)
+    }
+
+    /// Step 5b of [`Store::open`]: brings back from the media trash every
+    /// file the database has a row for (a clean-up cut off before its
+    /// commit, a restored backup; ADR 0057). It only lists the trash, so it
+    /// costs nothing while the trash is empty. A failure is only logged:
+    /// the files stay in the trash, which the next start looks at again
+    /// and never purges while a row names them.
+    fn recover_trashed_rows(&mut self, now_ms: i64) {
+        let Some(media_dir) = self.media_dir.clone() else {
+            return;
+        };
+        let result = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(Error::from)
+            .and_then(|tx| {
+                let n = crate::media::recover_rows(&tx, &media_dir, now_ms)?;
+                tx.commit()?;
+                Ok(n)
+            });
+        match result {
+            Ok(0) => {}
+            Ok(n) => tracing::info!(files = n, "media files brought back from the trash at open"),
+            Err(err) => tracing::warn!("cannot bring media files back from the trash: {err}"),
+        }
     }
 
     /// Opens another connection to the database in `data_dir`, which
@@ -202,6 +266,7 @@ impl Store {
         apply_write_settings(&conn)?;
         let mut store = Self::from_connection(conn);
         store.backup_dir = Some(backup_dir.to_path_buf());
+        store.media_dir = media_dir_of(db_path);
         Ok(store)
     }
 
@@ -211,6 +276,7 @@ impl Store {
             conn,
             ids: IdGen::new(),
             backup_dir: None,
+            media_dir: None,
             open_warnings: Vec::new(),
         }
     }
@@ -241,6 +307,14 @@ impl Store {
             .pragma_query_value(None, "user_version", |r| r.get(0))?;
         Ok(v)
     }
+}
+
+/// The media folder beside the database at `db_path` (in the data
+/// directory).
+fn media_dir_of(db_path: &Path) -> Option<PathBuf> {
+    db_path
+        .parent()
+        .map(|dir| dir.join(crate::media::MEDIA_DIR_NAME))
 }
 
 /// Opens the connection with its connection-only settings; none of them
@@ -352,7 +426,11 @@ fn back_up(
 /// SQLite errors, or [`Error::InvalidColumn`] if that id is not a UUID
 /// (the schema's `CHECK` only enforces length and case). The write is then
 /// refused rather than risk an id that sorts out of order.
-fn observe_max_id(conn: &Connection, ids: &mut IdGen, column: &'static str) -> Result<()> {
+pub(crate) fn observe_max_id(
+    conn: &Connection,
+    ids: &mut IdGen,
+    column: &'static str,
+) -> Result<()> {
     let (table, id) = column.split_once('.').unwrap_or((column, "id"));
     let max: Option<String> =
         conn.query_row(&format!("SELECT max({id}) FROM {table}"), [], |r| r.get(0))?;

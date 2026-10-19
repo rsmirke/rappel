@@ -20,13 +20,19 @@ use gtk::glib;
 use rappel_core::domain::Deck;
 
 use crate::dialogs::deck_name_dialog::{self, Purpose};
+use crate::i18n::{fill, gettext};
 use crate::pages::{DeckPage, StatsPage};
 use crate::state::AppState;
 use crate::ui::focus::index_after_removal;
 use crate::ui::nav;
+use crate::ui::text::with_error;
 use crate::ui::toast::{show_error, show_toast_from, undo_toast};
 use crate::widgets::DeckRow;
 use crate::widgets::deck_row::text::refresh_delay_ms;
+
+/// The empty state's icon, as in its layout, given back after a short
+/// window took it off (`ui::breakpoint::compact_status_page`).
+const EMPTY_ICON: &str = "accessories-dictionary-symbolic";
 
 mod imp {
     use std::cell::{Cell, OnceCell, RefCell};
@@ -43,6 +49,10 @@ mod imp {
     #[derive(Debug, Default, gtk::CompositeTemplate)]
     #[template(resource = "/io/github/rsmirke/Rappel/decks_page.ui")]
     pub struct DecksPage {
+        #[template_child]
+        pub empty_short: TemplateChild<adw::Breakpoint>,
+        #[template_child]
+        pub empty_status: TemplateChild<adw::StatusPage>,
         #[template_child]
         pub content_stack: TemplateChild<gtk::Stack>,
         #[template_child]
@@ -91,6 +101,12 @@ mod imp {
     impl ObjectImpl for DecksPage {
         fn constructed(&self) {
             self.parent_constructed();
+            // The empty state on a short window (ADR 0058).
+            crate::ui::breakpoint::compact_status_page(
+                &self.empty_short,
+                &self.empty_status,
+                super::EMPTY_ICON,
+            );
             let page = self.obj();
             self.deck_list.connect_row_activated(glib::clone!(
                 #[weak]
@@ -220,7 +236,11 @@ impl DecksPage {
             // list is rebuilt by that change.
             Err(rappel_core::Error::DeckNotFound(_)) => return,
             Err(err) => {
-                self.error_toast(&format!("The deck could not be read: {err}"));
+                // Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+                self.error_toast(&with_error(
+                    &gettext("The deck could not be read: {error}"),
+                    &err,
+                ));
                 return;
             }
         };
@@ -240,7 +260,11 @@ impl DecksPage {
         match pushed {
             Ok(true) => log_first_frame(&view, started, built_ms),
             Ok(false) => {}
-            Err(err) => self.error_toast(&format!("The cards could not be read: {err}")),
+            // Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+            Err(err) => self.error_toast(&with_error(
+                &gettext("The cards could not be read: {error}"),
+                &err,
+            )),
         }
     }
 
@@ -253,7 +277,11 @@ impl DecksPage {
             return;
         };
         if let Err(err) = nav::push_unless_on_top(&view, || StatsPage::new(state, None)) {
-            self.error_toast(&format!("The statistics could not be read: {err}"));
+            // Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+            self.error_toast(&with_error(
+                &gettext("The statistics could not be read: {error}"),
+                &err,
+            ));
         }
     }
 
@@ -274,7 +302,11 @@ impl DecksPage {
                 };
                 match state.create_deck(&name) {
                     Ok(deck) => page.reload_or_toast(Focus::Deck(&deck.id)),
-                    Err(err) => page.error_toast(&format!("The deck could not be created: {err}")),
+                    // Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+                    Err(err) => page.error_toast(&with_error(
+                        &gettext("The deck could not be created: {error}"),
+                        &err,
+                    )),
                 }
             }
         ));
@@ -300,7 +332,11 @@ impl DecksPage {
                 };
                 match state.rename_deck(&id, &name) {
                     Ok(()) => page.reload_or_toast(Focus::Deck(&id)),
-                    Err(err) => page.error_toast(&format!("The deck could not be renamed: {err}")),
+                    // Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+                    Err(err) => page.error_toast(&with_error(
+                        &gettext("The deck could not be renamed: {error}"),
+                        &err,
+                    )),
                 }
             }
         ));
@@ -319,12 +355,18 @@ impl DecksPage {
         };
         let name = decks[index].name.clone();
         if let Err(err) = state.delete_deck(id) {
-            self.error_toast(&format!("The deck could not be deleted: {err}"));
+            // Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+            self.error_toast(&with_error(
+                &gettext("The deck could not be deleted: {error}"),
+                &err,
+            ));
             return;
         }
         self.reload_or_toast(Focus::Index(index));
 
-        let title = format!("“{name}” deleted");
+        // The deck was just chosen; short, so it fits beside Undo at 360 px
+        // (ADR 0058).
+        let title = gettext("Deck deleted");
         let id = id.to_owned();
         let toast = undo_toast(
             &title,
@@ -343,7 +385,13 @@ impl DecksPage {
         };
         match state.undelete_deck(id) {
             Ok(_) => self.reload_or_toast(Focus::Deck(id)),
-            Err(err) => self.error_toast(&format!("“{name}” could not be restored: {err}")),
+            Err(err) => self.error_toast(&fill(
+                // Translators: a toast: what is before ":" is its title, the
+                // rest is behind Details. {name} is a deck's name, {error}
+                // why, in English.
+                &gettext("“{name}” could not be restored: {error}"),
+                &[("name", name), ("error", &err.to_string())],
+            )),
         }
     }
 
@@ -365,7 +413,11 @@ impl DecksPage {
         match state.decks() {
             Ok(decks) => Some(decks),
             Err(err) => {
-                self.error_toast(&format!("The decks could not be read: {err}"));
+                // Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+                self.error_toast(&with_error(
+                    &gettext("The decks could not be read: {error}"),
+                    &err,
+                ));
                 None
             }
         }
@@ -458,7 +510,8 @@ impl DecksPage {
             Err(err) => self.imp().read_errors.show(
                 self,
                 "reading the decks",
-                &format!("The decks could not be read: {err}"),
+                // Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+                &with_error(&gettext("The decks could not be read: {error}"), &err),
             ),
         }
     }

@@ -9,7 +9,7 @@ Adw.PreferencesDialog preferences_dialog {
 
   Adw.PreferencesPage settings_page {
     Adw.PreferencesGroup {
-      title: _("Study");
+      title: C_("preferences group", "Study");
       description: _("Limits count for each deck separately");
 
       Adw.SpinRow new_per_day {
@@ -68,6 +68,28 @@ Adw.PreferencesDialog preferences_dialog {
       Adw.ButtonRow open_backups {
         title: _("Open Backup Folder");
         start-icon-name: "folder-open-symbolic";
+      }
+    }
+
+    // Clean Up Media (ADR 0057): the subtitle and the button's sensitivity
+    // are set in dialogs/clean_up.rs.
+    Adw.PreferencesGroup {
+      title: _("Storage");
+
+      Adw.ActionRow clean_up_row {
+        title: _("Clean Up Media");
+        subtitle: _("Looking for files no card uses…");
+        use-markup: false;
+        activatable-widget: clean_up_button;
+
+        [suffix]
+        Gtk.Button clean_up_button {
+          label: _("Clean _Up…");
+          use-underline: true;
+          valign: center;
+          sensitive: false;
+          tooltip-text: _("Move the media files no card uses to the trash");
+        }
       }
     }
   }

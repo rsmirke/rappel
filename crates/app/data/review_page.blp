@@ -5,7 +5,7 @@ using Adw 1;
 // front and back boxes are filled by render/ (ADR 0019), which escapes the
 // untrusted card content.
 template $RappelReviewPage: Adw.NavigationPage {
-  title: _("Study");
+  title: C_("page title", "Study");
 
   // The bin's size request is the window's minimum (data/window.blp);
   // AdwBreakpointBin needs one.
@@ -91,7 +91,9 @@ template $RappelReviewPage: Adw.NavigationPage {
         Adw.ViewStackPage {
           name: "card";
 
-          child: Gtk.ScrolledWindow {
+          // Scrolled to the answer at the reveal when the answer would
+          // start below the view (a tall front on a phone; ADR 0058).
+          child: Gtk.ScrolledWindow card_scroller {
             hscrollbar-policy: never;
 
             child: Adw.Clamp {
@@ -347,6 +349,7 @@ template $RappelReviewPage: Adw.NavigationPage {
               }
 
               Gtk.Label reveal_hint {
+                // Translators: the name of the Space key, shown under Show Answer.
                 label: _("Space");
                 accessible-role: presentation;
 
@@ -385,6 +388,7 @@ template $RappelReviewPage: Adw.NavigationPage {
                 }
 
                 Gtk.Label fail_hint {
+                  // Translators: the key that answers Fail; keep it as it is.
                   label: _("1");
                   accessible-role: presentation;
 
@@ -417,6 +421,7 @@ template $RappelReviewPage: Adw.NavigationPage {
                 }
 
                 Gtk.Label pass_hint {
+                  // Translators: the key that answers Pass; keep it as it is.
                   label: _("2");
                   accessible-role: presentation;
 

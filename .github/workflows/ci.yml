@@ -37,11 +37,29 @@ jobs:
           # Second line: what the bare container lacks for checkout, rustup,
           # install-action (jq) and linking.
           # Third line: an X server for the tests that need GTK (ADR 0024).
+          # Fourth line: the image decoder glycin, its build dependencies,
+          # its loaders and its sandbox, for the image tests (ADR 0055;
+          # where bubblewrap cannot make namespaces, as in an unprivileged
+          # container, glycin runs its loaders unsandboxed by design).
+          # Fifth line: GStreamer's base, good and bad plugins, so the audio
+          # tests play through GTK's media stream for real (ADR 0056);
+          # without playbin3 Rappel plays nothing, by its own check. The bad
+          # plugins bring faad, the AAC decoder M4A files need under
+          # Rappel's plugin allow-list (ADR 0062).
+          # Sixth line: the C library's locale sources, from which a test
+          # makes a French locale with localedef to read the French
+          # catalog through gettext itself (ADR 0059).
+          # Seventh line: the validators of the desktop integration drafts
+          # in data/, which the tests run (ADR 0060).
           apt-get install -y --no-install-recommends \
             libgtk-4-dev libadwaita-1-dev libgtksourceview-5-dev gir1.2-gtksource-5 \
             blueprint-compiler libglib2.0-dev-bin \
             git ca-certificates curl jq build-essential pkg-config \
-            xvfb xauth
+            xvfb xauth \
+            liblcms2-dev libseccomp-dev libfontconfig-dev glycin-loaders bubblewrap \
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
+            locales \
+            appstream desktop-file-utils
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

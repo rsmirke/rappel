@@ -40,8 +40,9 @@ pub(super) struct Document {
     /// The settings the user changed; a key that is not here has its
     /// default (ADR 0027).
     pub settings: SettingsRecord,
-    /// No media exist yet; must be empty.
-    pub media: Vec<serde_json::Value>,
+    /// One record per file in the archive's `media/` folder, sorted by
+    /// hash (ADR 0054).
+    pub media: Vec<MediaRecord>,
 }
 
 /// A `decks` row, deleted ones included. `name_key` is not exported: it
@@ -132,4 +133,16 @@ pub(super) struct SettingsRecord {
     pub max_reviews_per_day: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub day_start_hour: Option<u8>,
+}
+
+/// A `media` row: a file of the archive's `media/` folder, which is named
+/// `media/<hash>.<ext>` with the extension of `mime` (ADR 0054). `bytes`
+/// is signed so that a negative size is reported as a field, not as JSON.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct MediaRecord {
+    pub hash: String,
+    pub mime: String,
+    pub bytes: i64,
+    pub created_at: i64,
 }

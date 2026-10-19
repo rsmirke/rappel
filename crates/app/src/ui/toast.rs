@@ -1,27 +1,223 @@
 //! Toasts: persistent ones for errors and warnings, plain notices, and
 //! Undo toasts.
+//!
+//! A toast's title is one line, cut with "…" where it does not fit
+//! (libadwaita's `AdwToast` title label ellipsizes). At 360 px a title shows
+//! about [`TOAST_FITS`] characters beside the close button, and about
+//! [`TOAST_FITS_WITH_BUTTON`] beside a button too (measured on the
+//! harness's screenshots, ADR 0058). So a longer text is not put in the
+//! title: the toast shows its first clause, or "Something went wrong", with
+//! a **Details** button that opens an alert with the whole text
+//! ([`toast_text`], pure). The HIG asks for short toasts; the details stay
+//! readable on a phone.
 
 use std::cell::RefCell;
 
 use adw::prelude::*;
 use rappel_core::storage::OpenWarning;
 
+use crate::i18n::{fill, gettext};
 use crate::window::RappelWindow;
 
-/// A toast with plain text (paths and errors may contain `<` or `&`) that
-/// stays until dismissed, so the user cannot miss it.
-pub fn persistent_toast(text: &str) -> adw::Toast {
-    adw::Toast::builder()
-        .title(text)
+/// The most characters a toast title shows whole at 360 px beside its
+/// close button (ADR 0058).
+pub const TOAST_FITS: usize = 34;
+
+/// The most characters a toast title shows whole at 360 px beside a button
+/// ("Undo", "Details") and the close button (ADR 0058).
+pub const TOAST_FITS_WITH_BUTTON: usize = 24;
+
+/// The title of a toast whose text has no first clause short enough.
+pub fn fallback_title() -> String {
+    gettext("Something went wrong")
+}
+
+/// What a toast shows for a text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToastText {
+    /// The text fits: it is the title.
+    Whole(String),
+    /// The text is too long: a short title, and the whole text behind a
+    /// Details button.
+    Detailed { title: String, details: String },
+}
+
+/// The clause separators a title may end before. French puts a no-break
+/// space before ":" and ";" (U+202F, or U+00A0), which is not part of the
+/// title either (ADR 0059).
+const CLAUSE_ENDS: [&str; 7] = [
+    ". ",
+    ": ",
+    "; ",
+    "\u{202f}: ",
+    "\u{202f}; ",
+    "\u{a0}: ",
+    "\u{a0}; ",
+];
+
+/// What a toast shows for `text`: the whole text if it has at most
+/// [`TOAST_FITS`] characters; else its first clause (up to the first ". ",
+/// ": " or "; ", whichever comes first; not ", ", which can end a title
+/// half way through a list) if that has at most
+/// [`TOAST_FITS_WITH_BUTTON`], else [`fallback_title`], with the whole text
+/// as the details (without the first clause, which the details' heading
+/// already says).
+pub fn toast_text(text: &str) -> ToastText {
+    if text.chars().count() <= TOAST_FITS {
+        return ToastText::Whole(text.to_owned());
+    }
+    let lead = CLAUSE_ENDS
+        .iter()
+        .filter_map(|end| text.find(end).map(|at| (at, *end)))
+        .min()
+        .filter(|(at, _)| {
+            let lead = &text[..*at];
+            !lead.trim().is_empty() && lead.chars().count() <= TOAST_FITS_WITH_BUTTON
+        });
+    match lead {
+        // The first clause is the alert's heading: its body is the rest,
+        // as a sentence of its own.
+        Some((at, end)) => ToastText::Detailed {
+            title: text[..at].to_owned(),
+            details: capitalized(&text[at + end.len()..]),
+        },
+        None => ToastText::Detailed {
+            title: fallback_title(),
+            details: text.to_owned(),
+        },
+    }
+}
+
+/// `text` if it fits a toast's title whole, else `title` (at most
+/// [`TOAST_FITS_WITH_BUTTON`] characters, no ". " in it) as its first
+/// sentence, which [`toast_text`] then shows as the title with `text` in
+/// the details.
+pub fn titled(title: &str, text: String) -> String {
+    if text.chars().count() <= TOAST_FITS {
+        text
+    } else {
+        format!("{title}. {text}")
+    }
+}
+
+/// `text` with its first letter in upper case ("disk full" → "Disk full"),
+/// unless its first word holds a "." or a digit: a file name or a path
+/// ("rappel.sqlite3: …", "/data/…") is written as it is.
+fn capitalized(text: &str) -> String {
+    let first_word = text.split_whitespace().next().unwrap_or("");
+    if first_word.chars().any(|c| c == '.' || c.is_ascii_digit()) {
+        return text.to_owned();
+    }
+    let mut chars = text.chars();
+    chars.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(chars).collect()
+    })
+}
+
+/// A toast showing `text` as [`toast_text`] decides, with `timeout`
+/// seconds (0: until dismissed). Plain text: paths and errors may hold `<`
+/// or `&`.
+fn fitted_toast(text: &str, timeout: u32) -> adw::Toast {
+    match toast_text(text) {
+        ToastText::Whole(title) => adw::Toast::builder()
+            .title(title)
+            .use_markup(false)
+            .timeout(timeout)
+            .build(),
+        ToastText::Detailed { title, details } => {
+            let toast = adw::Toast::builder()
+                .title(title.as_str())
+                .use_markup(false)
+                .timeout(timeout)
+                .button_label(gettext("_Details"))
+                .build();
+            toast.connect_button_clicked(move |_| show_details(&title, &details));
+            toast
+        }
+    }
+}
+
+/// An alert with a toast's whole text, over the application's active
+/// window (where the toast was: the window's overlay, or a dialog's inside
+/// it, which the alert then stacks over).
+fn show_details(title: &str, details: &str) {
+    let parent = gtk::gio::Application::default()
+        .and_downcast::<gtk::Application>()
+        .and_then(|app| app.active_window());
+    let alert = adw::AlertDialog::builder()
+        .heading(title)
+        .body(details)
+        .body_use_markup(false)
+        .build();
+    alert.add_response("close", &gettext("_Close"));
+    alert.set_default_response(Some("close"));
+    alert.set_close_response("close");
+    alert.present(parent.as_ref());
+}
+
+/// A toast of `title` (short: it must fit beside its button at 360 px)
+/// whose **Details** open an alert with `summary` as its text and `lines`
+/// (a list, a line each) below it, left-aligned, as an extra child: an
+/// alert's body is centred, which a list does not read well in. Stays until
+/// dismissed. Plain text.
+pub fn report_toast(title: &str, summary: &str, lines: &str) -> adw::Toast {
+    let toast = adw::Toast::builder()
+        .title(title)
         .use_markup(false)
         .timeout(0)
+        .button_label(gettext("_Details"))
+        .build();
+    let (title, summary, lines) = (title.to_owned(), summary.to_owned(), lines.to_owned());
+    toast.connect_button_clicked(move |_| show_report(&title, &summary, &lines));
+    toast
+}
+
+/// The alert of [`report_toast`].
+fn show_report(title: &str, summary: &str, lines: &str) {
+    let parent = gtk::gio::Application::default()
+        .and_downcast::<gtk::Application>()
+        .and_then(|app| app.active_window());
+    let alert = adw::AlertDialog::builder()
+        .heading(title)
+        .body(summary)
+        .body_use_markup(false)
+        .extra_child(&report_label(lines))
+        .build();
+    alert.add_response("close", &gettext("_Close"));
+    alert.set_default_response(Some("close"));
+    alert.set_close_response("close");
+    alert.present(parent.as_ref());
+}
+
+/// A left-aligned, wrapping label of plain text, for a list below an
+/// alert's text.
+pub fn report_label(lines: &str) -> gtk::Label {
+    gtk::Label::builder()
+        .label(lines)
+        .use_markup(false)
+        .wrap(true)
+        .wrap_mode(gtk::pango::WrapMode::WordChar)
+        .xalign(0.0)
+        .justify(gtk::Justification::Left)
         .build()
 }
 
+/// A toast with plain text (paths and errors may contain `<` or `&`) that
+/// stays until dismissed, so the user cannot miss it. A long text gets a
+/// short title and a Details button ([`toast_text`]).
+pub fn persistent_toast(text: &str) -> adw::Toast {
+    fitted_toast(text, 0)
+}
+
 /// A toast with plain text that goes away by itself, for a notice such as
-/// "Card added".
+/// "Card added". A long text gets a short title and a Details button
+/// ([`toast_text`]), and then stays until dismissed, so the button can be
+/// reached.
 pub fn info_toast(text: &str) -> adw::Toast {
-    adw::Toast::builder().title(text).use_markup(false).build()
+    match toast_text(text) {
+        ToastText::Whole(_) => fitted_toast(text, 5),
+        ToastText::Detailed { .. } => fitted_toast(text, 0),
+    }
 }
 
 /// Shows `toast` in the toast overlay that contains `widget` (`widget`
@@ -59,17 +255,24 @@ pub fn show_error(widget: &impl IsA<gtk::Widget>, what: &str, message: &str) {
 /// The error toast a page shows last. A new error dismisses it first, so a
 /// toast that stays until dismissed does not hold the new one back.
 #[derive(Debug, Default)]
-pub struct ErrorSlot(RefCell<Option<adw::Toast>>);
+pub struct ErrorSlot(RefCell<Option<(adw::Toast, String)>>);
 
 impl ErrorSlot {
     /// Like [`show_error`], replacing this slot's previous error toast.
     pub fn show(&self, widget: &impl IsA<gtk::Widget>, what: &str, message: &str) {
         log_failure(what, message);
         let toast = persistent_toast(message);
-        if let Some(old) = self.0.replace(Some(toast.clone())) {
+        if let Some((old, _)) = self.0.replace(Some((toast.clone(), message.to_owned()))) {
             old.dismiss();
         }
         show_toast_from(widget, toast);
+    }
+
+    /// The whole text of the error toast last shown through this slot, if
+    /// any (its title may be only the first clause, [`toast_text`]).
+    #[cfg(test)]
+    pub fn shown_text(&self) -> Option<String> {
+        self.0.borrow().as_ref().map(|(_, text)| text.clone())
     }
 
     /// Whether no error toast was shown through this slot since the last
@@ -82,7 +285,7 @@ impl ErrorSlot {
     /// Dismisses this slot's error toast, if one is still shown: what it
     /// reported has since worked (e.g. the decks could be read again).
     pub fn clear(&self) {
-        if let Some(old) = self.0.take() {
+        if let Some((old, _)) = self.0.take() {
             old.dismiss();
         }
     }
@@ -92,7 +295,7 @@ impl ErrorSlot {
     pub fn show_in_preferences(&self, dialog: &adw::PreferencesDialog, what: &str, message: &str) {
         log_failure(what, message);
         let toast = persistent_toast(message);
-        if let Some(old) = self.0.replace(Some(toast.clone())) {
+        if let Some((old, _)) = self.0.replace(Some((toast.clone(), message.to_owned()))) {
             old.dismiss();
         }
         dialog.add_toast(toast);
@@ -104,7 +307,7 @@ pub fn undo_toast(title: &str, on_undo: impl Fn() + 'static) -> adw::Toast {
     let toast = adw::Toast::builder()
         .title(title)
         .use_markup(false)
-        .button_label("_Undo")
+        .button_label(gettext("_Undo"))
         // Never queued behind a toast that stays until dismissed.
         .priority(adw::ToastPriority::High)
         .build();
@@ -115,8 +318,18 @@ pub fn undo_toast(title: &str, on_undo: impl Fn() + 'static) -> adw::Toast {
 /// The toast text for a warning from opening the database.
 pub fn warning_message(warning: &OpenWarning) -> String {
     match warning {
-        OpenWarning::DailyBackupFailed(err) => format!("Today’s backup could not be made: {err}"),
-        OpenWarning::PruneFailed(err) => format!("Old backups could not be removed: {err}"),
+        OpenWarning::DailyBackupFailed(err) => fill(
+            // Translators: a toast; its first sentence is its title, the
+            // rest is behind Details. {error} is the reason, in English.
+            &gettext("Daily backup failed. Today’s backup could not be made: {error}"),
+            &[("error", &err.to_string())],
+        ),
+        OpenWarning::PruneFailed(err) => fill(
+            // Translators: a toast; its first sentence is its title, the
+            // rest is behind Details. {error} is the reason, in English.
+            &gettext("Backups not tidied. Old backups could not be removed: {error}"),
+            &[("error", &err.to_string())],
+        ),
     }
 }
 
@@ -127,12 +340,139 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_short_text_is_the_whole_title() {
+        assert_eq!(
+            toast_text("Card deleted"),
+            ToastText::Whole("Card deleted".into())
+        );
+        let edge = "x".repeat(TOAST_FITS);
+        assert_eq!(toast_text(&edge), ToastText::Whole(edge.clone()));
+    }
+
+    #[test]
+    fn a_long_text_shows_its_first_clause_and_the_rest_in_details() {
+        let text =
+            "Backup restored. The previous database was kept as /data/rappel.sqlite3.replaced-1";
+        assert_eq!(
+            toast_text(text),
+            ToastText::Detailed {
+                title: "Backup restored".into(),
+                details: "The previous database was kept as /data/rappel.sqlite3.replaced-1".into(),
+            }
+        );
+        // The earliest separator wins, whichever kind; the rest is the
+        // body, capitalised, without repeating the heading.
+        let text = "The export failed: disk full; more words to make it long";
+        assert_eq!(
+            toast_text(text),
+            ToastText::Detailed {
+                title: "The export failed".into(),
+                details: "Disk full; more words to make it long".into(),
+            }
+        );
+        // A body that starts with a file name is left as it is.
+        let text = "The export failed: rappel.rappel could not be written to the disk";
+        assert!(matches!(
+            toast_text(text),
+            ToastText::Detailed { details, .. } if details == "rappel.rappel could not be written to the disk"
+        ));
+        assert_eq!(capitalized("x2 is a name"), "x2 is a name");
+        assert_eq!(capitalized("é accent"), "É accent");
+        // A comma does not end a title: it may be in a list.
+        let text = "Imported 12 decks, 840 cards and 5,210 reviews from the file";
+        assert!(
+            matches!(toast_text(text), ToastText::Detailed { title, .. } if title == fallback_title())
+        );
+    }
+
+    #[test]
+    fn a_long_text_without_a_short_clause_gets_the_fallback_title() {
+        let text = "The card’s information could not be read: database is locked";
+        assert!(matches!(
+            toast_text(text),
+            ToastText::Detailed { title, details } if title == fallback_title() && details == text
+        ));
+        // A path has no clause at all; counted in characters, not bytes.
+        let text = "é".repeat(TOAST_FITS + 1);
+        assert!(
+            matches!(toast_text(&text), ToastText::Detailed { title, .. } if title == fallback_title())
+        );
+        // An empty first clause is no title.
+        let text = format!(". {}", "word ".repeat(10));
+        assert!(
+            matches!(toast_text(&text), ToastText::Detailed { title, .. } if title == fallback_title())
+        );
+    }
+
+    #[test]
+    fn a_title_is_added_only_to_a_text_that_does_not_fit() {
+        assert_eq!(
+            titled("Export done", "Exported to “a.rappel”".into()),
+            "Exported to “a.rappel”"
+        );
+        let long = "Exported to “a very long file name that goes on.rappel”".to_owned();
+        let text = titled("Export done", long.clone());
+        assert_eq!(text, format!("Export done. {long}"));
+        assert!(
+            matches!(toast_text(&text), ToastText::Detailed { title, .. } if title == "Export done")
+        );
+    }
+
+    #[test]
+    fn titles_fit_their_room() {
+        assert!(fallback_title().chars().count() <= TOAST_FITS_WITH_BUTTON);
+        crate::i18n::tests::in_french(|| {
+            assert!(fallback_title().chars().count() <= TOAST_FITS_WITH_BUTTON);
+        });
+    }
+
+    /// French puts a no-break space before ":" and ";": the title ends
+    /// before it, and the warnings get their own titles in French too.
+    #[test]
+    fn french_clauses_end_before_their_no_break_space() {
+        let text = "L’export a échoué\u{202f}: disque plein, et d’autres mots encore";
+        assert_eq!(
+            toast_text(text),
+            ToastText::Detailed {
+                title: "L’export a échoué".into(),
+                details: "Disque plein, et d’autres mots encore".into(),
+            }
+        );
+        let text = "Échec de l’import\u{a0}; le fichier a changé depuis sa vérification";
+        assert!(
+            matches!(toast_text(text), ToastText::Detailed { title, .. } if title == "Échec de l’import")
+        );
+        let err = || rappel_core::Error::NotADirectory(PathBuf::from("/data/backups"));
+        crate::i18n::tests::in_french(|| {
+            for warning in [
+                OpenWarning::DailyBackupFailed(err()),
+                OpenWarning::PruneFailed(err()),
+            ] {
+                let ToastText::Detailed { title, .. } = toast_text(&warning_message(&warning))
+                else {
+                    panic!("a warning is long");
+                };
+                assert_ne!(title, fallback_title());
+                assert!(title.chars().count() <= TOAST_FITS_WITH_BUTTON, "{title}");
+            }
+        });
+    }
+
+    #[test]
     fn warnings_name_what_failed_and_why() {
         let err = || rappel_core::Error::NotADirectory(PathBuf::from("/data/backups"));
         let text = warning_message(&OpenWarning::DailyBackupFailed(err()));
-        assert!(text.starts_with("Today’s backup could not be made: "));
+        assert!(text.starts_with("Daily backup failed. Today’s backup could not be made: "));
         assert!(text.contains("/data/backups"));
         let text = warning_message(&OpenWarning::PruneFailed(err()));
-        assert!(text.starts_with("Old backups could not be removed: "));
+        assert!(text.starts_with("Backups not tidied. Old backups could not be removed: "));
+        for warning in [
+            OpenWarning::DailyBackupFailed(err()),
+            OpenWarning::PruneFailed(err()),
+        ] {
+            assert!(
+                matches!(toast_text(&warning_message(&warning)), ToastText::Detailed { title, .. } if title != fallback_title())
+            );
+        }
     }
 }

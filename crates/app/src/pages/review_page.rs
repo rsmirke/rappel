@@ -8,7 +8,8 @@
 //! Enter: Space or Enter shows the answer; then 1 is Fail, 2 or Space is
 //! Pass; E edits the card at any time; S suspends it and Delete deletes it
 //! (after a question), both at once out of the session with an Undo toast
-//! (ADR 0037); Ctrl+Z (and the header's Undo button)
+//! (ADR 0037); R plays the card's audio from its start (ADR 0056,
+//! [`replay_target`]); Ctrl+Z (and the header's Undo button)
 //! takes back the last answer, repeatedly down to the session's first, also
 //! from the summary (ADR 0030). The focus rests on the card between answers.
 //!
@@ -30,11 +31,12 @@ use rappel_core::scheduling::{Session, Summary, capped};
 
 use crate::dialogs::card_editor::{CardEditor, Saved};
 use crate::dialogs::card_info;
-use crate::render::{back_shown, clear, fill, shown_part};
+use crate::i18n::{self, gettext, ngettext};
+use crate::render::{Images, audio_controls, back_shown, clear, fill, shown_part, stop_audio};
 use crate::state::AppState;
 use crate::ui::callback::Callback;
 use crate::ui::dialog;
-use crate::ui::text::{duration_text, group_digits};
+use crate::ui::text::{counted, duration_text, group_digits, whole_percent, with_error};
 use crate::ui::tile::{Tile, set_tile};
 use crate::ui::toast::{info_toast, log_failure, show_error, show_toast_from, undo_toast};
 use crate::ui::undo::{self, UndoFailure};
@@ -71,6 +73,8 @@ mod imp {
         pub card_menu_button: TemplateChild<gtk::MenuButton>,
         #[template_child]
         pub stack: TemplateChild<adw::ViewStack>,
+        #[template_child]
+        pub card_scroller: TemplateChild<gtk::ScrolledWindow>,
         #[template_child]
         pub card_area: TemplateChild<gtk::Box>,
         #[template_child]
@@ -206,10 +210,10 @@ enum Removal {
 
 impl Removal {
     /// The toast that offers Undo.
-    fn text(self) -> &'static str {
+    fn text(self) -> String {
         match self {
-            Self::Suspend => "Card suspended",
-            Self::Delete => "Card deleted",
+            Self::Suspend => gettext("Card suspended"),
+            Self::Delete => gettext("Card deleted"),
         }
     }
 }
@@ -242,7 +246,8 @@ fn undo_removal(
             }
         }
         Err(err) => {
-            let message = format!("The card could not be restored: {err}");
+            // Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+            let message = with_error(&gettext("The card could not be restored: {error}"), &err);
             match window {
                 Some(window) => show_error(&window, "a review operation", &message),
                 None => log_failure("a review operation", &message),
@@ -279,13 +284,15 @@ enum Key {
     Suspend,
     /// Delete: delete the card, after a question.
     Delete,
+    /// R: play the card's audio from its start.
+    Replay,
     /// Ctrl+Z: take back the last answer.
     Undo,
 }
 
 /// The page's keys (`setup_keys`). The Keyboard Shortcuts dialog and the
 /// Card Menu's hints list them; tests check both.
-const KEYS: [(&str, Key); 16] = [
+const KEYS: [(&str, Key); 18] = [
     ("space", Key::Space),
     ("Return", Key::Enter),
     ("KP_Enter", Key::Enter),
@@ -301,6 +308,8 @@ const KEYS: [(&str, Key); 16] = [
     ("<Shift>s", Key::Suspend),
     ("Delete", Key::Delete),
     ("KP_Delete", Key::Delete),
+    ("r", Key::Replay),
+    ("<Shift>r", Key::Replay),
     ("<Control>z", Key::Undo),
 ];
 
@@ -319,6 +328,7 @@ enum Act {
     Info,
     Suspend,
     Delete,
+    Replay,
     Undo,
 }
 
@@ -326,7 +336,7 @@ enum Act {
 /// whether [`KEY_SETTLE`] has passed since the reveal. Holding Space a
 /// moment too long repeats it: a reveal must not become a Pass by itself,
 /// even though a grade can be undone. E and Ctrl+Z are never delayed: they
-/// grade nothing; neither does I. S and Delete take the card out of the
+/// grade nothing; neither do I and R. S and Delete take the card out of the
 /// session, so they are not delayed by `key_action` but guarded elsewhere:
 /// Delete asks first (the question stops the repeat), and S needs the card to
 /// have been on screen a moment ([`suspend_allowed`]), or holding it would
@@ -338,6 +348,7 @@ fn key_action(key: Key, revealed: bool, settled: bool) -> Option<Act> {
         (Key::Suspend, _) => Some(Act::Suspend),
         (Key::Delete, _) => Some(Act::Delete),
         (Key::Undo, _) => Some(Act::Undo),
+        (Key::Replay, _) => Some(Act::Replay),
         (Key::Space | Key::Enter, false) => Some(Act::Reveal),
         (Key::Space | Key::Pass | Key::Fail, true) if !settled => None,
         (Key::Space | Key::Pass, true) => Some(Act::Grade(Grade::Pass)),
@@ -345,6 +356,33 @@ fn key_action(key: Key, revealed: bool, settled: bool) -> Option<Act> {
         // 1 and 2 before the answer, Enter after it: nothing.
         (Key::Fail | Key::Pass, false) | (Key::Enter, true) => None,
     }
+}
+
+/// Which audio control R plays: the first that can play on the back once
+/// the answer is shown and the back has audio controls, else the first
+/// that can play on the front. `front` and `back` say, for each control of
+/// that side in document order, whether it can play (its file is not
+/// known to be missing). The back once shown, because it is what was just
+/// revealed (a word to hear after reading it); a side whose controls all
+/// cannot play gives nothing, not the other side's, so R never plays
+/// something other than what is under the eyes.
+fn replay_target(revealed: bool, front: &[bool], back: &[bool]) -> Option<(Side, usize)> {
+    let (side, controls) = if revealed && !back.is_empty() {
+        (Side::Back, back)
+    } else {
+        (Side::Front, front)
+    };
+    controls
+        .iter()
+        .position(|&available| available)
+        .map(|i| (side, i))
+}
+
+/// A side of the card on screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Side {
+    Front,
+    Back,
 }
 
 /// Whether S may suspend a card that has been on screen for `shown_for`.
@@ -436,6 +474,7 @@ impl ReviewPage {
                 }
             }
             Some(Act::Delete) => self.confirm_delete(),
+            Some(Act::Replay) => self.replay_audio(),
             Some(Act::Undo) => self.undo(),
             None => {}
         }
@@ -465,7 +504,11 @@ impl ReviewPage {
                 Ok(card) => card,
                 Err(err) => {
                     // Skip it and go on; it is not counted as answered.
-                    self.error_toast(&format!("A card could not be read and was skipped: {err}"));
+                    // Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+                    self.error_toast(&with_error(
+                        &gettext("A card could not be read and was skipped: {error}"),
+                        &err,
+                    ));
                     self.skip_in_session(&id);
                     continue;
                 }
@@ -527,17 +570,7 @@ impl ReviewPage {
     /// at 360 × 294.
     fn setup_short_summary(&self) {
         let imp = self.imp();
-        let summary = imp.summary_page.downgrade();
-        breakpoint::follow(&imp.short_breakpoint, move |short| {
-            if let Some(summary) = summary.upgrade() {
-                if short {
-                    summary.add_css_class("compact");
-                } else {
-                    summary.remove_css_class("compact");
-                }
-                summary.set_icon_name((!short).then_some(SUMMARY_ICON));
-            }
-        });
+        breakpoint::compact_status_page(&imp.short_breakpoint, &imp.summary_page, SUMMARY_ICON);
     }
 
     /// Fades the back in, from its first step: `play` restarts the
@@ -569,9 +602,36 @@ impl ReviewPage {
         // Only the reveal animates; a redraw after an edit does not.
         if self.show_back(&back) {
             self.animate_reveal();
+            self.scroll_to_answer_when_laid_out();
         }
         self.set_controls(Controls::Grade);
         imp.card_area.grab_focus();
+    }
+
+    /// Once the answer is laid out (the next frame: a tick callback runs
+    /// before that frame's layout, so the second one sees it), scrolls the
+    /// card so the answer is in view if it starts too low to be seen
+    /// (`answer_scroll`). A phone with a tall front would otherwise show
+    /// the grade buttons with no answer on screen.
+    fn scroll_to_answer_when_laid_out(&self) {
+        let frames = std::cell::Cell::new(0);
+        self.add_tick_callback(move |page, _| {
+            frames.set(frames.get() + 1);
+            if frames.get() < 2 {
+                return glib::ControlFlow::Continue;
+            }
+            let imp = page.imp();
+            if imp.revealed.get()
+                && let Some(bounds) = imp.back_part.compute_bounds(&*imp.card_scroller)
+            {
+                let adjustment = imp.card_scroller.vadjustment();
+                let delta = answer_scroll(f64::from(bounds.y()), adjustment.page_size());
+                if delta != 0.0 {
+                    adjustment.set_value(adjustment.value() + delta);
+                }
+            }
+            glib::ControlFlow::Break
+        });
     }
 
     /// Shows the front `front_md`, or its start if it is too long to lay
@@ -581,7 +641,7 @@ impl ReviewPage {
         let imp = self.imp();
         let (part, cut) = shown_part(front_md);
         let front = content::parse(part);
-        fill(&imp.front_box, &front);
+        fill(&imp.front_box, &front, &self.images());
         imp.card_area
             .update_property(&[gtk::accessible::Property::Label(&with_cut_note(
                 content::plain_text(&front),
@@ -589,6 +649,23 @@ impl ReviewPage {
             ))]);
         imp.front_cut.set(cut);
         self.update_cut_note();
+    }
+
+    /// Where the sides' images come from, and their height cap: a share
+    /// of the page's height, so a tall image leaves the text around it in
+    /// view (`render::Images`). The grade buttons are in the bottom bar,
+    /// outside the scrolled card, so no image can push them off screen.
+    fn images(&self) -> Images {
+        let imp = self.imp();
+        let folder = imp.state.get().and_then(AppState::media_folder);
+        // The card's own view, between the header and the buttons: on a
+        // phone held sideways the page is 360 px tall but the card has
+        // about 240 (ADR 0058). Before the first layout, the page's.
+        let view = match imp.card_scroller.height() {
+            0 => self.height(),
+            height => height,
+        };
+        Images::new(folder, view)
     }
 
     /// Parses the back `back_md` (or its start, as for the front) for
@@ -616,7 +693,7 @@ impl ReviewPage {
         let imp = self.imp();
         let shown = back_shown(back);
         if shown {
-            fill(&imp.back_box, back);
+            fill(&imp.back_box, back, &self.images());
             imp.card_area
                 .update_property(&[gtk::accessible::Property::Description(&with_cut_note(
                     content::plain_text(back),
@@ -648,11 +725,17 @@ impl ReviewPage {
         if imp.editing.get() {
             return;
         }
+        // The editor covers the card: what it played stops.
+        stop_audio();
         // Read again, so the editor starts from what is stored.
         let card = match state.card(&id) {
             Ok(card) => card,
             Err(err) => {
-                self.error_toast(&format!("The card could not be read: {err}"));
+                // Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+                self.error_toast(&with_error(
+                    &gettext("The card could not be read: {error}"),
+                    &err,
+                ));
                 return;
             }
         };
@@ -701,6 +784,34 @@ impl ReviewPage {
         );
     }
 
+    /// R: plays the card's audio from its start ([`replay_target`]).
+    fn replay_audio(&self) {
+        let imp = self.imp();
+        let front = audio_controls(&*imp.front_box);
+        // `get_visible`, the back's own flag: `is_visible` also asks the
+        // parents (`gtk_widget_is_visible`).
+        let back = if imp.back_part.get_visible() {
+            audio_controls(&*imp.back_box)
+        } else {
+            Vec::new()
+        };
+        let available = |controls: &[crate::render::CardAudio]| {
+            controls
+                .iter()
+                .map(crate::render::CardAudio::is_available)
+                .collect::<Vec<_>>()
+        };
+        let target = replay_target(imp.revealed.get(), &available(&front), &available(&back));
+        let control = match target {
+            Some((Side::Front, i)) => front.get(i),
+            Some((Side::Back, i)) => back.get(i),
+            None => None,
+        };
+        if let Some(control) = control {
+            control.play_from_start();
+        }
+    }
+
     /// Takes the card on screen out of the session by suspending or deleting
     /// it, shows the next card, and offers Undo in a toast (ADR 0037). The
     /// card is not counted as answered.
@@ -731,17 +842,21 @@ impl ReviewPage {
             Ok(false) => {
                 // Suspended elsewhere already: there is nothing to undo here.
                 self.leave_session(id);
-                show_toast_from(self, info_toast("The card was already suspended"));
+                show_toast_from(self, info_toast(&gettext("The card was already suspended")));
                 return;
             }
             Err(rappel_core::Error::CardNotFound(_)) => {
                 // Deleted elsewhere meanwhile: it is gone from the session too.
                 self.leave_session(id);
-                show_toast_from(self, info_toast("The card was already gone"));
+                show_toast_from(self, info_toast(&gettext("The card was already gone")));
                 return;
             }
             Err(err) => {
-                self.error_toast(&format!("The card could not be changed: {err}"));
+                // Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+                self.error_toast(&with_error(
+                    &gettext("The card could not be changed: {error}"),
+                    &err,
+                ));
                 return;
             }
         }
@@ -756,7 +871,7 @@ impl ReviewPage {
         let (id, state) = (id.to_owned(), state.clone());
         let page = self.downgrade();
         let window = window.map(|w| w.downgrade());
-        let toast = undo_toast(removal.text(), move || {
+        let toast = undo_toast(&removal.text(), move || {
             undo_removal(&state, &id, removal, &page, window.as_ref());
         });
         show_toast_from(self, toast);
@@ -928,10 +1043,17 @@ impl ReviewPage {
                     // The button may have had the focus and is now off:
                     // put it where the page's keys work.
                     self.park_focus();
-                    show_toast_from(self, info_toast("This answer can no longer be undone"));
+                    show_toast_from(
+                        self,
+                        info_toast(&gettext("This answer can no longer be undone")),
+                    );
                 }
                 UndoFailure::Failed => {
-                    self.error_toast(&format!("The answer could not be undone: {err}"));
+                    // Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+                    self.error_toast(&with_error(
+                        &gettext("The answer could not be undone: {error}"),
+                        &err,
+                    ));
                 }
             },
         }
@@ -956,7 +1078,11 @@ impl ReviewPage {
         let event = match state.record_review(&id, grade, duration, now) {
             Ok(event) => event,
             Err(err) => {
-                self.error_toast(&format!("The answer could not be saved: {err}"));
+                // Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+                self.error_toast(&with_error(
+                    &gettext("The answer could not be saved: {error}"),
+                    &err,
+                ));
                 return;
             }
         };
@@ -991,7 +1117,7 @@ impl ReviewPage {
             imp.summary_page.set_description(None);
         } else {
             imp.summary_figures.set_visible(false);
-            imp.summary_page.set_description(Some(NOTHING_REVIEWED));
+            imp.summary_page.set_description(Some(&nothing_reviewed()));
         }
         imp.window_title.set_subtitle("");
         self.set_controls(Controls::Hidden);
@@ -1020,7 +1146,7 @@ fn cut_note_shown(front_cut: bool, back_cut: bool, revealed: bool) -> bool {
 /// its start is shown, since the note itself is not in the focus chain.
 fn with_cut_note(text: String, cut: bool) -> String {
     if cut {
-        format!("{text}\n\n{CUT_NOTE}")
+        format!("{text}\n\n{}", cut_note())
     } else {
         text
     }
@@ -1028,13 +1154,17 @@ fn with_cut_note(text: String, cut: bool) -> String {
 
 /// The note's text for screen readers. Keep it equal to `cut_note` in
 /// `review_page.blp`.
-const CUT_NOTE: &str = "This card is long: only its start is shown. Edit it to see all of it.";
+fn cut_note() -> String {
+    gettext("This card is long: only its start is shown. Edit it to see all of it.")
+}
 
 /// The subtitle while studying: "12 left", "1,234 left". It counts the
 /// card on screen and step cards that will come back, so it can go up
 /// after a Fail.
 fn left_text(left: usize) -> String {
-    format!("{} left", group_digits(left))
+    // Translators: the subtitle while studying; {count} is the number of
+    // cards left in the session.
+    counted(&ngettext("{count} left", "{count} left", left), left)
 }
 
 /// How long the answer takes to come in, in milliseconds: short enough
@@ -1060,32 +1190,57 @@ fn reveal_step(progress: f64) -> (f64, i32) {
     (progress, margin)
 }
 
+/// The least of the answer that must be in view after the reveal, in
+/// pixels: a few lines of text.
+const ANSWER_SHOWN: f64 = 96.0;
+
+/// Room left above the answer when the card scrolls to it, in pixels.
+const ANSWER_MARGIN: f64 = 12.0;
+
+/// How far to scroll the card at the reveal, for an answer starting
+/// `back_top` pixels below the top of a view `page` pixels tall: none if
+/// at least [`ANSWER_SHOWN`] of it is in view already (or the view is not
+/// laid out), else so that it starts [`ANSWER_MARGIN`] below the top. The
+/// scrolled window clamps a scroll past its end.
+fn answer_scroll(back_top: f64, page: f64) -> f64 {
+    if page <= 0.0 || back_top + ANSWER_SHOWN.min(page / 2.0) <= page {
+        0.0
+    } else {
+        back_top - ANSWER_MARGIN
+    }
+}
+
 /// The summary's icon, a check mark. Keep it equal to `summary_page` in
 /// `review_page.blp`.
 const SUMMARY_ICON: &str = "object-select-symbolic";
 
 /// The summary page's text when no card was answered (all of them were
 /// suspended or deleted during the session).
-const NOTHING_REVIEWED: &str = "No cards were reviewed";
+fn nothing_reviewed() -> String {
+    gettext("No cards were reviewed")
+}
 
 /// The summary's three tiles: cards reviewed, pass rate and time, or
 /// `None` when no card was answered.
 fn summary_tiles(summary: &Summary) -> Option<[Tile; 3]> {
     let percent = summary.pass_percent().filter(|_| summary.cards > 0)?;
-    let cards_caption = if summary.cards == 1 {
-        "Card reviewed"
-    } else {
-        "Cards reviewed"
-    };
-    let tile = |value: String, caption: &str| Tile {
-        accessible: format!("{caption}: {value}"),
+    // Translators: the caption under the number of cards reviewed in a
+    // session's summary.
+    let cards_caption = ngettext("Card reviewed", "Cards reviewed", summary.cards);
+    let tile = |value: String, caption: String| Tile {
+        // Translators: what a screen reader says for a headline figure:
+        // {caption} is "Pass rate", {value} "91%".
+        accessible: i18n::fill(
+            &gettext("{caption}: {value}"),
+            &[("caption", &caption), ("value", &value)],
+        ),
         value,
-        caption: caption.to_owned(),
+        caption,
     };
     Some([
         tile(group_digits(summary.cards), cards_caption),
-        tile(format!("{percent}%"), "Pass rate"),
-        tile(duration_text(summary.time), "Time"),
+        tile(whole_percent(percent), gettext("Pass rate")),
+        tile(duration_text(summary.time), gettext("Time")),
     ])
 }
 
@@ -1111,7 +1266,7 @@ mod tests {
         assert_eq!(with_cut_note("Front".to_owned(), false), "Front");
         assert_eq!(
             with_cut_note("Front".to_owned(), true),
-            format!("Front\n\n{CUT_NOTE}")
+            format!("Front\n\n{}", cut_note())
         );
     }
 
@@ -1148,7 +1303,7 @@ mod tests {
     fn the_cut_note_matches_the_blueprint() {
         crate::testing::with_widgets(|| {
             let page: ReviewPage = glib::Object::new();
-            assert_eq!(page.imp().cut_note.label(), CUT_NOTE);
+            assert_eq!(page.imp().cut_note.label(), cut_note());
         });
     }
 
@@ -1207,6 +1362,12 @@ mod tests {
         sides: &[(String, String)],
     ) -> (tempfile::TempDir, AppState, ReviewPage, Vec<String>) {
         let (tmp, state) = crate::testing::temporary_state();
+        let (page, ids) = page_over(&state, sides);
+        (tmp, state, page, ids)
+    }
+
+    /// [`page_with`] over the database of `state`.
+    fn page_over(state: &AppState, sides: &[(String, String)]) -> (ReviewPage, Vec<String>) {
         let deck = state.create_deck("Deck").unwrap();
         let now = rappel_core::time::now_ms();
         let day = crate::ui::time::DAY_MS;
@@ -1228,12 +1389,106 @@ mod tests {
             })
             .collect();
         let page = ReviewPage::new(state.clone(), deck, |_| {}).unwrap();
-        (tmp, state, page, ids)
+        (page, ids)
     }
 
     /// Puts `page` in a window, so it has a root as a pushed page does.
     fn in_window(page: &ReviewPage) -> gtk::Window {
         gtk::Window::builder().child(page).build()
+    }
+
+    #[test]
+    fn r_plays_the_back_once_shown_else_the_front() {
+        use Side::{Back, Front};
+        // Before the answer: the front's first that can play.
+        assert_eq!(
+            replay_target(false, &[true, true], &[true]),
+            Some((Front, 0))
+        );
+        assert_eq!(
+            replay_target(false, &[false, true], &[true]),
+            Some((Front, 1))
+        );
+        assert_eq!(replay_target(false, &[], &[true]), None);
+        // After it: the back's, when the back has audio.
+        assert_eq!(
+            replay_target(true, &[true], &[false, true]),
+            Some((Back, 1))
+        );
+        assert_eq!(replay_target(true, &[true], &[]), Some((Front, 0)));
+        // A side whose audio cannot play gives nothing, not the other's.
+        assert_eq!(replay_target(true, &[true], &[false]), None);
+        assert_eq!(replay_target(false, &[false], &[true]), None);
+        assert_eq!(replay_target(true, &[], &[]), None);
+        // R at any time, settled or not: it grades nothing.
+        for (revealed, settled) in [(false, false), (true, false), (true, true)] {
+            assert_eq!(
+                key_action(Key::Replay, revealed, settled),
+                Some(Act::Replay)
+            );
+        }
+    }
+
+    /// R reaches the right control through the page's key handler (the
+    /// controls count the plays asked for, so no sound is needed).
+    #[test]
+    fn r_plays_the_audio_on_screen() {
+        crate::testing::with_widgets(|| {
+            let (tmp, state) = crate::testing::temporary_state();
+            let data = tmp.path().join("data");
+            let add = |samples| {
+                AppState::add_media_bytes_on_worker(
+                    &data,
+                    &crate::testing::wav_bytes(samples),
+                    crate::state::Accept::Audio,
+                )
+                .unwrap()
+                .reference()
+            };
+            let (front_audio, back_audio) = (add(800), add(1_600));
+            let sides = [
+                (
+                    format!("Hear [this]({front_audio})"),
+                    format!("[Answer]({back_audio})"),
+                ),
+                (
+                    format!("[Only the front]({front_audio})"),
+                    "No audio".to_owned(),
+                ),
+            ];
+            // The page is never on screen, so no stream is made: playback
+            // may be taken as there whatever is installed.
+            let _forced = crate::render::force_playback(true);
+            let (page, ids) = page_over(&state, &sides);
+            let _window = in_window(&page);
+            let imp = page.imp();
+            let plays = |container: &gtk::Box| {
+                audio_controls(container)
+                    .iter()
+                    .map(crate::render::CardAudio::plays)
+                    .collect::<Vec<_>>()
+            };
+            for _ in 0..2 {
+                let with_back_audio = current(&page).as_deref() == Some(ids[0].as_str());
+                assert_eq!(page.key(Key::Replay), glib::Propagation::Stop);
+                assert_eq!(plays(&imp.front_box), [1]);
+                page.reveal();
+                page.key(Key::Replay);
+                if with_back_audio {
+                    // The back, once shown.
+                    assert_eq!(plays(&imp.front_box), [1]);
+                    assert_eq!(plays(&imp.back_box), [1]);
+                } else {
+                    // No audio on the back: the front again.
+                    assert_eq!(plays(&imp.front_box), [2]);
+                    assert_eq!(audio_controls(&*imp.back_box).len(), 0);
+                }
+                imp.revealed_at
+                    .set(Instant::now().checked_sub(Duration::from_secs(1)));
+                page.key(Key::Pass);
+            }
+            assert_eq!(current(&page), None);
+        });
     }
 
     #[test]
@@ -1741,6 +1996,85 @@ mod tests {
         }
     }
 
+    /// No swipe grades or reveals (SPEC §4.8, ADR 0058): nothing on the
+    /// review page, front or back, images and audio controls included,
+    /// has a swipe, drag, pan or long-press gesture of Rappel's. GTK's own
+    /// are allowed, as they only scroll (a scrolled window's kinetic
+    /// scrolling, a scrollbar), move the window (the header's window
+    /// handle) or open Back's history menu. `AdwNavigationView`'s swipe back
+    /// is on the view around the page and only leaves it, as Back does.
+    #[test]
+    fn no_gesture_on_the_review_page_can_grade() {
+        /// GTK's own widgets that come with such gestures: they only
+        /// scroll, move the window or open Back's history.
+        const GTK_OWN: [&str; 4] = [
+            "GtkScrolledWindow",
+            "GtkRange",
+            "GtkWindowHandle",
+            "AdwBackButton",
+        ];
+        fn is_gesture(controller: &glib::Object) -> bool {
+            controller.is::<gtk::GestureSwipe>()
+                || controller.is::<gtk::GestureDrag>()
+                || controller.is::<gtk::GestureLongPress>()
+        }
+        fn count(widget: &gtk::Widget) -> usize {
+            let controllers = widget.observe_controllers();
+            (0..controllers.n_items())
+                .filter_map(|i| controllers.item(i))
+                .filter(is_gesture)
+                .count()
+        }
+        fn gestures(widget: &gtk::Widget, found: &mut Vec<String>) {
+            let kind = widget.type_();
+            // A widget of GTK's own may have the gestures a new one of its
+            // type has, and no more: one Rappel added would be one more.
+            let allowed = if GTK_OWN.contains(&kind.name()) {
+                glib::Object::with_type(kind)
+                    .downcast::<gtk::Widget>()
+                    .map_or(0, |fresh| count(&fresh))
+            } else {
+                0
+            };
+            let has = count(widget);
+            if has > allowed {
+                found.push(format!(
+                    "{has} gestures on {}, {allowed} allowed",
+                    kind.name()
+                ));
+            }
+            let mut child = widget.first_child();
+            while let Some(c) = child {
+                gestures(&c, found);
+                child = c.next_sibling();
+            }
+        }
+        crate::testing::with_widgets(|| {
+            let image = format!("![a picture](media:{}.png)", "a".repeat(64));
+            let audio = format!("[a sound](media:{}.wav)", "b".repeat(64));
+            let (_tmp, _state, page, _ids) =
+                page_with(&[(format!("{image}\n\n{audio}"), format!("back\n\n{image}"))]);
+            page.reveal();
+            let mut found = Vec::new();
+            gestures(page.upcast_ref(), &mut found);
+            assert!(found.is_empty(), "{found:?}");
+        });
+    }
+
+    #[test]
+    fn the_answer_is_scrolled_into_view_only_when_it_starts_too_low() {
+        // Plenty of the answer in view: no scroll.
+        assert!(answer_scroll(200.0, 500.0).abs() < f64::EPSILON);
+        assert!(answer_scroll(404.0, 500.0).abs() < f64::EPSILON);
+        // Under the view's end, or too little of it shown: to its start.
+        assert!((answer_scroll(450.0, 500.0) - 438.0).abs() < f64::EPSILON);
+        assert!((answer_scroll(900.0, 240.0) - 888.0).abs() < f64::EPSILON);
+        // A short view needs only half of itself shown.
+        assert!(answer_scroll(110.0, 240.0).abs() < f64::EPSILON);
+        // Not laid out: nothing.
+        assert!(answer_scroll(900.0, 0.0).abs() < f64::EPSILON);
+    }
+
     #[test]
     fn a_short_window_makes_the_summary_compact_without_its_icon() {
         crate::testing::with_widgets(|| {
@@ -1862,14 +2196,21 @@ mod tests {
                     finished,
                     Duration::from_secs(20)
                 ));
-                let (used, settled) = crate::testing::cpu_time_of(|| {
-                    page.animate_reveal();
-                    crate::testing::settle_until(finished, Duration::from_secs(20))
-                });
-                assert!(settled);
+                // Checked on this thread, which did the work (ADR 0049),
+                // and measured again if a burst of load slowed one run
+                // (ADR 0063).
+                let mut used = Duration::ZERO;
+                let verdict = crate::testing::cpu_within_retried(Duration::from_secs(2), || {
+                    let (time, settled) = crate::testing::cpu_time_of(|| {
+                        page.animate_reveal();
+                        crate::testing::settle_until(finished, Duration::from_secs(20))
+                    });
+                    assert!(settled);
+                    used = time;
+                    time
+                })
+                .map(|_| ());
                 window.destroy();
-                // Checked on this thread, which did the work (ADR 0049).
-                let verdict = crate::testing::cpu_within(used, Duration::from_secs(2));
                 (what, used, verdict)
             })
         });
@@ -1944,7 +2285,7 @@ mod tests {
             assert!(!imp.summary_figures.is_visible());
             assert_eq!(
                 imp.summary_page.description().as_deref(),
-                Some(NOTHING_REVIEWED)
+                Some(nothing_reviewed().as_str())
             );
         });
     }

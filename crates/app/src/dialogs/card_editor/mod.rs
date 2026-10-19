@@ -21,9 +21,14 @@
 //!   typed. The card and its tags are saved in one write. An invalid name
 //!   shows an error under the field and disables saving. Ctrl+Shift+Enter
 //!   keeps the tags for the next card (ADR 0031).
+//! - Images and audio (ADR 0055, 0056): Insert Image… and Insert Audio…
+//!   beside each side's title, Ctrl+V of a picture or of media files, and
+//!   dropping them on a side ([`insert`]).
 
 mod format;
+mod insert;
 mod layout;
+mod media;
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -36,10 +41,12 @@ use rappel_core::content;
 use rappel_core::domain::{Card, CardSide, MAX_CARD_SIDE_BYTES, TaggedCard, card_side_fits};
 use sourceview5::prelude::*;
 
-use crate::render::{back_shown, clear, fill, shown_part};
+use crate::i18n::{self, gettext};
+use crate::render::{Images, back_shown, clear, fill, shown_part};
 use crate::state::AppState;
 use crate::ui::callback::Callback;
 use crate::ui::text::group_digits;
+use crate::ui::text::with_error;
 use crate::ui::toast::{info_toast, show_error};
 use crate::ui::{breakpoint, dialog, init_once};
 use crate::widgets::tag_entry::field::{self as tags, TagsCheck};
@@ -84,6 +91,7 @@ mod imp {
     use crate::state::AppState;
     use crate::ui::callback::Callback;
     use crate::ui::debounce::Debounce;
+    use crate::ui::toast::ErrorSlot;
 
     #[derive(Default, gtk::CompositeTemplate)]
     #[template(resource = "/io/github/rsmirke/Rappel/card_editor.ui")]
@@ -101,6 +109,18 @@ mod imp {
         #[template_child]
         pub front_error: TemplateChild<gtk::Label>,
         #[template_child]
+        pub front_image_button: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub back_image_button: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub front_audio_button: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub back_audio_button: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub front_frame: TemplateChild<gtk::Frame>,
+        #[template_child]
+        pub back_frame: TemplateChild<gtk::Frame>,
+        #[template_child]
         pub back_error: TemplateChild<gtk::Label>,
         #[template_child]
         pub tag_entry: TemplateChild<crate::widgets::TagEntry>,
@@ -112,6 +132,8 @@ mod imp {
         pub pane_separator: TemplateChild<gtk::Separator>,
         #[template_child]
         pub preview_pane: TemplateChild<gtk::ScrolledWindow>,
+        #[template_child]
+        pub preview_content: TemplateChild<gtk::Box>,
         #[template_child]
         pub mode_toggles: TemplateChild<adw::ToggleGroup>,
         #[template_child]
@@ -126,6 +148,9 @@ mod imp {
         pub preview_back: TemplateChild<gtk::Box>,
         /// The preview refresh waiting for typing to pause.
         pub preview: Debounce,
+        /// The last "image could not be added" (or audio) toast, replaced
+        /// by the next.
+        pub media_errors: ErrorSlot,
         /// Our `notify::dark` handler on the style manager, a singleton
         /// that outlives the editor: disconnected on dispose.
         pub dark_handler: RefCell<Option<glib::SignalHandlerId>>,
@@ -276,6 +301,7 @@ impl CardEditor {
         self.setup_shortcuts();
         self.setup_views();
         self.setup_tags();
+        self.setup_media();
         self.setup_layout();
         self.connect_close_attempt(Self::ask_discard);
     }
@@ -360,14 +386,14 @@ impl CardEditor {
         ));
     }
 
-    /// Reads every tag again, for the suggestions. A failure only means no
-    /// suggestions.
+    /// Reads the tags in use again, for the suggestions: a tag no live card
+    /// has is not offered (ADR 0052). A failure only means no suggestions.
     fn reload_all_tags(&self) {
         let imp = self.imp();
         let Some(state) = imp.state.get() else {
             return;
         };
-        let all = state.tags().unwrap_or_else(|err| {
+        let all = state.used_tags().unwrap_or_else(|err| {
             tracing::warn!("the tags could not be read for suggestions: {err}");
             Vec::new()
         });
@@ -388,9 +414,13 @@ impl CardEditor {
         match read {
             Ok(card_tags) => Some(card_tags.into_iter().map(|tag| tag.name).collect()),
             Err(err) => {
-                imp.tag_entry
-                    .set_unavailable("The tags could not be read, so they are left as they are.");
-                let message = format!("The card's tags could not be read: {err}");
+                imp.tag_entry.set_unavailable(&gettext(
+                    "The tags could not be read, so they are left as they are.",
+                ));
+                // Translators: a toast: what is before ":" is its title, the
+                // rest is behind Details. {error} is why, in English.
+                let message =
+                    with_error(&gettext("The card’s tags could not be read: {error}"), &err);
                 show_error(&*imp.toast_overlay, "reading a card's tags", &message);
                 None
             }
@@ -429,7 +459,56 @@ impl CardEditor {
             self,
             move |_| editor.mode_changed()
         ));
+        // The keys scroll the preview while the focus is in it, or while
+        // it is the only pane (narrow, Preview; the focus may be on the
+        // toggle, where Alt+P leaves it) (ADR 0058): a box has no keys of
+        // its own, and GtkScrolledWindow binds only Page Up / Page Down and
+        // Ctrl with the arrows (`scroll-child`). Bubble phase, on the
+        // dialog: the focused widget (an image or audio button, a toggle)
+        // takes its own Space, Enter and arrows first.
+        let keys = gtk::EventControllerKey::new();
+        keys.connect_key_pressed(glib::clone!(
+            #[weak(rename_to = editor)]
+            self,
+            #[upgrade_or]
+            glib::Propagation::Proceed,
+            move |_, key, _, state| match layout::scroll_key(key, state) {
+                Some(scroll) if editor.preview_takes_keys() => {
+                    editor.scroll_preview(scroll);
+                    glib::Propagation::Stop
+                }
+                _ => glib::Propagation::Proceed,
+            }
+        ));
+        self.add_controller(keys);
         self.apply_layout();
+    }
+
+    /// Whether the scroll keys go to the preview: the focus is in it, or
+    /// it is the only pane on screen.
+    fn preview_takes_keys(&self) -> bool {
+        let imp = self.imp();
+        let panes = layout::panes(imp.narrow.get(), self.mode());
+        let focus_in_preview = self
+            .focus()
+            .is_some_and(|focus| focus.is_ancestor(&*imp.preview_pane));
+        focus_in_preview || (panes.preview && !panes.edit)
+    }
+
+    /// Scrolls the preview as a key asks (`layout::scroll_key`), through
+    /// `GtkScrolledWindow`'s own `scroll-child` keybinding signal.
+    fn scroll_preview(&self, scroll: layout::Scroll) {
+        let kind = match scroll {
+            layout::Scroll::StepUp => gtk::ScrollType::StepUp,
+            layout::Scroll::StepDown => gtk::ScrollType::StepDown,
+            layout::Scroll::PageUp => gtk::ScrollType::PageUp,
+            layout::Scroll::PageDown => gtk::ScrollType::PageDown,
+            layout::Scroll::Start => gtk::ScrollType::Start,
+            layout::Scroll::End => gtk::ScrollType::End,
+        };
+        self.imp()
+            .preview_pane
+            .emit_by_name::<bool>("scroll-child", &[&kind, &false]);
     }
 
     fn mode(&self) -> Mode {
@@ -475,6 +554,9 @@ impl CardEditor {
             Some(layout::Target::Toggle) => {
                 imp.mode_toggles.child_focus(gtk::DirectionType::TabForward);
             }
+            Some(layout::Target::Preview) => {
+                imp.preview_content.grab_focus();
+            }
             None => {}
         }
     }
@@ -485,6 +567,7 @@ impl CardEditor {
             None => layout::Place::Lost,
             Some(focus) if !focus.is_mapped() || !focus.is_focusable() => layout::Place::Lost,
             Some(focus) if focus.is_ancestor(&*imp.edit_pane) => layout::Place::Edit,
+            Some(focus) if focus.is_ancestor(&*imp.preview_pane) => layout::Place::Preview,
             Some(focus) if focus.is_ancestor(&*imp.mode_bar) => layout::Place::Toggle,
             Some(_) => layout::Place::Other,
         }
@@ -550,18 +633,24 @@ impl CardEditor {
         let (front_md, back_md) = self.texts();
         let (front_part, front_cut) = shown_part(&front_md);
         let (back_part, back_cut) = shown_part(&back_md);
-        fill(&imp.preview_front, &content::parse(front_part));
+        let images = Images::new(
+            imp.state.get().and_then(AppState::media_folder),
+            self.height(),
+        );
+        fill(&imp.preview_front, &content::parse(front_part), &images);
         let back = content::parse(back_part);
         let shown = back_shown(&back);
         if shown {
-            fill(&imp.preview_back, &back);
+            fill(&imp.preview_back, &back, &images);
         } else {
             clear(&imp.preview_back);
         }
         imp.preview_back_separator.set_visible(shown);
         imp.preview_back.set_visible(shown);
         imp.preview_group.set_description(
-            (front_cut || back_cut).then_some("This card is long: only its start is previewed."),
+            (front_cut || back_cut)
+                .then(|| gettext("This card is long: only its start is previewed."))
+                .as_deref(),
         );
         tracing::debug!(
             bytes = front_md.len() + back_md.len(),
@@ -575,10 +664,10 @@ impl CardEditor {
     /// (the field is disabled already, `read_card_tags`).
     fn load(&self, card_id: Option<&str>, front: &str, back: &str, tags: Option<&[String]>) {
         let imp = self.imp();
-        self.set_title(if card_id.is_some() {
-            "Edit Card"
+        self.set_title(&if card_id.is_some() {
+            gettext("Edit Card")
         } else {
-            "New Card"
+            gettext("New Card")
         });
         imp.card_id.replace(card_id.map(str::to_owned));
         imp.saved_text.replace((front.to_owned(), back.to_owned()));
@@ -662,14 +751,16 @@ impl CardEditor {
             Ok(saved) => saved,
             Err(err) => {
                 // The editor's own overlay: the dialog covers the page's.
-                let message = format!("The card could not be saved: {err}");
+                // Translators: a toast: what is before ":" is its title, the
+                // rest is behind Details. {error} is why, in English.
+                let message = with_error(&gettext("The card could not be saved: {error}"), &err);
                 show_error(&*imp.toast_overlay, "a card save", &message);
                 return;
             }
         };
         let (toast_text, kept) = match &saved {
-            Saved::Added(tagged) => ("Card added", tagged.tags.clone()),
-            Saved::Edited(tagged) => ("Card saved", tagged.tags.clone()),
+            Saved::Added(tagged) => (gettext("Card added"), tagged.tags.clone()),
+            Saved::Edited(tagged) => (gettext("Card saved"), tagged.tags.clone()),
         };
         if let Some(on_saved) = imp.on_saved.get().map(Callback::get) {
             on_saved(saved);
@@ -679,7 +770,7 @@ impl CardEditor {
         let kept: Vec<String> = kept.into_iter().map(|tag| tag.name).collect();
         self.after_save(and_new, &kept);
         if and_new {
-            imp.toast_overlay.add_toast(info_toast(toast_text));
+            imp.toast_overlay.add_toast(info_toast(&toast_text));
         }
     }
 
@@ -765,10 +856,19 @@ fn check_card(front: &str, back: &str) -> CardCheck {
 }
 
 fn too_long_text(side: CardSide) -> String {
-    format!(
-        "The {side} is too long (the limit is {} bytes)",
-        group_digits(MAX_CARD_SIDE_BYTES)
-    )
+    let limit = group_digits(MAX_CARD_SIDE_BYTES);
+    match side {
+        CardSide::Front => i18n::fill(
+            // Translators: {limit} is a number of bytes (1,048,576).
+            &gettext("The front is too long (the limit is {limit} bytes)"),
+            &[("limit", &limit)],
+        ),
+        CardSide::Back => i18n::fill(
+            // Translators: {limit} is a number of bytes (1,048,576).
+            &gettext("The back is too long (the limit is {limit} bytes)"),
+            &[("limit", &limit)],
+        ),
+    }
 }
 
 /// Shows `error` under `view`, announcing it when it appears or changes.
@@ -816,7 +916,7 @@ fn wrap_selection(buffer: &sourceview5::Buffer, marker: &str) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
 
     #[test]
@@ -871,7 +971,7 @@ mod tests {
 
     /// A state with one deck, and an editor on a new card in it or on the
     /// card `existing` (front, tags) already in it.
-    fn editor_over(
+    pub(super) fn editor_over(
         existing: Option<(&str, &[&str])>,
     ) -> (
         tempfile::TempDir,
@@ -1093,10 +1193,47 @@ mod tests {
                 Duration::from_secs(5)
             ));
             assert_eq!(editor.focus().as_ref(), Some(imp.front_view.upcast_ref()));
-            // To the preview with the focus in the text: on the toggle.
+            // To the preview with the focus in the text: on the preview,
+            // where the keys scroll it (ADR 0058).
+            imp.front_buffer
+                .set_text(&"A paragraph of the front.\n\n".repeat(80));
             imp.mode_toggles.set_active_name(Some(Mode::PREVIEW));
-            assert!(toggle_focused(), "focus: {:?}", editor.focus());
-            // Back to the text: the toggle keeps it (the user is there).
+            assert_eq!(
+                editor.focus().as_ref(),
+                Some(imp.preview_content.upcast_ref()),
+                "focus: {:?}",
+                editor.focus()
+            );
+            let adjustment = imp.preview_pane.vadjustment();
+            assert!(
+                crate::testing::settle_until(
+                    || adjustment.upper() > adjustment.page_size() + 100.0,
+                    Duration::from_secs(5)
+                ),
+                "the preview is taller than its view"
+            );
+            // `scroll-child` may animate the move (gtk_adjustment_animate_to_value).
+            editor.scroll_preview(layout::Scroll::PageDown);
+            assert!(
+                crate::testing::settle_until(|| adjustment.value() > 0.0, Duration::from_secs(5)),
+                "Page Down scrolls the preview"
+            );
+            editor.scroll_preview(layout::Scroll::Start);
+            assert!(
+                crate::testing::settle_until(
+                    || adjustment.value().abs() < f64::EPSILON,
+                    Duration::from_secs(5)
+                ),
+                "Home goes back up"
+            );
+            // Back to the text: the front.
+            imp.mode_toggles.set_active_name(Some(Mode::EDIT));
+            assert_eq!(editor.focus().as_ref(), Some(imp.front_view.upcast_ref()));
+            // On the toggle, switching keeps it there (the user is there).
+            imp.mode_toggles.child_focus(gtk::DirectionType::TabForward);
+            assert!(toggle_focused());
+            imp.mode_toggles.set_active_name(Some(Mode::PREVIEW));
+            assert!(toggle_focused());
             imp.mode_toggles.set_active_name(Some(Mode::EDIT));
             assert!(toggle_focused());
             // Wide again, the bar hidden by the setter: to the front.

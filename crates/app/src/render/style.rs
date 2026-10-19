@@ -4,6 +4,7 @@
 
 use rappel_core::content::{Block, Document, Inline};
 
+use super::images::{audio_count, image_count};
 use super::math::MAX_FORMULAS;
 
 /// Whether the back is shown after the reveal: not when there is nothing
@@ -65,8 +66,8 @@ pub fn table_cell_classes(
 /// most a side draws.
 pub fn widget_cost(block: &Block) -> usize {
     match block {
-        Block::Paragraph(inlines)
-        | Block::Heading {
+        Block::Paragraph(inlines) => 1 + formula_cost(inlines) + media_cost(inlines),
+        Block::Heading {
             content: inlines, ..
         } => 1 + formula_cost(inlines),
         Block::Rule => 1,
@@ -92,6 +93,20 @@ pub fn widget_cost(block: &Block) -> usize {
     }
 }
 
+/// The widgets the `media:` images and audio links of a paragraph add
+/// (ADR 0055, 0056): a box for the column, per image three (its widget,
+/// the button and the picture, or the placeholder's line, icon and label),
+/// and per audio link six (its widget, the button, its box, icon and
+/// label, and the note). A paragraph also has its text runs, each a label,
+/// at most one more than its media, which the 1 of the paragraph and these
+/// counts cover.
+fn media_cost(inlines: &[Inline]) -> usize {
+    match (image_count(inlines), audio_count(inlines)) {
+        (0, 0) => 0,
+        (images, audio) => 1 + 3 * images + 6 * audio,
+    }
+}
+
 /// The widgets the formulas in `inlines` may add.
 fn formula_cost(inlines: &[Inline]) -> usize {
     2 * formulas_in(inlines).min(MAX_FORMULAS)
@@ -106,7 +121,8 @@ fn formulas_in(inlines: &[Inline]) -> usize {
             Inline::Emphasis(inner)
             | Inline::Strong(inner)
             | Inline::Strikethrough(inner)
-            | Inline::Link { content: inner, .. } => formulas_in(inner),
+            | Inline::Link { content: inner, .. }
+            | Inline::Audio { content: inner, .. } => formulas_in(inner),
             _ => 0,
         })
         .sum()
@@ -165,6 +181,24 @@ mod tests {
         // At most MAX_FORMULAS are charged to a block.
         let many = "$x$ ".repeat(MAX_FORMULAS * 3);
         assert_eq!(cost(&many), 1 + 2 * MAX_FORMULAS);
+    }
+
+    #[test]
+    fn media_images_cost_their_widgets() {
+        let cost = |md: &str| parse(md).blocks.iter().map(widget_cost).sum::<usize>();
+        let media = format!("![a](media:{}.png)", "ab".repeat(32));
+        assert_eq!(cost(&format!("x {media} y")), 1 + 1 + 3);
+        assert_eq!(cost(&format!("{media} {media}")), 1 + 1 + 6);
+        // Not drawn: no cost beyond the label.
+        assert_eq!(cost("![a](https://e.org/x.png)"), 1);
+        assert_eq!(cost(&format!("# {media}")), 1);
+        // Many images on many lines stay within the side's widget budget
+        // only as far as they fit; the rest is plain text.
+        assert!(cost(&format!("{media}\n").repeat(1_000)) > 2_000);
+        let audio = format!("[a](media:{}.ogg)", "ab".repeat(32));
+        assert_eq!(cost(&format!("x {audio} y")), 1 + 1 + 6);
+        assert_eq!(cost(&format!("{media} {audio}")), 1 + 1 + 3 + 6);
+        assert_eq!(cost(&format!("*{audio}*")), 1);
     }
 
     #[test]

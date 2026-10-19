@@ -40,9 +40,11 @@
   background-image: linear-gradient(to left, alpha(currentColor, 0.25), alpha(currentColor, 0) 20px);
 }
 
-/* A chart is focusable (widgets/bar_chart.rs) and a drawing area has no
+/* A chart is focusable (widgets/bar_chart.rs), and so is the editor's
+ * preview (scrolled by the keys, ADR 0058); a drawing area or a box has no
  * focus ring of its own in the stylesheet: draw one in the text colour. */
-.bar-chart:focus-visible {
+.bar-chart:focus-visible,
+.preview-content:focus-visible {
   outline: 2px solid alpha(currentColor, 0.6);
   outline-offset: 2px;
   border-radius: 4px;
@@ -88,18 +90,14 @@ row > box.header.card-row label.subtitle {
 }
 
 /* A removable tag pill (the tag entry, widgets/tag_entry.rs): the label
- * and a small round remove button share the pill. The pill is as tall as
- * the button, which keeps libadwaita's flat, circular look and its focus
- * ring; only its size is set here. */
+ * and a round remove button share the pill. The button is libadwaita's own
+ * flat circular button, 34 px, a comfortable touch target (ADR 0058); the
+ * pill is as tall, and its name wraps rather than being cut. A wrapped
+ * pill keeps rounded ends of the button's radius. */
 .tag-pill.removable {
-  min-height: 24px;
-  padding: 0 0 0 6px;
-}
-
-.tag-pill.removable > button {
-  min-width: 24px;
-  min-height: 24px;
-  padding: 0;
+  min-height: 34px;
+  padding: 0 0 0 12px;
+  border-radius: 17px;
 }
 
 /* The tag entry's frame (data/tag_entry.blp) has the background of a text
@@ -142,4 +140,10 @@ row > box.header.card-row label.subtitle {
  * (the content box plus libadwaita's 10 px pill padding). */
 button.review-button {
   min-height: 28px;
+}
+
+/* A card image (render/picture.rs): the picture fills its flat button,
+ * whose rounded corners clip it (ADR 0055). */
+button.card-image {
+  padding: 0;
 }

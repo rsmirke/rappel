@@ -3,7 +3,7 @@
 use super::*;
 
 #[derive(Debug, Clone)]
-enum Op {
+pub(super) enum Op {
     CreateDeck(usize),
     RenameDeck(usize, usize),
     DeleteDeck(usize),
@@ -31,7 +31,7 @@ const TEXTS: [&str; 4] = ["q", "two\nlines", "\"quoted\" & <b>", "√2 ≈ 1.414
 /// Tag names that collide by key, so some adds reuse a tag.
 const TAGS: [&str; 4] = ["algebra", "Algebra", "géométrie", "Unused"];
 
-fn op() -> impl Strategy<Value = Op> {
+pub(super) fn op() -> impl Strategy<Value = Op> {
     let i = || 0usize..16;
     prop_oneof![
         2 => (0..NAMES.len()).prop_map(Op::CreateDeck),
@@ -55,7 +55,7 @@ fn op() -> impl Strategy<Value = Op> {
 
 /// Runs `ops` on `store` through its public API, ignoring the refusals
 /// (duplicate names, deleted targets): they are part of a random history.
-fn run(store: &mut Store, ops: &[Op]) {
+pub(super) fn run(store: &mut Store, ops: &[Op]) {
     let mut decks: Vec<String> = Vec::new();
     let mut cards: Vec<String> = Vec::new();
     let mut clock = T0;

@@ -8,16 +8,21 @@
 
 mod text;
 
+use crate::i18n::gettext;
 use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::glib;
 use rappel_core::domain::Deck;
 
-use self::text::{DayNames, FORECAST_TITLE, REVIEWS_TITLE, TIME_TITLE};
+use self::text::DayNames;
 use crate::state::{AppState, StatsData};
 use crate::ui::tile::set_tile;
 use crate::ui::time;
 use crate::widgets::chart_card::{ChartCard, ChartModel};
+
+/// The empty state's icon, as in its layout, given back after a short
+/// window took it off (`ui::breakpoint::compact_status_page`).
+const EMPTY_ICON: &str = "document-open-recent-symbolic";
 
 mod imp {
     use adw::prelude::*;
@@ -30,6 +35,10 @@ mod imp {
     #[derive(Debug, Default, gtk::CompositeTemplate)]
     #[template(resource = "/io/github/rsmirke/Rappel/stats_page.ui")]
     pub struct StatsPage {
+        #[template_child]
+        pub empty_short: TemplateChild<adw::Breakpoint>,
+        #[template_child]
+        pub empty_status: TemplateChild<adw::StatusPage>,
         #[template_child]
         pub window_title: TemplateChild<adw::WindowTitle>,
         #[template_child]
@@ -76,6 +85,12 @@ mod imp {
     impl ObjectImpl for StatsPage {
         fn constructed(&self) {
             self.parent_constructed();
+            // The empty state on a short window (ADR 0058).
+            crate::ui::breakpoint::compact_status_page(
+                &self.empty_short,
+                &self.empty_status,
+                super::EMPTY_ICON,
+            );
             // GTK documents `shown` as the place to set the focus after a
             // push (ui/nav.rs): earlier, the view focuses the Back button.
             self.obj()
@@ -103,10 +118,10 @@ impl StatsPage {
         // Deck names are untrusted; AdwWindowTitle shows plain text.
         page.imp()
             .window_title
-            .set_subtitle(deck.map_or("All Decks", |d| d.name.as_str()));
+            .set_subtitle(&deck.map_or_else(|| gettext("All Decks"), |d| d.name.clone()));
         page.imp()
             .back_button
-            .set_label(text::back_label(deck.is_some()));
+            .set_label(&text::back_label(deck.is_some()));
         page.fill(&data);
         Ok(page)
     }
@@ -128,22 +143,22 @@ impl StatsPage {
             with_weekday: &time::day_with_weekday,
             long: &time::day_long,
         };
-        let charts: [(&ChartCard, &str, ChartModel, bool); 3] = [
+        let charts: [(&ChartCard, String, ChartModel, bool); 3] = [
             (
                 &imp.reviews_chart,
-                REVIEWS_TITLE,
+                text::reviews_title(),
                 text::reviews_chart(data, &names),
                 true,
             ),
             (
                 &imp.time_chart,
-                TIME_TITLE,
+                text::time_title(),
                 text::time_chart(data, &names),
                 false,
             ),
             (
                 &imp.forecast_chart,
-                FORECAST_TITLE,
+                text::forecast_title(),
                 text::forecast_chart(data, &names),
                 false,
             ),

@@ -69,6 +69,20 @@ Adw.Dialog card_info_dialog {
                 "numeric",
               ]
             }
+
+            // Every tag in full (dialogs/card_info.rs): on a phone, where a
+            // row's cut pills and "+N" have no tooltip, this is where the
+            // names are read (ADR 0058). Hidden without tags.
+            Adw.ActionRow tags_row {
+              title: _("Tags");
+              use-markup: false;
+              subtitle-selectable: true;
+              visible: false;
+
+              styles [
+                "property",
+              ]
+            }
           }
 
           Adw.PreferencesGroup memory_group {

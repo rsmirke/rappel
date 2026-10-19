@@ -1,16 +1,17 @@
-//! What a card row of the deck page says to a screen reader. Pure, so it
-//! is unit-tested (ADR 0042).
+//! What a card row of the deck page says to a screen reader, and which of
+//! its menu items it offers. Pure, so it is unit-tested (ADR 0042).
 
+use crate::i18n::{fill, gettext};
 use crate::widgets::tag_pills::text::spoken;
 
 /// The front as a screen reader names the card, in the row's label and its
 /// menu button's ("Actions for …"): its preview, or "empty front" when it
 /// has no text (e.g. a side that is only an empty formula).
-pub fn spoken_front(front: &str) -> &str {
+pub fn spoken_front(front: &str) -> String {
     if front.is_empty() {
-        "empty front"
+        gettext("empty front")
     } else {
-        front
+        front.to_owned()
     }
 }
 
@@ -19,15 +20,28 @@ pub fn spoken_front(front: &str) -> &str {
 /// screen reader says what the row shows: "2 + 2, back: 4, tags: maths,
 /// easy, suspended". The previews are already one plain line each.
 pub fn row_label(front: &str, back: &str, tags: &[String], suspended: bool) -> String {
-    let mut parts = vec![spoken_front(front).to_owned()];
+    let mut parts = vec![spoken_front(front)];
     if !back.is_empty() {
-        parts.push(format!("back: {back}"));
+        // Translators: a card's back for screen readers ("back: 4").
+        parts.push(fill(&gettext("back: {back}"), &[("back", back)]));
     }
     parts.extend(spoken(tags));
     if suspended {
-        parts.push("suspended".to_owned());
+        parts.push(gettext("suspended"));
     }
-    parts.join(", ")
+    parts.join(&crate::ui::text::list_separator())
+}
+
+/// The row actions that depend on the card, each with whether it is
+/// enabled: the one of Suspend and Unsuspend that changes something, and
+/// Reset Progress unless the card is already new, where a reset would only
+/// add a log entry that changes nothing.
+pub fn row_actions(suspended: bool, is_new: bool) -> [(&'static str, bool); 3] {
+    [
+        ("row.suspend", !suspended),
+        ("row.unsuspend", suspended),
+        ("row.reset", !is_new),
+    ]
 }
 
 #[cfg(test)]
@@ -61,6 +75,26 @@ mod tests {
         assert_eq!(
             row_label("Front", "", &tags, false),
             "Front, tags: a, b, c, d, e"
+        );
+    }
+
+    #[test]
+    fn a_row_offers_only_what_changes_the_card() {
+        assert_eq!(
+            row_actions(false, false),
+            [
+                ("row.suspend", true),
+                ("row.unsuspend", false),
+                ("row.reset", true)
+            ]
+        );
+        assert_eq!(
+            row_actions(true, true),
+            [
+                ("row.suspend", false),
+                ("row.unsuspend", true),
+                ("row.reset", false)
+            ]
         );
     }
 }

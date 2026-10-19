@@ -1,5 +1,6 @@
-//! Preferences: the daily limits, the day start hour, the desired retention
-//! and a button for the backup folder (SPEC §4.8, ADR 0027). Layout in
+//! Preferences: the daily limits, the day start hour, the desired retention,
+//! a button for the backup folder (SPEC §4.8, ADR 0027) and Clean Up Media
+//! (`clean_up`, ADR 0057). Layout in
 //! `data/preferences_dialog.blp` and `data/retention_dialog.blp`.
 //!
 //! The limits and the day start are saved as soon as they change. The
@@ -15,8 +16,11 @@ use gtk::{gio, glib};
 use rappel_core::data_dir::ensure_data_dir;
 use rappel_core::domain::{DESIRED_RETENTION_RANGE, MAX_DAILY_LIMIT, MAX_DAY_START_HOUR, Settings};
 
+use crate::dialogs::clean_up;
+use crate::i18n::gettext;
 use crate::state::AppState;
 use crate::ui::dialog;
+use crate::ui::text::with_error;
 use crate::ui::toast::{ErrorSlot, log_failure, show_error};
 use crate::ui::worker;
 use crate::window::RappelWindow;
@@ -47,7 +51,7 @@ pub fn retention_from_percent(percent: u8) -> f32 {
 /// The text of the retention row's value, written like every other percent
 /// in the app (`ui::text::percent`).
 pub fn retention_label(retention: f32) -> String {
-    format!("{}%", percent_from_retention(retention))
+    crate::ui::text::whole_percent(percent_from_retention(retention))
 }
 
 /// A daily limit from a spin row's value.
@@ -116,6 +120,8 @@ pub(crate) struct Rows {
     retention_row: adw::ActionRow,
     retention_value: gtk::Label,
     open_backups: adw::ButtonRow,
+    clean_up_row: adw::ActionRow,
+    clean_up_button: gtk::Button,
 }
 
 impl Rows {
@@ -137,6 +143,8 @@ impl Rows {
             object(&b, "retention_value"),
             object(&b, "open_backups"),
         );
+        let (clean_up_row, clean_up_button) =
+            (object(&b, "clean_up_row"), object(&b, "clean_up_button"));
         let rows = Self {
             dialog: dialog?,
             page: page?,
@@ -146,6 +154,8 @@ impl Rows {
             retention_row: retention_row?,
             retention_value: retention_value?,
             open_backups: open_backups?,
+            clean_up_row: clean_up_row?,
+            clean_up_button: clean_up_button?,
         };
         let hours: Vec<String> = (0..=MAX_DAY_START_HOUR).map(hour_label).collect();
         let hours: Vec<&str> = hours.iter().map(String::as_str).collect();
@@ -203,7 +213,8 @@ pub fn show(window: &RappelWindow, state: &AppState) {
             show_error(
                 window,
                 "reading the settings",
-                &format!("The settings could not be read: {err}"),
+                // Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+                &with_error(&gettext("The settings could not be read: {error}"), &err),
             );
             return;
         }
@@ -219,6 +230,13 @@ pub fn show(window: &RappelWindow, state: &AppState) {
     connect_study_rows(&rows, &ctx);
     connect_retention(window, &rows, &ctx);
     connect_backups(window, &rows, &ctx);
+    clean_up::connect(
+        &rows.dialog,
+        &rows.clean_up_row,
+        &rows.clean_up_button,
+        state,
+        &ctx.errors,
+    );
 
     // What the limits and the day start changed shows on the pages behind.
     let changed = ctx.changed.clone();
@@ -392,7 +410,8 @@ fn saved(
             ctx.errors.show_in_preferences(
                 dialog,
                 what,
-                &format!("The setting was not saved: {err}"),
+                // Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+                &with_error(&gettext("The setting was not saved: {error}"), &err),
             );
             (ctx.refresh)();
         }
@@ -415,7 +434,8 @@ async fn change_retention(
             ctx.errors.show_in_preferences(
                 dialog,
                 "reading the settings",
-                &format!("The settings could not be read: {err}"),
+                // Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+                &with_error(&gettext("The settings could not be read: {error}"), &err),
             );
             return;
         }
@@ -438,7 +458,7 @@ async fn change_retention(
     }
     let retention = retention_from_percent(percent_from_value(spin.value()));
 
-    value_label.set_label("Recalculating…");
+    value_label.set_label(&gettext("Recalculating…"));
     // Every row waits: the worker holds the write lock, and a save on the
     // main connection would block the window until it gives up.
     page.set_sensitive(false);
@@ -456,14 +476,18 @@ async fn change_retention(
             ctx.errors.show_in_preferences(
                 dialog,
                 "changing the desired retention",
-                &format!("The desired retention was not changed: {err}"),
+                // Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+                &with_error(
+                    &gettext("The desired retention was not changed: {error}"),
+                    &err,
+                ),
             );
         }
         Err(_) => {
             ctx.errors.show_in_preferences(
                 dialog,
                 "changing the desired retention",
-                "Changing the desired retention stopped unexpectedly",
+                &gettext("Changing the desired retention stopped unexpectedly"),
             );
         }
     }
@@ -486,7 +510,11 @@ async fn open_backup_folder(
         errors.show_in_preferences(
             dialog,
             "creating the backup folder",
-            &format!("The backup folder could not be created: {err}"),
+            // Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+            &with_error(
+                &gettext("The backup folder could not be created: {error}"),
+                &err,
+            ),
         );
         return;
     }
@@ -495,7 +523,11 @@ async fn open_backup_folder(
         errors.show_in_preferences(
             dialog,
             "opening the backup folder",
-            &format!("The backup folder could not be opened: {err}"),
+            // Translators: a toast: what is before ":" is its title, the rest is behind Details. {error} is why, in English.
+            &with_error(
+                &gettext("The backup folder could not be opened: {error}"),
+                &err,
+            ),
         );
     }
 }

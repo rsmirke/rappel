@@ -10,6 +10,7 @@ use std::ops::Range;
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 
 use super::{Align, Block, Cell, Document, ImageTarget, Inline, MAX_DEPTH};
+use crate::media::MediaRef;
 
 /// Parses `md`. Never fails: any text is some Markdown.
 ///
@@ -402,10 +403,16 @@ impl<'a> Builder<'a> {
             Kind::Emphasis => parent.push_inline(Inline::Emphasis(frame.inlines)),
             Kind::Strong => parent.push_inline(Inline::Strong(frame.inlines)),
             Kind::Strikethrough => parent.push_inline(Inline::Strikethrough(frame.inlines)),
-            Kind::Link(url) => parent.push_inline(Inline::Link {
-                content: frame.inlines,
-                url,
-            }),
+            Kind::Link(url) => match MediaRef::parse(&url) {
+                Some(media) if !media.kind().is_image() => parent.push_inline(Inline::Audio {
+                    content: frame.inlines,
+                    media,
+                }),
+                _ => parent.push_inline(Inline::Link {
+                    content: frame.inlines,
+                    url,
+                }),
+            },
             Kind::Image(url) => parent.push_inline(Inline::Image {
                 alt: frame.text,
                 target: ImageTarget::from_url(&url),

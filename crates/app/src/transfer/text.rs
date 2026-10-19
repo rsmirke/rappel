@@ -2,13 +2,16 @@
 
 use std::path::Path;
 
-use rappel_core::content;
 use rappel_core::interchange::{
     Conflict, FILE_EXTENSION, ImportProblem, ImportReport, ImportSummary, SettingsImport,
 };
 
+use rappel_core::{Error, content};
+
 use super::names::Lookup;
-use crate::ui::text::{count, decks_cards_reviews};
+use crate::i18n::{fill, gettext, ngettext};
+use crate::ui::text::{and_list, counted, decks_cards_reviews, group_digits};
+use crate::ui::toast::titled;
 
 /// How many conflicts the "Cannot Import" dialog lists by name.
 pub(super) const SHOWN_CONFLICTS: usize = 5;
@@ -41,23 +44,87 @@ pub(super) fn export_file_name(year: i32, month: i32, day: i32) -> String {
     format!("rappel-{year:04}-{month:02}-{day:02}.{FILE_EXTENSION}")
 }
 
-pub(super) fn exported_text(path: &Path) -> String {
+/// The export's toast: the file's name, and how many media files could
+/// not go in (missing from the media folder or damaged, ADR 0054).
+pub(super) fn exported_text(path: &Path, missing_media: usize) -> String {
     let name = path.file_name().map_or_else(
         || path.display().to_string(),
         |n| n.to_string_lossy().into_owned(),
     );
-    format!("Exported to “{name}”")
+    // Toast titles are short (`ui::toast::toast_text`): a long text starts
+    // with a title, and the rest is behind Details.
+    match missing_media {
+        0 => titled(
+            &gettext("Export done"),
+            // Translators: {name} is the name of the file written.
+            fill(&gettext("Exported to “{name}”"), &[("name", &name)]),
+        ),
+        n => fill(
+            // Translators: a toast: its first sentence is its title, the
+            // rest is behind Details. {name} is the file's name, {count} a
+            // number of media files (images, sounds).
+            &ngettext(
+                "Media file left out. Exported to “{name}”, without {count} media file that is \
+                 missing or damaged",
+                "Media files left out. Exported to “{name}”, without {count} media files that are \
+                 missing or damaged",
+                n,
+            ),
+            &[("name", &name), ("count", &group_digits(n))],
+        ),
+    }
 }
 
 /// The toast for a refused file. A file from an early test version says
 /// so in its own words: its message already says it cannot be imported.
 pub(super) fn refused_text(problem: &ImportProblem) -> String {
     match problem {
-        ImportProblem::EarlyTestVersion => {
-            "This file was made by an early test version of Rappel and cannot be imported"
-                .to_owned()
+        ImportProblem::EarlyTestVersion => gettext(
+            "Early test version. This file was made by an early test version of Rappel and \
+             cannot be imported",
+        ),
+        other => fill(
+            // Translators: a toast: what is before ":" is its title, the
+            // rest is behind Details. {reason} is why, in English.
+            &gettext("Cannot import this file: {reason}"),
+            &[("reason", &other.to_string())],
+        ),
+    }
+}
+
+/// The toast when checking a file failed for a reason other than the
+/// file being refused ([`refused_text`]).
+pub(super) fn check_failed_text(err: &Error) -> String {
+    match err {
+        Error::ImportFileChanged => {
+            gettext("File changed. It changed while it was being checked; import it again.")
         }
-        other => format!("This file cannot be imported: {other}"),
+        other => fill(
+            // Translators: a toast: what is before ":" is its title, the
+            // rest is behind Details. {error} is why, in English.
+            &gettext("Cannot check the file: {error}"),
+            &[("error", &other.to_string())],
+        ),
+    }
+}
+
+/// The toast when an import the user confirmed failed. Nothing was
+/// imported in every case (ADR 0018, ADR 0053).
+pub(super) fn import_failed_text(err: &Error) -> String {
+    match err {
+        Error::ImportPlanStale => gettext(
+            "Nothing was imported. Your data changed while the file was being checked; import it \
+             again.",
+        ),
+        Error::ImportFileChanged => {
+            gettext("Nothing was imported. The file changed since it was checked; import it again.")
+        }
+        other => fill(
+            // Translators: a toast: what is before ":" is its title, the
+            // rest is behind Details. {error} is why, in English.
+            &gettext("The import failed: nothing was imported; {error}"),
+            &[("error", &other.to_string())],
+        ),
     }
 }
 
@@ -65,19 +132,49 @@ pub(super) fn refused_text(problem: &ImportProblem) -> String {
 /// (ADR 0028). Those are rare beside reviews, and the counts only tell
 /// the user roughly how much a file holds, so they are not named apart.
 pub(super) fn imported_text(report: &ImportReport) -> String {
+    titled(&gettext("Import done"), imported_body(report))
+}
+
+/// What an import added and brought back, in a sentence.
+fn imported_body(report: &ImportReport) -> String {
     let added = decks_cards_reviews(report.decks, report.cards, report.review_events);
     let revived = decks_cards_reviews(report.revived_decks, report.revived_cards, 0);
     match (added, revived) {
-        (Some(added), Some(revived)) => format!("Imported {added}, and brought back {revived}"),
-        (Some(added), None) => format!("Imported {added}"),
-        (None, Some(revived)) => format!("Brought back {revived}"),
+        (Some(added), Some(revived)) => fill(
+            // Translators: {added} and {revived} are lists of counts ("1
+            // deck and 2 cards").
+            &gettext("Imported {added}, and brought back {revived}"),
+            &[("added", &added), ("revived", &revived)],
+        ),
+        // Translators: {added} is a list of counts ("1 deck and 2 cards").
+        (Some(added), None) => fill(&gettext("Imported {added}"), &[("added", &added)]),
+        (None, Some(revived)) => fill(
+            // Translators: {revived} is a list of counts ("1 deck and 2
+            // cards") of things deleted earlier and back now.
+            &gettext("Brought back {revived}"),
+            &[("revived", &revived)],
+        ),
         (None, None) => {
             let tags = report.tags + report.card_tags > 0;
-            match (tags, report.settings_applied) {
-                (true, true) => "Imported tags and settings".to_owned(),
-                (true, false) => "Imported tags".to_owned(),
-                (false, true) => "Imported settings".to_owned(),
-                (false, false) => "Nothing was imported: everything was already here".to_owned(),
+            let mut parts = Vec::new();
+            if tags {
+                parts.push(gettext("tags"));
+            }
+            if report.media > 0 {
+                parts.push(gettext("media files"));
+            }
+            if report.settings_applied {
+                parts.push(gettext("settings"));
+            }
+            if parts.is_empty() {
+                gettext("Nothing was imported: everything was already here")
+            } else {
+                // Translators: {added} is a list of "tags", "media files"
+                // and "settings".
+                fill(
+                    &gettext("Imported {added}"),
+                    &[("added", &and_list(&parts))],
+                )
             }
         }
     }
@@ -86,7 +183,7 @@ pub(super) fn imported_text(report: &ImportReport) -> String {
 /// What the import dialog says.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct PlanView {
-    pub(super) heading: &'static str,
+    pub(super) heading: String,
     pub(super) body: String,
     /// Whether Import is offered.
     pub(super) can_import: bool,
@@ -96,11 +193,18 @@ pub(super) fn plan_view(summary: &ImportSummary) -> PlanView {
     let conflicts = summary.conflicts.len();
     if conflicts > 0 {
         return PlanView {
-            heading: "Cannot Import",
-            body: format!(
-                "This file disagrees with your data in {}. Nothing is imported, \
-                 and your data stays as it is.",
-                count(conflicts, "place", "places")
+            heading: gettext("Cannot Import"),
+            body: counted(
+                // Translators: {count} is the number of differences
+                // between the file and the user's data.
+                &ngettext(
+                    "This file disagrees with your data in {count} place. Nothing is imported, \
+                     and your data stays as it is.",
+                    "This file disagrees with your data in {count} places. Nothing is imported, \
+                     and your data stays as it is.",
+                    conflicts,
+                ),
+                conflicts,
             ),
             can_import: false,
         };
@@ -113,61 +217,98 @@ pub(super) fn plan_view(summary: &ImportSummary) -> PlanView {
     let revived = decks_cards_reviews(summary.decks.revived, summary.cards.revived, 0);
     if summary.is_noop() {
         return PlanView {
-            heading: "Nothing to Import",
-            body: "Everything in this file is already here.".to_owned(),
+            heading: gettext("Nothing to Import"),
+            body: gettext("Everything in this file is already here."),
             can_import: false,
         };
     }
     let mut sentences = Vec::new();
     if let Some(new) = new {
-        sentences.push(format!("This adds {new}."));
+        // Translators: {new} is a list of counts ("12 decks, 840 cards
+        // and 5,210 reviews").
+        sentences.push(fill(&gettext("This adds {new}."), &[("new", &new)]));
     }
-    if summary.tags.new > 0 {
-        sentences.push(format!(
-            "This adds {}.",
-            count(summary.tags.new, "tag", "tags")
+    let tags = summary.tags.new;
+    if tags > 0 {
+        // Translators: {count} is a number of new tags.
+        sentences.push(counted(
+            &ngettext("This adds {count} tag.", "This adds {count} tags.", tags),
+            tags,
         ));
     }
-    if summary.card_tags.new > 0 {
-        sentences.push(format!(
-            "This puts {} on cards.",
-            count(summary.card_tags.new, "tag", "tags")
+    let card_tags = summary.card_tags.new;
+    if card_tags > 0 {
+        sentences.push(counted(
+            // Translators: {count} is how many tags the import puts on
+            // cards.
+            &ngettext(
+                "This puts {count} tag on cards.",
+                "This puts {count} tags on cards.",
+                card_tags,
+            ),
+            card_tags,
+        ));
+    }
+    let media = summary.media.new;
+    if media > 0 {
+        sentences.push(counted(
+            // Translators: {count} is a number of media files (images,
+            // sounds).
+            &ngettext(
+                "This adds {count} media file.",
+                "This adds {count} media files.",
+                media,
+            ),
+            media,
         ));
     }
     if let Some(revived) = revived {
-        sentences.push(format!("This brings back {revived} you deleted."));
+        sentences.push(fill(
+            // Translators: {revived} is a list of counts ("2 decks and 30
+            // cards") of things the user deleted.
+            &gettext("This brings back {revived} you deleted."),
+            &[("revived", &revived)],
+        ));
     }
     let (decks, cards, reviews) = (
         summary.decks.present,
         summary.cards.present,
         summary.review_events.present,
     );
-    if let Some(present) = decks_cards_reviews(decks, cards, reviews) {
-        let verb = if decks + cards + reviews == 1 {
-            "is"
-        } else {
-            "are"
-        };
-        sentences.push(format!(
-            "{present} {verb} already here and will be skipped."
-        ));
-    }
+    sentences.extend(already_here(decks, cards, reviews));
     match summary.settings {
         SettingsImport::Applied => {
-            sentences.push("Your settings are replaced by the file’s.".to_owned());
+            sentences.push(gettext("Your settings are replaced by the file’s."));
         }
         SettingsImport::Kept => {
-            sentences.push("Your settings stay as they are.".to_owned());
+            sentences.push(gettext("Your settings stay as they are."));
         }
         SettingsImport::Unchanged => {}
     }
-    sentences.push("Your data is backed up first.".to_owned());
-    let body = sentences.join(" ");
+    sentences.push(gettext("Your data is backed up first."));
+    // Translators: what separates two sentences in a dialog's text.
+    let body = sentences.join(&crate::i18n::pgettext("sentence separator", " "));
     PlanView {
-        heading: "Import Data?",
+        heading: gettext("Import Data?"),
         body,
         can_import: true,
     }
+}
+
+/// The sentence about the rows the database already has, if any.
+fn already_here(decks: usize, cards: usize, reviews: usize) -> Option<String> {
+    let present = decks_cards_reviews(decks, cards, reviews)?;
+    let total = decks.saturating_add(cards).saturating_add(reviews);
+    Some(fill(
+        // Translators: {present} is a list of counts ("2 decks and 3
+        // cards"); the plural follows their total.
+        &ngettext(
+            "{present} is already here and will be skipped.",
+            "{present} are already here and will be skipped.",
+            total,
+        ),
+        &[("present", &present)],
+    ))
 }
 
 /// The first [`SHOWN_CONFLICTS`] conflicts, one per line, then how many
@@ -184,29 +325,43 @@ pub(super) fn conflicts_text(
         .map(|conflict| {
             let line = match conflict {
                 Conflict::DeckDiffers(id) => match deck_name(id) {
-                    Lookup::Found(name) => format!("The deck “{name}” is different in the file"),
-                    Lookup::Deleted => "A deleted deck is different in the file".to_owned(),
-                    Lookup::Unknown => "A deck is different in the file".to_owned(),
+                    Lookup::Found(name) => fill(
+                        // Translators: {name} is the name of one of the
+                        // user's decks.
+                        &gettext("The deck “{name}” is different in the file"),
+                        &[("name", &name)],
+                    ),
+                    Lookup::Deleted => gettext("A deleted deck is different in the file"),
+                    Lookup::Unknown => gettext("A deck is different in the file"),
                 },
                 Conflict::CardDiffers(id) => match card_front(id) {
-                    Lookup::Found(front) => {
-                        format!("The card “{front}” is different in the file")
-                    }
-                    Lookup::Deleted => "A deleted card is different in the file".to_owned(),
-                    Lookup::Unknown => "A card is different in the file".to_owned(),
+                    Lookup::Found(front) => fill(
+                        // Translators: {front} is the start of the front of
+                        // one of the user's cards.
+                        &gettext("The card “{front}” is different in the file"),
+                        &[("front", &front)],
+                    ),
+                    Lookup::Deleted => gettext("A deleted card is different in the file"),
+                    Lookup::Unknown => gettext("A card is different in the file"),
                 },
                 Conflict::EventDiffers(_) => {
-                    "A review is recorded differently in the file".to_owned()
+                    gettext("A review is recorded differently in the file")
                 }
                 Conflict::DeckNameTaken { existing_id, .. } => match deck_name(existing_id) {
-                    Lookup::Found(name) => format!("The file has another deck named “{name}”"),
+                    Lookup::Found(name) => fill(
+                        // Translators: {name} is the name of one of the
+                        // user's decks.
+                        &gettext("The file has another deck named “{name}”"),
+                        &[("name", &name)],
+                    ),
                     Lookup::Deleted | Lookup::Unknown => {
-                        "The file has another deck with the name of one of yours".to_owned()
+                        gettext("The file has another deck with the name of one of yours")
                     }
                 },
-                Conflict::TagDiffers(_) => "A tag has another name in the file".to_owned(),
+                Conflict::TagDiffers(_) => gettext("A tag has another name in the file"),
+                Conflict::MediaDiffers(_) => gettext("A media file is different in the file"),
                 Conflict::AlreadyUndone { .. } => {
-                    "The file undoes a review or reset that is already undone here".to_owned()
+                    gettext("The file undoes a review or reset that is already undone here")
                 }
             };
             format!("• {line}")
@@ -214,7 +369,12 @@ pub(super) fn conflicts_text(
         .collect();
     let more = conflicts.len().saturating_sub(SHOWN_CONFLICTS);
     if more > 0 {
-        lines.push(format!("and {more} more"));
+        // Translators: after a list of differences, one per line; {count}
+        // is how many more there are.
+        lines.push(counted(
+            &ngettext("and {count} more", "and {count} more", more),
+            more,
+        ));
     }
     lines.join("\n")
 }
@@ -254,6 +414,16 @@ mod tests {
         }
     }
 
+    /// `text` fits a toast whole, or has a first clause short enough to be
+    /// its title (`ui::toast::toast_text`): never the generic one.
+    fn assert_has_a_title(text: &str) {
+        use crate::ui::toast::{TOAST_FITS_WITH_BUTTON, ToastText, fallback_title, toast_text};
+        if let ToastText::Detailed { title, .. } = toast_text(text) {
+            assert_ne!(title, fallback_title(), "{text}");
+            assert!(title.chars().count() <= TOAST_FITS_WITH_BUTTON, "{title}");
+        }
+    }
+
     #[test]
     fn the_export_is_named_by_the_local_date() {
         assert_eq!(export_file_name(2026, 10, 16), "rappel-2026-10-16.rappel");
@@ -263,10 +433,41 @@ mod tests {
 
     #[test]
     fn the_export_toast_names_only_the_file() {
+        let path = Path::new("/home/me/Documents/rappel-2026-10-16.rappel");
         assert_eq!(
-            exported_text(Path::new("/home/me/Documents/rappel-2026-10-16.rappel")),
-            "Exported to “rappel-2026-10-16.rappel”"
+            exported_text(Path::new("/tmp/a.rappel"), 0),
+            "Exported to “a.rappel”"
         );
+        assert_eq!(
+            exported_text(path, 0),
+            "Export done. Exported to “rappel-2026-10-16.rappel”"
+        );
+        assert_eq!(
+            exported_text(path, 1),
+            "Media file left out. Exported to “rappel-2026-10-16.rappel”, without 1 media file that is missing or damaged"
+        );
+        assert_eq!(
+            exported_text(path, 1_200),
+            "Media files left out. Exported to “rappel-2026-10-16.rappel”, without 1,200 media files that are missing or damaged"
+        );
+        for missing in [0, 1, 1_200] {
+            assert_has_a_title(&exported_text(path, missing));
+        }
+    }
+
+    #[test]
+    fn new_media_files_are_counted() {
+        let mut s = summary(counts(0, 1), counts(0, 1), counts(0, 0));
+        s.media = counts(2, 1);
+        let view = plan_view(&s);
+        assert!(view.can_import);
+        assert!(
+            view.body.starts_with("This adds 2 media files. "),
+            "{}",
+            view.body
+        );
+        s.media = counts(0, 3);
+        assert!(!plan_view(&s).can_import);
     }
 
     #[test]
@@ -275,7 +476,7 @@ mod tests {
         assert_eq!(
             view,
             PlanView {
-                heading: "Import Data?",
+                heading: "Import Data?".to_owned(),
                 body: "This adds 12 decks, 840 cards and 5,210 reviews. \
                        Your data is backed up first."
                     .to_owned(),
@@ -302,7 +503,7 @@ mod tests {
         assert_eq!(
             view,
             PlanView {
-                heading: "Import Data?",
+                heading: "Import Data?".to_owned(),
                 body: "This brings back 2 decks and 30 cards you deleted. \
                        Your data is backed up first."
                     .to_owned(),
@@ -429,6 +630,7 @@ mod tests {
             tags: 0,
             card_tags: 0,
             review_events: 0,
+            media: 0,
             settings_applied: false,
             revived_decks: 0,
             revived_cards: 0,
@@ -441,7 +643,7 @@ mod tests {
         };
         assert_eq!(
             imported_text(&report),
-            "Imported 1 deck and 2 cards, and brought back 3 cards"
+            "Import done. Imported 1 deck and 2 cards, and brought back 3 cards"
         );
         let report = ImportReport {
             decks: 0,
@@ -457,7 +659,7 @@ mod tests {
         };
         assert_eq!(
             imported_text(&report),
-            "Nothing was imported: everything was already here"
+            "Import done. Nothing was imported: everything was already here"
         );
         let tags = ImportReport {
             card_tags: 2,
@@ -474,18 +676,68 @@ mod tests {
             ..settings
         };
         assert_eq!(imported_text(&both), "Imported tags and settings");
+        let media = ImportReport {
+            media: 3,
+            ..report.clone()
+        };
+        assert_eq!(imported_text(&media), "Imported media files");
+        let all = ImportReport { media: 3, ..both };
+        assert_eq!(
+            imported_text(&all),
+            "Import done. Imported tags, media files and settings"
+        );
+        let many = ImportReport {
+            decks: 12,
+            cards: 840,
+            review_events: 5_210,
+            ..all
+        };
+        assert_has_a_title(&imported_text(&many));
     }
 
     #[test]
     fn a_refused_file_says_why_once() {
         assert_eq!(
             refused_text(&ImportProblem::EarlyTestVersion),
-            "This file was made by an early test version of Rappel and cannot be imported"
+            "Early test version. This file was made by an early test version of Rappel and cannot be imported"
         );
         assert_eq!(
             refused_text(&ImportProblem::NotAFile),
-            "This file cannot be imported: it is not a regular file (a folder, a pipe or a device)"
+            "Cannot import this file: it is not a regular file (a folder, a pipe or a device)"
         );
+        assert_has_a_title(&refused_text(&ImportProblem::EarlyTestVersion));
+        assert_has_a_title(&refused_text(&ImportProblem::NotAFile));
+    }
+
+    #[test]
+    fn a_changed_file_says_so_and_nothing_was_imported() {
+        assert_eq!(
+            check_failed_text(&Error::ImportFileChanged),
+            "File changed. It changed while it was being checked; import it again."
+        );
+        assert_eq!(
+            import_failed_text(&Error::ImportFileChanged),
+            "Nothing was imported. The file changed since it was checked; import it again."
+        );
+        assert_eq!(
+            import_failed_text(&Error::ImportPlanStale),
+            "Nothing was imported. Your data changed while the file \
+             was being checked; import it again."
+        );
+        assert_eq!(
+            import_failed_text(&Error::NoBackupDir),
+            "The import failed: nothing was imported; \
+             this database cannot be backed up, so nothing can be imported into it"
+        );
+        assert!(check_failed_text(&Error::NoBackupDir).starts_with("Cannot check the file: "));
+        for err in [
+            Error::ImportFileChanged,
+            Error::NoBackupDir,
+            Error::ImportPlanStale,
+        ] {
+            assert_has_a_title(&check_failed_text(&err));
+            assert_has_a_title(&import_failed_text(&err));
+        }
     }
 
     #[test]
@@ -535,5 +787,48 @@ mod tests {
             "• A tag has another name in the file\n\
              • The file undoes a review or reset that is already undone here"
         );
+    }
+
+    /// Every toast of an export or an import has its own short title in
+    /// French too, and the dialog's texts are French.
+    #[test]
+    fn the_texts_are_translated_and_keep_their_titles_in_french() {
+        crate::i18n::tests::in_french(|| {
+            let path = Path::new("/home/me/Documents/rappel-2026-10-16.rappel");
+            for missing in [0, 1, 99_999] {
+                assert_has_a_title(&exported_text(path, missing));
+            }
+            for problem in [ImportProblem::EarlyTestVersion, ImportProblem::NotAFile] {
+                assert_has_a_title(&refused_text(&problem));
+            }
+            for err in [
+                Error::ImportFileChanged,
+                Error::NoBackupDir,
+                Error::ImportPlanStale,
+            ] {
+                assert_has_a_title(&check_failed_text(&err));
+                assert_has_a_title(&import_failed_text(&err));
+            }
+            let report = ImportReport {
+                decks: 12,
+                cards: 840,
+                tags: 1,
+                card_tags: 0,
+                review_events: 5_210,
+                media: 3,
+                settings_applied: true,
+                revived_decks: 1,
+                revived_cards: 3,
+                backup: None,
+            };
+            assert_has_a_title(&imported_text(&report));
+            let view = plan_view(&summary(counts(1, 2), counts(0, 3), counts(0, 0)));
+            assert_eq!(view.heading, "Importer les données\u{202f}?");
+            assert!(
+                view.body.starts_with("Ceci ajoute 1 paquet. "),
+                "{}",
+                view.body
+            );
+        });
     }
 }

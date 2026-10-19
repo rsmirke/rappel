@@ -142,6 +142,35 @@ pub enum Error {
         value: String,
     },
 
+    /// A value stored in the `settings` table is not valid for its key (a
+    /// damaged or hand-edited database). Every read of the settings refuses
+    /// it, and so does [`Store::open`](crate::storage::Store::open), so
+    /// nothing runs with it; [`crate::storage::reset_setting`] puts the
+    /// default back after a backup (ADR 0052).
+    #[error("the stored setting {key} cannot be read: {value}")]
+    DamagedSetting {
+        /// The damaged setting, one of the known keys.
+        key: crate::domain::SettingKey,
+        /// The start of the stored text, at most 64 characters and "…",
+        /// for the log only.
+        value: String,
+    },
+
+    /// A restore or Finish Restore installed its copy, and the copy has a
+    /// damaged stored setting, so it was not opened: the files were moved
+    /// all the same, and this says where, as
+    /// [`Restored`](crate::storage::Restored) would. The setting is reset
+    /// with [`crate::storage::reset_setting`] (ADR 0052).
+    #[error("the database was installed, but its stored setting {key} cannot be read")]
+    InstalledWithDamagedSetting {
+        /// The damaged setting.
+        key: crate::domain::SettingKey,
+        /// Where the previous database was moved, if anywhere.
+        replaced: Option<std::path::PathBuf>,
+        /// Where a waiting restore copy was kept, if anywhere.
+        set_aside: Option<std::path::PathBuf>,
+    },
+
     /// FSRS could not compute a memory state (non-finite input state).
     #[error("scheduler error: {0}")]
     Fsrs(#[from] fsrs::FSRSError),
@@ -346,6 +375,11 @@ pub enum Error {
     #[error("card {0} does not exist")]
     CardNotFound(String),
 
+    /// The card is new (no surviving review since it was created or last
+    /// reset), so a reset would only add a log entry that changes nothing.
+    #[error("card {0} is already new, so there is no progress to reset")]
+    CardAlreadyNew(String),
+
     /// Encoding an export failed. The cause is boxed so the JSON and zip
     /// crates stay out of this API (ADR 0015).
     #[error("cannot write the export: {0}")]
@@ -355,6 +389,15 @@ pub enum Error {
     /// written.
     #[error("cannot import this file: {0}")]
     ImportRefused(#[source] crate::interchange::ImportProblem),
+
+    /// The file is not an Anki package Rappel can read (ADR 0061).
+    /// Nothing was written.
+    #[error("cannot import this Anki package: {0}")]
+    AnkiRefused(#[source] crate::interchange::AnkiProblem),
+
+    /// The user cancelled an import. Nothing was written.
+    #[error("the import was cancelled")]
+    ImportCancelled,
 
     /// The import plan has conflicts with the database, so the whole
     /// import is refused. Nothing was written.
@@ -366,10 +409,37 @@ pub enum Error {
     #[error("the data changed since the import was checked; check the file again")]
     ImportPlanStale,
 
+    /// The file changed since it was checked (or while it was read), so it
+    /// is not the file the plan describes. Nothing was written; check it
+    /// again (ADR 0053).
+    #[error("the file changed since it was checked; check it again")]
+    ImportFileChanged,
+
     /// This store has no backup directory (an in-memory store), so an
     /// import, which needs a backup first, cannot run.
     #[error("this database cannot be backed up, so nothing can be imported into it")]
     NoBackupDir,
+
+    /// A file offered as an image or an audio file is not one Rappel
+    /// keeps (ADR 0054). Nothing was recorded.
+    #[error("cannot add this file: {0}")]
+    MediaRefused(crate::media::MediaProblem),
+
+    /// Reading a file being added as media failed. Nothing was recorded.
+    #[error("cannot read the media file: {0}")]
+    MediaRead(io::Error),
+
+    /// This store has no data directory (an in-memory store), so it has
+    /// no media folder.
+    #[error("this database has no media folder")]
+    NoMediaDir,
+
+    /// The system clock is not set to a real date (before October 2026,
+    /// when Rappel first cleaned up media, or past year 9999), so the
+    /// media trash cannot date what it holds (ADR 0057). Nothing was
+    /// changed.
+    #[error("the system clock is not set to the right date; set the date and time, then try again")]
+    ClockWrong,
 }
 
 /// `Result` with [`Error`] as the error type.

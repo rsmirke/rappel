@@ -5,7 +5,7 @@ members = ["crates/core", "crates/app"]
 exclude = ["third_party"]
 
 [workspace.package]
-version = "0.2.0-beta.1"
+version = "0.3.0-beta.1"
 edition = "2024"
 # gtk4 0.11 / libadwaita 0.9 / gio 0.22 require Rust 1.92.
 rust-version = "1.92"
@@ -26,6 +26,19 @@ sourceview5 = { version = "0.11", features = ["v5_10"] }
 # keep long runs fast to lay out never split a character (ADR 0025).
 unicode-segmentation = "1.13"
 
+# Images (app, ADR 0055): decodes card images in a sandboxed process
+# (bubblewrap + seccomp, the GNOME image loaders), off the main thread, and
+# gives a GdkTexture. 3.1 is the newest release for our Rust 1.92 floor
+# (4.x needs 1.93) and talks to the loaders the distributions ship
+# (glycin-loaders 2.x). MPL-2.0 OR LGPL-2.1-or-later.
+glycin = { version = "3.1", features = ["gdk4"] }
+
+# Translation (app, ADR 0059): safe bindings to the C library's gettext
+# (`bindtextdomain`, `textdomain`, `gettext`, `ngettext`, `pgettext`). The
+# `gettext-system` feature links glibc's libintl instead of building GNU
+# gettext from the bundled sources. MIT.
+gettext-rs = { version = "0.8", features = ["gettext-system"] }
+
 # Window state (app): the O_NOFOLLOW and O_NONBLOCK flags for opening an
 # untrusted file without following a link or blocking on a pipe (ADR 0050,
 # row 33). Constants only; already in the tree through GLib's bindings.
@@ -35,7 +48,11 @@ libc = "0.2"
 thiserror = "2"
 
 # Storage (rappel-core). Bundled SQLite: same version everywhere, FTS5 included.
-rusqlite = { version = "0.40", default-features = false, features = ["bundled", "backup"] }
+# `collation` and `limits` (ADR 0061): an Anki collection's schema names a
+# `unicase` collation, which its tables cannot be read without, and an
+# untrusted collection is read with lowered length limits. `hooks` (ADR 0063):
+# the progress handler that stops a long statement of a cancelled Anki import.
+rusqlite = { version = "0.40", default-features = false, features = ["bundled", "backup", "collation", "hooks", "limits"] }
 
 # Scheduling (rappel-core): the reference FSRS implementation (ADR 0006).
 fsrs = "6.6"
@@ -54,13 +71,32 @@ zip = { version = "9", default-features = false, features = ["deflate-flate2-zli
 # Export / import (rappel-core): the `cards.json` format.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Import (rappel-core, ADR 0053): the archive is read by our own code, not
+# the zip crate's reader, which keeps every central record and retries
+# earlier end records; Deflate through flate2 (zlib-rs, pure Rust) and the
+# CRC through crc32fast, both already in the tree through `zip`.
+flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
+crc32fast = "1.5"
+# Export / import (rappel-core, ADR 0053): SHA-256 of `cards.json` while it
+# streams, so `apply_import` knows the file is the one `plan_import` checked;
+# the media store (SPEC §4.3) names files by it. Already in the tree through
+# rust-embed (the app's KaTeX fonts). No default features: no OIDs needed.
+sha2 = { version = "0.11", default-features = false }
+
+# Anki import (rappel-core, ADR 0061): the current Anki package format
+# compresses its collection and media files with zstd. A pure-Rust decoder
+# (no C library on the path of an untrusted file), read as a stream whose
+# window is capped, so a zstd bomb stops at our own cap. MIT.
+ruzstd = "0.9"
 
 # Card content (rappel-core, ADR 0019): CommonMark parser with tables,
 # strikethrough and math. No default features: they only add a CLI.
 pulldown-cmark = { version = "0.13", default-features = false }
 
 # Math (rappel app, ADR 0021): RaTeX parses and lays out LaTeX; the vendored
-# ratex-cairo (see [patch.crates-io]) draws it with cairo. Pinned: young
+# ratex-cairo (see [patch.crates-io]) draws it with cairo. rappel-core uses
+# ratex-parser alone (no UI) to check that a formula from Anki is one Rappel
+# can draw before it becomes math (ADR 0061). Pinned: young
 # project, review FONT_NOTICE.txt of ratex-katex-fonts at every bump.
 ratex-cairo = "=0.1.15"
 ratex-parser = "=0.1.15"
@@ -109,3 +145,8 @@ lto = "thin"
 # Never set `panic = "abort"` (here or in any profile): the app catches
 # panics inside RaTeX so that one hostile formula cannot close the window
 # (ADR 0023). `crates/app/src/main.rs` refuses to build with it.
+
+# SHA-256 runs over every byte an import reads (ADR 0053); unoptimized it
+# is many times slower, which the debug app and the tests would feel.
+[profile.dev.package.sha2]
+opt-level = 3

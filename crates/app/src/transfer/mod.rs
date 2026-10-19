@@ -6,29 +6,35 @@
 //! never freezes. The texts are pure functions in [`text`]; [`names`]
 //! looks up the user's own names that conflicts refer to.
 
+mod anki;
+mod anki_text;
 mod names;
 mod text;
 
+use crate::i18n::{fill, gettext};
 use std::path::PathBuf;
 
 use adw::prelude::*;
 use gtk::{gio, glib};
 use rappel_core::Error;
-use rappel_core::interchange::{FILE_EXTENSION, IMPORT_EXTENSIONS, ImportPlan, ImportSummary};
+use rappel_core::interchange::{
+    ANKI_EXTENSIONS, FILE_EXTENSION, FileKind, IMPORT_EXTENSIONS, ImportPlan, ImportSummary,
+};
 
 use crate::state::AppState;
-use crate::ui::toast::{info_toast, show_error};
+use crate::ui::toast::{info_toast, persistent_toast, show_error};
 use crate::ui::{dialog, worker};
 use crate::window::RappelWindow;
 use names::Names;
 use text::{
-    conflicts_text, export_file_name, exported_text, imported_text, plan_view, refused_text,
+    check_failed_text, conflicts_text, export_file_name, exported_text, import_failed_text,
+    imported_text, plan_view, refused_text,
 };
 
 /// Asks where to save, then exports there on a worker thread.
 pub async fn export(window: &RappelWindow, state: &AppState) {
     let (year, month, day) = glib::DateTime::now_local().map_or((0, 0, 0), |now| now.ymd());
-    let dialog = file_dialog("Export Data", &[FILE_EXTENSION]);
+    let dialog = file_dialog(&gettext("Export Data"), &[FILE_EXTENSION]);
     dialog.set_initial_name(Some(&export_file_name(year, month, day)));
     let Some(path) = chosen_path(window, dialog.save_future(Some(window)).await) else {
         return;
@@ -41,21 +47,50 @@ pub async fn export(window: &RappelWindow, state: &AppState) {
     })
     .await;
     match result {
-        Ok(Ok(_)) => window.add_toast(info_toast(&exported_text(&path))),
-        Ok(Err(err)) => show_error(window, "an export", &format!("The export failed: {err}")),
-        Err(_) => show_error(window, "an export", "The export stopped unexpectedly"),
+        Ok(Ok(summary)) => {
+            let text = exported_text(&path, summary.missing_media);
+            // Lost media files are worth reading, so that toast stays.
+            let toast = if summary.missing_media > 0 {
+                persistent_toast(&text)
+            } else {
+                info_toast(&text)
+            };
+            window.add_toast(toast);
+        }
+        Ok(Err(err)) => show_error(
+            window,
+            "an export",
+            // Translators: a toast: what is before ":" is its title, the
+            // rest is behind Details. {error} is why, in English.
+            &fill(
+                &gettext("The export failed: {error}"),
+                &[("error", &err.to_string())],
+            ),
+        ),
+        Err(_) => show_error(
+            window,
+            "an export",
+            &gettext("The export stopped unexpectedly"),
+        ),
     }
 }
 
 /// Asks for a file, checks it on a worker thread, shows what it would do,
-/// and imports it on a worker thread if the user confirms.
+/// and imports it on a worker thread if the user confirms. An Anki package
+/// (by its name, else its content) goes to the Anki import ([`anki`]).
 pub async fn import(window: &RappelWindow, state: &AppState) {
-    let dialog = file_dialog("Import Data", &IMPORT_EXTENSIONS);
+    let dialog = import_dialog();
     let Some(path) = chosen_path(window, dialog.open_future(Some(window)).await) else {
         return;
     };
 
     let data_dir = state.data_dir().to_path_buf();
+    let sniffed = path.clone();
+    let kind = worker::run(window, move || AppState::file_kind_on_worker(&sniffed)).await;
+    if let Ok(Some(FileKind::Anki)) = kind {
+        anki::import(window, data_dir, path).await;
+        return;
+    }
     let worker_dir = data_dir.clone();
     let result = worker::run(window, move || {
         AppState::plan_import_on_worker(&worker_dir, &path)
@@ -68,18 +103,14 @@ pub async fn import(window: &RappelWindow, state: &AppState) {
             return;
         }
         Ok(Err(err)) => {
-            show_error(
-                window,
-                "an import check",
-                &format!("The file could not be checked: {err}"),
-            );
+            show_error(window, "an import check", &check_failed_text(&err));
             return;
         }
         Err(_) => {
             show_error(
                 window,
                 "an import check",
-                "Checking the file stopped unexpectedly",
+                &gettext("Checking the file stopped unexpectedly"),
             );
             return;
         }
@@ -110,11 +141,11 @@ async fn confirm(window: &RappelWindow, state: &AppState, summary: &ImportSummar
         return false;
     };
     let view = plan_view(summary);
-    dialog.set_heading(Some(view.heading));
+    dialog.set_heading(Some(&view.heading));
     dialog.set_body(&view.body);
     if !view.can_import {
         dialog.remove_response("import");
-        dialog.set_response_label("cancel", "_Close");
+        dialog.set_response_label("cancel", &gettext("_Close"));
         dialog.set_default_response(Some("cancel"));
     }
     if !summary.conflicts.is_empty() {
@@ -142,29 +173,29 @@ async fn apply(window: &RappelWindow, data_dir: PathBuf, plan: ImportPlan) {
             window.add_toast(info_toast(&imported_text(&report)));
             window.data_changed();
         }
-        Ok(Err(Error::ImportPlanStale)) => show_error(
+        Ok(Err(err)) => show_error(window, "an import", &import_failed_text(&err)),
+        Err(_) => show_error(
             window,
             "an import",
-            "Your data changed while the file was being checked. Nothing was imported; import it again.",
+            &gettext("The import stopped unexpectedly"),
         ),
-        Ok(Err(err)) => show_error(
-            window,
-            "an import",
-            &format!("The import failed, and nothing was imported: {err}"),
-        ),
-        Err(_) => show_error(window, "an import", "The import stopped unexpectedly"),
     }
 }
 
-/// A modal file chooser for `.rappel` files. It also shows `.cards` files,
-/// the name exports had before the rename (ADR 0020), so old exports import.
-/// Saving offers only `.rappel`, so an old export is not overwritten by accident.
-fn file_dialog(title: &str, extensions: &[&str]) -> gtk::FileDialog {
+/// A file filter named `name` for the name `extensions`.
+fn suffix_filter(name: &str, extensions: &[&str]) -> gtk::FileFilter {
     let filter = gtk::FileFilter::new();
-    filter.set_name(Some("Rappel Exports"));
+    filter.set_name(Some(name));
     for extension in extensions {
         filter.add_suffix(extension);
     }
+    filter
+}
+
+/// A modal file chooser for `.rappel` files, for saving an export: only
+/// `.rappel`, so an old `.cards` export is not overwritten by accident.
+fn file_dialog(title: &str, extensions: &[&str]) -> gtk::FileDialog {
+    let filter = suffix_filter(&gettext("Rappel Exports"), extensions);
     let filters = gio::ListStore::new::<gtk::FileFilter>();
     filters.append(&filter);
     gtk::FileDialog::builder()
@@ -175,6 +206,32 @@ fn file_dialog(title: &str, extensions: &[&str]) -> gtk::FileDialog {
         .build()
 }
 
+/// The modal file chooser of Import…: Rappel exports (`.rappel`, and
+/// `.cards`, the name exports had before the rename, ADR 0020) and Anki
+/// packages (`.apkg`, `.colpkg`, ADR 0061), together by default, or each
+/// kind alone.
+fn import_dialog() -> gtk::FileDialog {
+    let all: Vec<&str> = IMPORT_EXTENSIONS
+        .iter()
+        .chain(&ANKI_EXTENSIONS)
+        .copied()
+        .collect();
+    let both = suffix_filter(&gettext("Rappel Exports and Anki Packages"), &all);
+    let filters = gio::ListStore::new::<gtk::FileFilter>();
+    filters.append(&both);
+    filters.append(&suffix_filter(
+        &gettext("Rappel Exports"),
+        &IMPORT_EXTENSIONS,
+    ));
+    filters.append(&suffix_filter(&gettext("Anki Packages"), &ANKI_EXTENSIONS));
+    gtk::FileDialog::builder()
+        .title(gettext("Import Data"))
+        .modal(true)
+        .filters(&filters)
+        .default_filter(&both)
+        .build()
+}
+
 /// The local path chosen, or `None` if the user cancelled or the chooser
 /// failed (then after a toast).
 fn chosen_path(window: &RappelWindow, chosen: Result<gio::File, glib::Error>) -> Option<PathBuf> {
@@ -182,7 +239,11 @@ fn chosen_path(window: &RappelWindow, chosen: Result<gio::File, glib::Error>) ->
         Ok(file) => {
             let path = file.path();
             if path.is_none() {
-                show_error(window, "a file choice", "Choose a file on this computer");
+                show_error(
+                    window,
+                    "a file choice",
+                    &gettext("Choose a file on this computer"),
+                );
             }
             path
         }
@@ -198,7 +259,12 @@ fn chosen_path(window: &RappelWindow, chosen: Result<gio::File, glib::Error>) ->
             show_error(
                 window,
                 "a file choice",
-                &format!("The file chooser failed: {err}"),
+                // Translators: a toast: what is before ":" is its title, the
+                // rest is behind Details. {error} is why, in English.
+                &fill(
+                    &gettext("The file chooser failed: {error}"),
+                    &[("error", &err.to_string())],
+                ),
             );
             None
         }

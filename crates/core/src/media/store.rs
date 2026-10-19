@@ -1,0 +1,674 @@
+//! The media folder: `<data dir>/media/<sha256>.<ext>`, the folder mode
+//! `0700`, the files `0600` (ADR 0054).
+//!
+//! A file is streamed into a new temporary file in the folder, hashed as
+//! it goes and capped by its kind's limit, synced, then given its final
+//! name by a hard link, which never replaces a file: if the name exists,
+//! that file is hashed and kept if it has the same content; otherwise it is
+//! damaged, kept under a second name, and the good copy takes the name.
+//! Nothing here deletes a media file. The temporary name is removed once the file has
+//! its name, or after a failure; a crash can leave one behind, named
+//! `.incoming-…`, which is never a media name, and which a clean-up leaves
+//! alone (ADR 0057).
+
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Read, Write};
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::{Path, PathBuf};
+
+use rusqlite::{Connection, Transaction, TransactionBehavior, params};
+use sha2::{Digest, Sha256};
+
+use super::{DETECT_BYTES, MediaKind, MediaProblem, MediaRef, check_structure, hex};
+use crate::data_dir::ensure_data_dir;
+use crate::error::{Error, Result};
+use crate::storage::Store;
+use crate::time::now_ms;
+
+/// The media folder's name inside the data directory.
+pub(crate) const MEDIA_DIR_NAME: &str = "media";
+
+const FILE_MODE: u32 = 0o600;
+
+/// A file put in the media folder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Ingested {
+    pub(crate) media: MediaRef,
+    /// Its size.
+    pub(crate) bytes: u64,
+}
+
+impl Store {
+    /// Copies the file `reader` gives into the media folder and records it,
+    /// and returns how card Markdown refers to it
+    /// ([`MediaRef::reference`]).
+    ///
+    /// The kind comes from the first bytes, never from a name: a JPEG
+    /// called `x.png` is stored as `.jpg`. Only the kinds of
+    /// [`MediaKind`] are accepted, each up to its limit (10 MB for an
+    /// image, 20 MB for audio). Adding a file that is already there
+    /// changes nothing and gives the same reference.
+    ///
+    /// # Errors
+    /// [`Error::MediaRefused`] (empty, not a supported kind, too large),
+    /// [`Error::MediaRead`] if `reader` fails, [`Error::NoMediaDir`] for a
+    /// store without a data directory, IO and SQLite errors. Nothing is
+    /// recorded on error; a file may be left in the folder under its own
+    /// hash, unused.
+    pub fn add_media(&self, mut reader: impl Read) -> Result<MediaRef> {
+        self.add_media_at(&mut reader, now_ms())
+    }
+
+    /// [`Self::add_media`] for bytes in memory (a pasted image).
+    ///
+    /// # Errors
+    /// As [`Self::add_media`].
+    pub fn add_media_bytes(&self, bytes: &[u8]) -> Result<MediaRef> {
+        self.add_media(bytes)
+    }
+
+    /// [`Self::add_media`] for an image only (the editor's Insert Image…
+    /// and a pasted picture): a file of an audio kind is refused as
+    /// [`MediaProblem::NotImage`] before anything is written.
+    ///
+    /// # Errors
+    /// As [`Self::add_media`].
+    pub fn add_image(&self, reader: impl Read) -> Result<MediaRef> {
+        self.add_media_if(reader, MediaKind::is_image, MediaProblem::NotImage)
+    }
+
+    /// [`Self::add_media`] for an audio file only (the editor's Insert
+    /// Audio…): a file of an image kind is refused as
+    /// [`MediaProblem::NotAudio`] before anything is written.
+    ///
+    /// # Errors
+    /// As [`Self::add_media`].
+    pub fn add_audio(&self, reader: impl Read) -> Result<MediaRef> {
+        self.add_media_if(reader, |kind| !kind.is_image(), MediaProblem::NotAudio)
+    }
+
+    /// [`Self::add_media`] if the first bytes are of a kind `wanted`
+    /// accepts, else `refused` before anything is written.
+    fn add_media_if(
+        &self,
+        mut reader: impl Read,
+        wanted: fn(MediaKind) -> bool,
+        refused: MediaProblem,
+    ) -> Result<MediaRef> {
+        let mut head = [0; DETECT_BYTES];
+        let n = read_full(&mut reader, &mut head).map_err(Error::MediaRead)?;
+        if let Some(kind) = MediaKind::detect(&head[..n])
+            && !wanted(kind)
+        {
+            return Err(Error::MediaRefused(refused));
+        }
+        // Empty and unknown files are refused by `add_media` itself.
+        self.add_media(io::Cursor::new(&head[..n]).chain(reader))
+    }
+
+    /// The media folder, inside the data directory; `None` for a store
+    /// without one. It may not exist yet: it is made with the first file.
+    #[must_use]
+    pub fn media_folder(&self) -> Option<&Path> {
+        self.media_dir.as_deref()
+    }
+
+    /// [`Self::add_media`] at time `now`, the row's `created_at` the first
+    /// time the file is added.
+    pub(crate) fn add_media_at(&self, reader: &mut impl Read, now: i64) -> Result<MediaRef> {
+        let dir = self.media_dir.as_deref().ok_or(Error::NoMediaDir)?;
+        // The write lock from before the file gets its name until its row
+        // is committed, so a clean-up (which takes it too) never sees the
+        // file without its row and moves it to the trash (ADR 0057). Taken
+        // once the copy is complete, so a slow input never holds it.
+        let (got, tx) = ingest_then(dir, reader, || {
+            Ok(Transaction::new_unchecked(
+                &self.conn,
+                TransactionBehavior::Immediate,
+            )?)
+        })?;
+        insert_media_row(&tx, &got, now)?;
+        tx.commit()?;
+        Ok(got.media)
+    }
+
+    /// Where the file `media` is: always inside the media folder, built
+    /// from its checked hash and fixed extension. `None` for a store
+    /// without a data directory. The file may be missing (a reference to a
+    /// file that was never added, or lost).
+    #[must_use]
+    pub fn media_path(&self, media: &MediaRef) -> Option<PathBuf> {
+        self.media_dir
+            .as_deref()
+            .map(|dir| dir.join(media.file_name()))
+    }
+}
+
+/// Records `got` in the `media` table; a hash already there keeps its row
+/// (and its first `created_at`).
+pub(crate) fn insert_media_row(conn: &Connection, got: &Ingested, created_at: i64) -> Result<()> {
+    conn.execute(
+        "INSERT INTO media (hash, mime, bytes, created_at) VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT (hash) DO NOTHING",
+        params![
+            got.media.hex(),
+            got.media.kind().mime(),
+            i64::try_from(got.bytes).unwrap_or(i64::MAX),
+            created_at
+        ],
+    )?;
+    Ok(())
+}
+
+/// Streams `reader` into the media folder `dir` (created with mode `0700`
+/// if needed) under its hash and kind, synced with the folder, and returns
+/// them, calling `before_naming` once the copy is complete and synced and
+/// before the file gets its name, and returning its value too; its error
+/// stops the add before the file is named. A file already under that name
+/// is kept if it has that content, and set aside if not ([`give_name`]).
+pub(crate) fn ingest_then<T>(
+    dir: &Path,
+    reader: &mut impl Read,
+    before_naming: impl FnOnce() -> Result<T>,
+) -> Result<(Ingested, T)> {
+    ensure_data_dir(dir)?;
+    let (temp, file) = create_temp(dir)?;
+    let result = copy_and_name(dir, &temp, file, reader, before_naming);
+    // The temporary name goes in every case: on success the file has its
+    // own name (or was already there), on failure it is incomplete.
+    remove_temp(&temp);
+    result
+}
+
+/// Removes the temporary file `temp`, if it is still there.
+fn remove_temp(temp: &Path) {
+    match fs::remove_file(temp) {
+        Ok(()) => {}
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+        Err(err) => tracing::warn!("cannot remove a temporary media file: {err}"),
+    }
+}
+
+/// The body of [`ingest_then`], with the temporary file made.
+fn copy_and_name<T>(
+    dir: &Path,
+    temp: &Path,
+    mut file: File,
+    reader: &mut impl Read,
+    before_naming: impl FnOnce() -> Result<T>,
+) -> Result<(Ingested, T)> {
+    let got = copy_into(reader, temp, &mut file)?;
+    file.sync_all().map_err(io_err(temp))?;
+    drop(file);
+    let value = before_naming()?;
+    let target = dir.join(got.media.file_name());
+    give_name(&Disk, temp, &target, &got)?;
+    sync_folder(dir)?;
+    Ok((got, value))
+}
+
+/// An IO error on `path`.
+fn io_err(path: &Path) -> impl FnOnce(io::Error) -> Error + use<> {
+    let path = path.to_path_buf();
+    move |source| Error::Io { path, source }
+}
+
+/// [`copy_capped`] from `reader` into `file`, the temporary file `temp`.
+fn copy_into(reader: &mut impl Read, temp: &Path, file: &mut File) -> Result<Ingested> {
+    copy_capped(reader, file).map_err(|e| match e {
+        CopyFailure::Refused(problem) => Error::MediaRefused(problem),
+        CopyFailure::Read(err) => Error::MediaRead(err),
+        CopyFailure::Write(err) => io_err(temp)(err),
+    })
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Makes [`sync_files`] fail on this thread (tests).
+    pub(super) static FAIL_SYNC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// How many files a [`MediaBatch`] holds (each an open file) before it
+/// syncs and names them: as fast as 512 (10,000 files in 2.9 s either
+/// way), and far from the 1,024 open files a process may usually have.
+pub(super) const BATCH_FILES: usize = 128;
+/// How many bytes a [`MediaBatch`] holds before it syncs and names them.
+const BATCH_BYTES: u64 = 256 << 20;
+/// How many threads sync a batch's files at once. Each waits on its
+/// `fsync`, and the file system commits the waiting ones together: 10,000
+/// small files took 66 s on one thread, 16 s on 8, 4.8 s on 32 and 2.9 s
+/// on 64 (ext4 on an SSD, ADR 0063).
+const SYNC_THREADS: usize = 64;
+/// The stack of a sync thread, which only calls `fsync`.
+const SYNC_STACK: usize = 64 << 10;
+
+/// Many media files added at once, by an import's apply (ADR 0063). Each is
+/// copied into a temporary file as [`ingest_then`] does (checked, capped
+/// and hashed), but not synced alone: once the batch holds
+/// [`BATCH_FILES`] files or [`BATCH_BYTES`] bytes, and at [`Self::finish`],
+/// its files are synced together, on several threads (one `fsync` waits
+/// for a journal commit; parallel ones share commits), then named, each
+/// by [`give_name`]; the folder is synced once at the end. So, as before,
+/// a file has its media name only once its content is on disk, and every
+/// name is on disk before [`Self::finish`] returns, which comes before the
+/// rows commit. A crash leaves at most a batch of `.incoming-…` files,
+/// never a media name without its content. Dropped unfinished (an error,
+/// a cancel), it removes the files it has not named.
+pub(crate) struct MediaBatch<'d> {
+    dir: &'d Path,
+    pending: Vec<(PathBuf, File, Ingested)>,
+    bytes: u64,
+    named: bool,
+}
+
+impl<'d> MediaBatch<'d> {
+    /// An empty batch for the media folder `dir`, made (mode `0700`) if
+    /// needed.
+    pub(crate) fn new(dir: &'d Path) -> Result<Self> {
+        ensure_data_dir(dir)?;
+        Ok(Self {
+            dir,
+            pending: Vec::new(),
+            bytes: 0,
+            named: false,
+        })
+    }
+
+    /// Copies `reader` into the batch and returns its hash, kind and size.
+    /// The file gets its name later ([`Self::finish`]).
+    pub(crate) fn add(&mut self, reader: &mut impl Read) -> Result<Ingested> {
+        let (temp, mut file) = create_temp(self.dir)?;
+        let got = match copy_into(reader, &temp, &mut file) {
+            Ok(got) => got,
+            Err(err) => {
+                drop(file);
+                remove_temp(&temp);
+                return Err(err);
+            }
+        };
+        self.bytes = self.bytes.saturating_add(got.bytes);
+        self.pending.push((temp, file, got));
+        if self.pending.len() >= BATCH_FILES || self.bytes >= BATCH_BYTES {
+            self.flush()?;
+        }
+        Ok(got)
+    }
+
+    /// Syncs the pending files, then names them.
+    fn flush(&mut self) -> Result<()> {
+        self.bytes = 0;
+        let synced = sync_files(&self.pending);
+        if let Err(err) = synced {
+            self.drop_pending();
+            return Err(err);
+        }
+        let mut pending = std::mem::take(&mut self.pending).into_iter();
+        while let Some((temp, file, got)) = pending.next() {
+            drop(file);
+            let named = give_name(&Disk, &temp, &self.dir.join(got.media.file_name()), &got);
+            remove_temp(&temp);
+            if let Err(err) = named {
+                for (temp, file, _) in pending {
+                    drop(file);
+                    remove_temp(&temp);
+                }
+                return Err(err);
+            }
+            self.named = true;
+        }
+        Ok(())
+    }
+
+    /// Names every file of the batch, and syncs the folder if any was.
+    pub(crate) fn finish(mut self) -> Result<()> {
+        self.flush()?;
+        if self.named {
+            sync_folder(self.dir)?;
+        }
+        Ok(())
+    }
+
+    /// Removes the files not named yet.
+    fn drop_pending(&mut self) {
+        for (temp, file, _) in self.pending.drain(..) {
+            drop(file);
+            remove_temp(&temp);
+        }
+    }
+}
+
+impl Drop for MediaBatch<'_> {
+    fn drop(&mut self) {
+        self.drop_pending();
+    }
+}
+
+/// Syncs `files` (`fsync`), on up to [`SYNC_THREADS`] threads at once; on
+/// this thread alone if no thread can be started.
+fn sync_files(files: &[(PathBuf, File, Ingested)]) -> Result<()> {
+    if files.is_empty() {
+        return Ok(());
+    }
+    #[cfg(test)]
+    if FAIL_SYNC.get() {
+        return Err(Error::Io {
+            path: files[0].0.clone(),
+            source: io::Error::other("an injected sync failure"),
+        });
+    }
+    let sync = |chunk: &[(PathBuf, File, Ingested)]| -> Result<()> {
+        for (temp, file, _) in chunk {
+            file.sync_all().map_err(io_err(temp))?;
+        }
+        Ok(())
+    };
+    let threads = SYNC_THREADS.min(files.len());
+    let size = files.len().div_ceil(threads);
+    std::thread::scope(|scope| {
+        let mut handles = Vec::new();
+        let mut here = Vec::new();
+        for chunk in files.chunks(size) {
+            let builder = std::thread::Builder::new().stack_size(SYNC_STACK);
+            match builder.spawn_scoped(scope, move || sync(chunk)) {
+                Ok(handle) => handles.push(handle),
+                Err(_) => here.push(chunk),
+            }
+        }
+        let mut result = here.into_iter().try_for_each(sync);
+        for handle in handles {
+            // A panic in a sync is a bug; treat it as a failed sync.
+            let joined = handle.join().unwrap_or_else(|_| {
+                Err(Error::Io {
+                    path: PathBuf::new(),
+                    source: io::Error::other("a sync thread panicked"),
+                })
+            });
+            if result.is_ok() {
+                result = joined;
+            }
+        }
+        result
+    })
+}
+
+/// A new, empty temporary file in `dir`, mode `0600`. `create_new` never
+/// follows a symbolic link or opens an existing file.
+fn create_temp(dir: &Path) -> Result<(PathBuf, File)> {
+    let mut random = [0; 8];
+    getrandom::fill(&mut random).map_err(|err| Error::Random(Box::new(err)))?;
+    let path = dir.join(format!(".incoming-{}", hex(&random)));
+    let file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(FILE_MODE)
+        .open(&path)
+        .map_err(|source| Error::Io {
+            path: path.clone(),
+            source,
+        })?;
+    Ok((path, file))
+}
+
+/// Why [`copy_capped`] stopped.
+#[derive(Debug)]
+pub(crate) enum CopyFailure {
+    /// The content is not accepted.
+    Refused(MediaProblem),
+    /// Reading the input failed.
+    Read(io::Error),
+    /// Writing the copy failed.
+    Write(io::Error),
+}
+
+/// Copies `reader` to `out`: its kind from the first bytes, at most its
+/// kind's limit, hashed as it goes. An audio file is also kept in memory
+/// (at most 20 MB) and must be plain audio of its kind over its whole
+/// length ([`check_structure`], ADR 0056), else it is refused as
+/// [`MediaProblem::Malformed`] or [`MediaProblem::NotPlainAudio`] (what was written to `out` is then the
+/// caller's to drop).
+pub(crate) fn copy_capped(
+    reader: &mut impl Read,
+    out: &mut impl Write,
+) -> std::result::Result<Ingested, CopyFailure> {
+    let mut head = [0; DETECT_BYTES];
+    let n = read_full(reader, &mut head).map_err(CopyFailure::Read)?;
+    if n == 0 {
+        return Err(CopyFailure::Refused(MediaProblem::Empty));
+    }
+    let kind = MediaKind::detect(&head[..n]).ok_or(CopyFailure::Refused(MediaProblem::NotMedia))?;
+    let limit = kind.max_bytes();
+    let mut hasher = Sha256::new();
+    hasher.update(&head[..n]);
+    out.write_all(&head[..n]).map_err(CopyFailure::Write)?;
+    let mut whole = (!kind.is_image()).then(|| head[..n].to_vec());
+    let mut total = n as u64;
+    let mut buf = vec![0; 64 << 10];
+    loop {
+        // One byte past the limit is enough to know it is too large.
+        let left = (limit - total.min(limit)).saturating_add(1);
+        let room = usize::try_from(left).unwrap_or(usize::MAX).min(buf.len());
+        let n = match reader.read(&mut buf[..room]) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+            Err(err) => return Err(CopyFailure::Read(err)),
+        };
+        total += n as u64;
+        if total > limit {
+            return Err(CopyFailure::Refused(MediaProblem::TooLarge { kind, limit }));
+        }
+        hasher.update(&buf[..n]);
+        if let Some(whole) = whole.as_mut() {
+            whole.extend_from_slice(&buf[..n]);
+        }
+        out.write_all(&buf[..n]).map_err(CopyFailure::Write)?;
+    }
+    if let Some(whole) = whole
+        && let Err(why) = check_structure(kind, &whole)
+    {
+        tracing::debug!("an audio file is refused: {}", why.why);
+        return Err(CopyFailure::Refused(if why.extra {
+            MediaProblem::NotPlainAudio
+        } else {
+            MediaProblem::Malformed
+        }));
+    }
+    Ok(Ingested {
+        media: MediaRef::new(hasher.finalize().into(), kind),
+        bytes: total,
+    })
+}
+
+/// Reads until `buf` is full or the input ends; how many bytes came.
+fn read_full(reader: &mut impl Read, buf: &mut [u8]) -> io::Result<usize> {
+    let mut filled = 0;
+    while filled < buf.len() {
+        match reader.read(&mut buf[filled..]) {
+            Ok(0) => break,
+            Ok(n) => filled += n,
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(filled)
+}
+
+/// The file-system calls that name a media file, so tests can make them
+/// fail as some file systems do (no hard links).
+pub(super) trait Namer {
+    /// A second name for `from` at `to`; fails if `to` exists.
+    fn link(&self, from: &Path, to: &Path) -> io::Result<()>;
+    /// `from` renamed to `to` (replacing it).
+    fn rename(&self, from: &Path, to: &Path) -> io::Result<()>;
+}
+
+/// The real file system.
+pub(super) struct Disk;
+
+impl Namer for Disk {
+    fn link(&self, from: &Path, to: &Path) -> io::Result<()> {
+        fs::hard_link(from, to)
+    }
+
+    fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
+        fs::rename(from, to)
+    }
+}
+
+/// Gives the complete file `temp` (whose content is `expected`) the name
+/// `target`, never replacing a file with the same content and never losing
+/// one. A hard link fails if the name exists; where the file system
+/// refuses hard links, a rename after checking that the name is free (the
+/// folder is the app's own). A regular file already under the name is
+/// hashed: the same content is kept; other content is damaged, so it is
+/// first kept under a second name (`<name>.damaged-<random>`, by a link or
+/// else a copy to a new file), and only then does the good copy take the
+/// name.
+pub(super) fn give_name(
+    namer: &impl Namer,
+    temp: &Path,
+    target: &Path,
+    expected: &Ingested,
+) -> Result<()> {
+    let io_err = |path: &Path| {
+        let path = path.to_path_buf();
+        move |source| Error::Io { path, source }
+    };
+    match namer.link(temp, target) {
+        Ok(()) => return Ok(()),
+        Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(err) if no_links(&err) => match fs::symlink_metadata(target) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                return namer.rename(temp, target).map_err(io_err(target));
+            }
+            Err(e) => return Err(io_err(target)(e)),
+            Ok(_) => {}
+        },
+        Err(err) => return Err(io_err(target)(err)),
+    }
+    let meta = fs::symlink_metadata(target).map_err(io_err(target))?;
+    if !meta.is_file() {
+        // A folder or a link under a media name was not made by Rappel.
+        return Err(io_err(target)(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "something that is not a media file has this name",
+        )));
+    }
+    if meta.len() == expected.bytes && has_content(target, expected).map_err(io_err(target))? {
+        return Ok(());
+    }
+    // Damaged: kept under a second name, then the good copy takes the name.
+    let mut random = [0; 8];
+    getrandom::fill(&mut random).map_err(|err| Error::Random(Box::new(err)))?;
+    let mut aside = target.as_os_str().to_owned();
+    aside.push(format!(".damaged-{}", hex(&random)));
+    let aside = PathBuf::from(aside);
+    match namer.link(target, &aside) {
+        Ok(()) => {}
+        Err(err) if no_links(&err) => copy_to_new(target, &aside).map_err(io_err(&aside))?,
+        Err(err) => return Err(io_err(&aside)(err)),
+    }
+    tracing::warn!(
+        kept_as = %aside.file_name().unwrap_or_default().to_string_lossy(),
+        "a damaged media file was set aside"
+    );
+    // The second name on disk before the first is given to the good copy,
+    // so the damaged file is never only under a name being replaced.
+    if let Some(dir) = target.parent() {
+        sync_folder(dir)?;
+    }
+    namer.rename(temp, target).map_err(io_err(target))
+}
+
+/// Whether a link failed because the file system has no hard links.
+/// `PermissionDenied` can also come from `protected_hardlinks` on a file
+/// the user does not own, which cannot be in the private (`0700`) folder.
+fn no_links(err: &io::Error) -> bool {
+    matches!(
+        err.kind(),
+        io::ErrorKind::Unsupported | io::ErrorKind::PermissionDenied
+    )
+}
+
+/// Whether the file at `path` has exactly the content `expected` (its
+/// hash and kind), read once, at most its size plus one byte.
+pub(super) fn has_content(path: &Path, expected: &Ingested) -> io::Result<bool> {
+    let file = File::open(path)?;
+    let mut capped = file.take(expected.bytes.saturating_add(1));
+    match copy_capped(&mut capped, &mut io::sink()) {
+        Ok(found) => Ok(found == *expected),
+        Err(CopyFailure::Refused(_)) => Ok(false),
+        Err(CopyFailure::Read(err) | CopyFailure::Write(err)) => Err(err),
+    }
+}
+
+/// Copies `from` to `to`, a new file (mode `0600`, never an existing one),
+/// synced.
+fn copy_to_new(from: &Path, to: &Path) -> io::Result<()> {
+    let mut source = File::open(from)?;
+    let mut out = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(FILE_MODE)
+        .open(to)?;
+    io::copy(&mut source, &mut out)?;
+    out.sync_all()
+}
+
+/// How old a temporary file of the media folder must be before
+/// [`remove_stale_incoming`] takes it for a crash's leftover: a day, far
+/// longer than any add or import's batch keeps one.
+pub(super) const STALE_INCOMING_MS: i64 = 24 * 60 * 60 * 1_000;
+
+/// Removes the temporary files (`.incoming-` and 16 lowercase hex digits,
+/// as `media::hex` writes them; regular
+/// files) a crash left in the media folder `dir`, if last written more
+/// than [`STALE_INCOMING_MS`] before `now`; a younger one may belong to an
+/// add or an import running now, and is left alone (ADR 0063). They are
+/// incomplete copies, never a media file. Failures are logged only.
+pub(crate) fn remove_stale_incoming(dir: &Path, now: i64) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    let mut removed = 0_usize;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let is_temp = name
+            .to_str()
+            .and_then(|n| n.strip_prefix(".incoming-"))
+            .is_some_and(|rest| {
+                rest.len() == 16 && rest.bytes().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f'))
+            });
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        let written = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .and_then(|d| i64::try_from(d.as_millis()).ok());
+        let stale = written.is_some_and(|ms| now.saturating_sub(ms) > STALE_INCOMING_MS);
+        if is_temp && meta.file_type().is_file() && stale {
+            match fs::remove_file(entry.path()) {
+                Ok(()) => removed += 1,
+                Err(err) => tracing::warn!("cannot remove a stale temporary media file: {err}"),
+            }
+        }
+    }
+    if removed > 0 {
+        tracing::info!(
+            files = removed,
+            "temporary media files left by a crash removed"
+        );
+    }
+}
+
+/// Syncs the folder `dir`, so the names made in it are on disk.
+pub(crate) fn sync_folder(dir: &Path) -> Result<()> {
+    File::open(dir)
+        .and_then(|d| d.sync_all())
+        .map_err(|source| Error::Io {
+            path: dir.to_path_buf(),
+            source,
+        })
+}
